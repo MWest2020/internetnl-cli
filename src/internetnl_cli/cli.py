@@ -20,11 +20,16 @@ from typing import IO
 
 from internetnl_cli import config as config_module
 from internetnl_cli import gating
-from internetnl_cli.client import BatchClient, urllib_opener
-from internetnl_cli.errors import InternetnlError
+from internetnl_cli.client import BatchClient, is_valid_request_id, urllib_opener
+from internetnl_cli.errors import ApiError, InternetnlError, RunFailed, TransportError
 from internetnl_cli.hosts import collect_hosts
 from internetnl_cli.poll import poll_until_done
 from internetnl_cli.render import build_document, render_json, render_table
+
+
+# Kept identical to poll._UNFINISHED (not imported to avoid reaching into a
+# private name across modules); see design.md's Commands section.
+_UNFINISHED_STATUSES = {"registering", "running", "generating"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -61,7 +66,24 @@ def _build_parser() -> argparse.ArgumentParser:
 def _render(client, cfg, request_id, args, stdout, stderr) -> int:
     reply = client.results(request_id)
     allow = gating.parse_allowlist(args.allowlist) if args.allowlist else set()
-    checks = gating.evaluate(reply.get("domains") or {}, allow)
+
+    # Review round 1 (B2): fold in the reference subtest names the instance
+    # itself declares, so a test the server omitted for every host still
+    # renders unknown instead of vanishing. A failed or malformed metadata
+    # fetch is a degraded render, never a hard failure.
+    request_type = (reply.get("request") or {}).get("request_type")
+    metadata_reference: set[str] = set()
+    try:
+        metadata = client.metadata_report()
+    except (ApiError, TransportError) as exc:
+        stderr.write(
+            f"warning: metadata unavailable ({exc}): "
+            "unknown-detection limited to tests in this response\n"
+        )
+    else:
+        metadata_reference = gating.reference_from_metadata(metadata, request_type)
+
+    checks = gating.evaluate(reply.get("domains") or {}, allow, extra_reference=metadata_reference)
     doc = build_document(cfg.endpoint_host, request_id, reply, datetime.now(timezone.utc), checks)
     if args.json:
         render_json(doc, stdout)
@@ -105,6 +127,12 @@ def _run_submit(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str]
 
 
 def _run_poll(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str], stderr: IO[str]) -> int:
+    if not is_valid_request_id(args.request_id):
+        stderr.write(
+            f"error: invalid request id {args.request_id!r}: expected 32 lowercase hex characters\n"
+        )
+        return 2
+
     def _progress(status):
         stderr.write(f"status: {status}\n")
 
@@ -120,10 +148,22 @@ def _run_poll(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str], 
 
 
 def _run_results(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str], stderr: IO[str]) -> int:
+    if not is_valid_request_id(args.request_id):
+        stderr.write(
+            f"error: invalid request id {args.request_id!r}: expected 32 lowercase hex characters\n"
+        )
+        return 2
+
     status_reply = client.status(args.request_id)
     status = status_reply["request"]["status"]
     if status == "done":
         return _render(client, cfg, args.request_id, args, stdout, stderr)
+
+    if status in ("error", "cancelled"):
+        raise RunFailed(f"run {args.request_id} ended as {status}")
+
+    if status not in _UNFINISHED_STATUSES:
+        raise ApiError(f"unexpected request status '{status}' from {client.endpoint_host}")
 
     stderr.write(f"status: {status}\n")
     if args.json:

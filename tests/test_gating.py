@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 import pytest
 
 from internetnl_cli.errors import ConfigError, GateTripped
-from internetnl_cli.gating import evaluate, gate, parse_allowlist
+from internetnl_cli.gating import evaluate, gate, parse_allowlist, reference_from_metadata
 from internetnl_cli.render import build_document, render_table
-from fakes import RESULTS_REPLY, REQUEST_ID
+from fakes import METADATA_REPLY, RESULTS_REPLY, REQUEST_ID
 
 
 def test_failed_test_produces_failed_entry_and_gate_trips():
@@ -101,3 +101,55 @@ def test_errored_domain_contributes_no_entries():
     checks = evaluate(RESULTS_REPLY["domains"], set())
     for section in ("failed", "accepted", "unknown"):
         assert all(entry["host"] != "broken.nl" for entry in checks[section])
+
+
+# --- B2: metadata-declared reference set -------------------------------------
+
+
+def test_reference_from_metadata_walks_hierarchy_for_request_type():
+    metadata = {
+        "report": {
+            "data": {
+                "web_x": {"type": "category", "translation_key": "t"},
+                "web_x_sub": {"type": "test", "translation_key": "t", "status_verdict_map": {}},
+                "web_y": {"type": "test", "translation_key": "t", "status_verdict_map": {}},
+            },
+            "hierarchy": {
+                "web": [
+                    {"name": "web_x", "children": [{"name": "web_x_sub"}]},
+                    {"name": "web_y"},
+                ],
+                "mail": [],
+            },
+        }
+    }
+    assert reference_from_metadata(metadata, "web") == {"web_x_sub", "web_y"}
+    assert reference_from_metadata(metadata, "mail") == set()
+    assert reference_from_metadata(metadata, None) == set()
+    assert reference_from_metadata({}, "web") == set()
+    assert reference_from_metadata({"report": "not-a-dict"}, "web") == set()
+
+
+def test_reference_from_metadata_matches_the_vendored_sample():
+    names = reference_from_metadata(METADATA_REPLY, "web")
+    assert names == {
+        "web_ipv6_ns_address",
+        "web_dnssec_exist",
+        "web_https_hsts",
+        "web_appsecpriv_csp",
+        "web_https_cert_domain",
+        "web_https_starttls",
+    }
+
+
+def test_metadata_only_test_is_unknown_for_every_ok_host():
+    # A test the metadata reply names but no host's results contain must
+    # surface as unknown for *every* ok host, not just disappear (B2).
+    reply = copy.deepcopy(RESULTS_REPLY)
+    reply["domains"]["another.nl"] = copy.deepcopy(reply["domains"]["example.nl"])
+    checks = evaluate(reply["domains"], set(), extra_reference={"web_never_seen"})
+    unknown_hosts = {
+        entry["host"] for entry in checks["unknown"] if entry["test"] == "web_never_seen"
+    }
+    assert unknown_hosts == {"example.nl", "another.nl"}
+    assert all(entry["test"] != "web_never_seen" for entry in checks["failed"])
