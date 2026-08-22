@@ -14,10 +14,10 @@ If 0.1 is granted, section 4 becomes optional rather than blocking.
 
 ## 1. Skeleton
 
-- [ ] 1.1 `uv` project, `pyproject.toml`, console entry point `internetnl`
+- [x] 1.1 `uv` project, `pyproject.toml`, console entry point `internetnl`
 - [ ] 1.2 Config resolution: environment first, then config file, then error —
       endpoint and credentials, no defaults pointing anywhere
-- [ ] 1.3 `pytest` with an autouse fixture that repoints `$HOME` at a tmp dir
+- [x] 1.3 `pytest` with an autouse fixture that repoints `$HOME` at a tmp dir
 - [ ] 1.4 CI that runs the suite and the HOME-isolation check
 
 ## 2. Client
