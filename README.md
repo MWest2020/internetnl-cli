@@ -9,11 +9,9 @@ browser; this tool submits a whole fleet to a batch API v2 endpoint, polls
 until the run finishes, and renders the result as a diffable table or as JSON
 for pipelines.
 
-> **Status:** the interface is fully specified
-> (`openspec/changes/add-internetnl-cli/`, surface pinned in `design.md`);
-> the implementation is being built through the
-> [habitat](https://github.com/MWest2020/habitat) agent chain. Until the
-> change lands, the commands below describe the pinned design.
+> **Status:** implemented. The user-visible surface stays pinned in
+> [`openspec/changes/add-internetnl-cli/design.md`](openspec/changes/add-internetnl-cli/design.md);
+> the commands below match the current behaviour.
 
 ## The rule
 

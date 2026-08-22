@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      - run: sh scripts/verify.sh
+
+      - name: HOME-isolation check
+        run: |
+          SCRATCH="$(mktemp -d)"
+          HOME="$SCRATCH" ./.venv/bin/pytest -q
+          test -z "$(find "$SCRATCH" -mindepth 1)" || { echo "suite wrote into HOME"; find "$SCRATCH" -mindepth 1; exit 1; }
