@@ -20,24 +20,28 @@ from __future__ import annotations
 from internetnl_cli.errors import ConfigError, GateTripped
 
 
-def reference_from_metadata(metadata: dict, request_type: str | None) -> set[str]:
+def reference_from_metadata(metadata: dict, request_type: str | None) -> set[str] | None:
     """Test names declared by `GET {endpoint}/metadata/report` for `request_type`.
 
-    Defensive by design: any missing or malformed piece of the metadata
-    reply simply yields fewer (or no) names rather than raising — the
-    caller treats a failed or malformed metadata fetch as a degraded
-    render, never a hard failure.
+    Returns `None` when the reply is structurally unusable — missing or
+    non-dict `report`/`hierarchy`/`data` — so the caller can warn instead of
+    silently degrading (review round 2, m4). Returns a set otherwise: empty
+    when the reply is structurally fine but simply has no (or few) tests for
+    `request_type` — that is a normal, valid outcome, not a degradation.
     """
-    if not request_type or not isinstance(metadata, dict):
-        return set()
+    if not isinstance(metadata, dict):
+        return None
 
     report = metadata.get("report")
     if not isinstance(report, dict):
-        return set()
+        return None
 
     data = report.get("data")
     hierarchy = report.get("hierarchy")
     if not isinstance(data, dict) or not isinstance(hierarchy, dict):
+        return None
+
+    if not request_type:
         return set()
 
     tree = hierarchy.get(request_type)

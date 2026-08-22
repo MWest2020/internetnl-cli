@@ -98,6 +98,7 @@ class BatchClient:
         path = f"/requests/{self._encoded_request_id(request_id)}/results"
         parsed = self._call("GET", path, None)
         self._validate_request_object(parsed, path)
+        self._validate_domains(parsed, path)
         return parsed
 
     def metadata_report(self) -> dict:
@@ -124,6 +125,44 @@ class BatchClient:
             raise ApiError(f"malformed reply from {host} (invalid request_id, {path})")
         if not isinstance(status, str):
             raise ApiError(f"malformed reply from {host} (invalid status, {path})")
+
+    def _validate_domains(self, parsed: dict, path: str) -> None:
+        """Round 2 (m2): fail closed on a malformed `domains` block.
+
+        A `domains` value that is present but not an object, or a
+        domain/results/tests entry within it that is not an object, is an
+        `ApiError` — the same fail-closed rule already applied to the
+        `request` object one layer up. A `domains` key that is entirely
+        absent is left to callers (an unfinished-run status reply has none).
+        """
+        host = self._config.endpoint_host
+        domains = parsed.get("domains")
+        if domains is None:
+            return
+        if not isinstance(domains, dict):
+            raise ApiError(f"malformed reply from {host} (domains is not an object, {path})")
+        for domain in domains.values():
+            if not isinstance(domain, dict):
+                raise ApiError(
+                    f"malformed reply from {host} (domain entry is not an object, {path})"
+                )
+            results = domain.get("results")
+            if results is None:
+                continue
+            if not isinstance(results, dict):
+                raise ApiError(
+                    f"malformed reply from {host} (domain results is not an object, {path})"
+                )
+            tests = results.get("tests")
+            if tests is None:
+                continue
+            if not isinstance(tests, dict):
+                raise ApiError(f"malformed reply from {host} (tests is not an object, {path})")
+            for test in tests.values():
+                if not isinstance(test, dict):
+                    raise ApiError(
+                        f"malformed reply from {host} (test entry is not an object, {path})"
+                    )
 
     def _headers(self) -> dict:
         headers = {

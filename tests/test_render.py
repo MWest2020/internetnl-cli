@@ -3,7 +3,7 @@ import io
 import json
 from datetime import datetime, timezone
 
-from internetnl_cli.render import build_document, render_json, render_table
+from internetnl_cli.render import build_document, render_json, render_table, sanitize
 from fakes import REQUEST_ID, RESULTS_REPLY
 
 RETRIEVED_AT = datetime(2026, 8, 22, 12, 0, 0, tzinfo=timezone.utc)
@@ -136,3 +136,64 @@ def test_control_characters_in_host_name_are_filtered_from_table():
     output = stream.getvalue()
     assert "\x1b" not in output
     assert "\r" not in output
+
+
+# --- Round 2 (m1): sanitize coverage complete --------------------------------
+
+
+def test_sanitize_strips_c1_controls_and_bidi_overrides():
+    # U+202E (right-to-left override) and U+009B (C1 control).
+    assert sanitize("\u202Ehello\u009Bworld") == "?hello?world"
+
+
+def test_score_column_with_non_numeric_percentage_is_sanitized():
+    # `percentage` is not guaranteed numeric by a hostile or buggy server;
+    # the SCORE cell must go through the same filter as every other cell.
+    reply = copy.deepcopy(RESULTS_REPLY)
+    reply["domains"]["example.nl"]["scoring"]["percentage"] = "\x1b]0;pwned\x07100"
+    doc = build_document("batch.example", REQUEST_ID, reply, RETRIEVED_AT, _EMPTY_CHECKS)
+    stream = io.StringIO()
+    render_table(doc, stream)
+    output = stream.getvalue()
+    assert "\x1b" not in output
+
+
+# --- Round 2 (m3): unrecognised domain status rendered literally ------------
+
+
+def test_unrecognised_domain_status_rendered_literally_never_as_ok():
+    reply = copy.deepcopy(RESULTS_REPLY)
+    reply["domains"]["odd.nl"] = {
+        "status": "timeout",
+        "results": {"tests": {"web_dnssec_exist": {"status": "failed", "verdict": "bad"}}},
+    }
+    doc = build_document("batch.example", REQUEST_ID, reply, RETRIEVED_AT, _EMPTY_CHECKS)
+    stream = io.StringIO()
+    render_table(doc, stream)
+    lines = stream.getvalue().splitlines()
+    row = [line for line in lines if line.startswith("odd.nl")][0]
+    columns = row.split()
+    assert columns[1] == "timeout"
+    assert "ok" not in columns
+    # Per-test columns are dashes, same as the `error` case.
+    assert columns[2:] == ["-"] * 7
+
+
+# --- Round 2 (m5): a not_tested column --------------------------------------
+
+
+def test_not_tested_column_between_error_and_unknown():
+    doc = _doc()
+    stream = io.StringIO()
+    render_table(doc, stream)
+    lines = stream.getvalue().splitlines()
+    header = [line for line in lines if line.startswith("HOST")][0]
+    columns = header.split()
+    assert columns.index("NOT_TESTED") == columns.index("ERROR") + 1
+    assert columns.index("NOT_TESTED") == columns.index("UNKNOWN") - 1
+
+    row = [line for line in lines if line.startswith("example.nl ")][0]
+    values = row.split()
+    # HOST STATUS SCORE FAILED WARNING INFO ERROR NOT_TESTED UNKNOWN
+    # example.nl's fixture has exactly one not_tested test (web_https_cert_domain).
+    assert values[7] == "1"

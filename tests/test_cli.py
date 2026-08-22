@@ -434,3 +434,88 @@ def test_credential_leak_via_main_with_debug_and_401_and_transport_failure(monke
     )
     assert secret not in stdout2
     assert secret not in stderr2
+
+
+# --- Round 2 (m1): sanitize coverage complete, incl. all of stderr ----------
+
+
+def test_400_reply_with_escape_sequence_in_error_msg_never_reaches_stderr(monkeypatch):
+    payload = {"error": {"label": "bad-request", "msg": "\x1b]0;pwned\x07boom"}}
+    opener = FakeOpener([HttpResponse(status=400, body=json.dumps(payload).encode())])
+    exit_code, stdout, stderr, _ = _run(["results", REQUEST_ID], opener, monkeypatch)
+    assert exit_code == 2
+    assert "\x1b" not in stderr
+    assert "\x1b" not in stdout
+    assert "error:" in stderr
+
+
+def test_unrecognised_status_with_escape_sequence_never_reaches_stderr(monkeypatch):
+    reply = copy.deepcopy(STATUS_RUNNING)
+    reply["request"]["status"] = "\x1b]0;pwned\x07weird"
+    opener = FakeOpener([_ok(reply)])
+    exit_code, stdout, stderr, _ = _run(["results", REQUEST_ID], opener, monkeypatch)
+    assert exit_code == 2
+    assert "\x1b" not in stderr
+    assert "\x1b" not in stdout
+
+
+# --- Round 2 (m2): malformed `domains` block fails closed --------------------
+
+
+def test_results_with_domains_as_list_exits_two(monkeypatch):
+    reply = copy.deepcopy(RESULTS_REPLY)
+    reply["domains"] = ["not", "a", "dict"]
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(reply)])
+    exit_code, stdout, stderr, _ = _run(["results", REQUEST_ID], opener, monkeypatch)
+    assert exit_code == 2
+    assert stdout == ""
+
+
+def test_results_with_test_entry_as_string_exits_two(monkeypatch):
+    reply = copy.deepcopy(RESULTS_REPLY)
+    reply["domains"]["example.nl"]["results"]["tests"]["web_dnssec_exist"] = "not-a-dict"
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(reply)])
+    exit_code, stdout, stderr, _ = _run(["results", REQUEST_ID], opener, monkeypatch)
+    assert exit_code == 2
+    assert stdout == ""
+
+
+# --- Round 2 (m3): unrecognised domain status never gates, never shows ok ---
+
+
+def test_domain_with_unknown_status_never_gates_and_shows_literal_status(monkeypatch):
+    reply = copy.deepcopy(STATUS_DONE)
+    reply["domains"] = {
+        "odd.nl": {
+            "status": "timeout",
+            "results": {"tests": {"web_dnssec_exist": {"status": "failed", "verdict": "bad"}}},
+        }
+    }
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(reply), _ok(METADATA_REPLY)])
+    exit_code, stdout, stderr, _ = _run(
+        ["poll", REQUEST_ID, "--fail-on-scored"], opener, monkeypatch
+    )
+    assert exit_code == 0
+    lines = stdout.splitlines()
+    row = [line for line in lines if line.startswith("odd.nl")][0]
+    columns = row.split()
+    assert columns[1] == "timeout"
+    assert columns[1] != "ok"
+
+
+# --- Round 2 (m4): metadata structural failure warns like a failed call ----
+
+
+def test_metadata_reply_without_report_warns_like_a_failed_call(monkeypatch):
+    metadata_missing_report = {"api_version": "2.6.0"}
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(RESULTS_REPLY), _ok(metadata_missing_report)])
+    exit_code, stdout, stderr, _ = _run(["poll", REQUEST_ID], opener, monkeypatch)
+    assert exit_code == 0
+    assert "warning: metadata unavailable" in stderr
+
+
+def test_valid_metadata_reply_does_not_warn(monkeypatch):
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(RESULTS_REPLY), _ok(METADATA_REPLY)])
+    exit_code, stdout, stderr, _ = _run(["poll", REQUEST_ID], opener, monkeypatch)
+    assert exit_code == 0
+    assert "warning" not in stderr

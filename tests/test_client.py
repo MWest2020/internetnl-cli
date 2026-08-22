@@ -1,4 +1,5 @@
 import base64
+import copy
 import json
 
 import pytest
@@ -247,3 +248,40 @@ def test_submit_reply_with_malformed_request_id_is_api_error():
     client = BatchClient(_config(), opener=opener)
     with pytest.raises(ApiError):
         client.submit(["a.example"], "web", None)
+
+
+# --- Round 2 (m2): malformed `domains` block fails closed --------------------
+
+
+def test_results_with_domains_as_list_is_api_error():
+    reply = copy.deepcopy(RESULTS_REPLY)
+    reply["domains"] = ["not", "a", "dict"]
+    opener = FakeOpener([_ok(reply)])
+    client = BatchClient(_config(), opener=opener)
+    with pytest.raises(ApiError):
+        client.results(REQUEST_ID)
+
+
+def test_results_with_domain_entry_as_string_is_api_error():
+    reply = copy.deepcopy(RESULTS_REPLY)
+    reply["domains"]["example.nl"] = "not-a-dict"
+    opener = FakeOpener([_ok(reply)])
+    client = BatchClient(_config(), opener=opener)
+    with pytest.raises(ApiError):
+        client.results(REQUEST_ID)
+
+
+def test_results_with_test_entry_as_string_is_api_error():
+    reply = copy.deepcopy(RESULTS_REPLY)
+    reply["domains"]["example.nl"]["results"]["tests"]["web_dnssec_exist"] = "not-a-dict"
+    opener = FakeOpener([_ok(reply)])
+    client = BatchClient(_config(), opener=opener)
+    with pytest.raises(ApiError):
+        client.results(REQUEST_ID)
+
+
+def test_results_with_valid_domains_is_unaffected():
+    opener = FakeOpener([_ok(RESULTS_REPLY)])
+    client = BatchClient(_config(), opener=opener)
+    reply = client.results(REQUEST_ID)
+    assert reply == RESULTS_REPLY

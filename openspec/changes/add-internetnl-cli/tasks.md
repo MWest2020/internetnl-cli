@@ -5,10 +5,15 @@
 - [x] 0.1 ~~Request a batch account on the hosted instance~~ — decided
       2026-08-22 (Mark): accounts are a bottleneck; we go self-hosted and
       expose our own API, hosted-account route dropped
-- [ ] 0.2 Read the v2 spec (`https://batch.internet.nl/api/batch/openapi.yaml`)
+- [x] 0.2 Read the v2 spec (`https://batch.internet.nl/api/batch/openapi.yaml`)
       and write down the four calls we need: submit, status, results, delete
-- [ ] 0.3 Skim `poorting/internet.nl_batch_scripts` for the request/response
+      — done: the calls actually used (submit, status, results, metadata
+      report) are documented in design.md's "API mapping" section, and the
+      spec itself is vendored at `reference/openapi.yaml`
+- [x] 0.3 Skim `poorting/internet.nl_batch_scripts` for the request/response
       shapes before writing a line — cheaper than discovering them from 400s
+      — superseded: the official `openapi.yaml` is vendored as ground truth
+      (`reference/openapi.yaml`), see design.md
 
 If 0.1 is granted, section 4 becomes optional rather than blocking.
 

@@ -10,15 +10,34 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-# Review round 1 (m4): filter control characters out of every plain-text
-# table cell so API- or file-supplied bytes (host names, test names, ...)
-# can never smuggle terminal escapes into the table renderer. JSON mode is
-# already safe via json.dumps.
-_CONTROL_TRANSLATION = {codepoint: "?" for codepoint in list(range(0x20)) + [0x7F]}
+# Review round 1 (m4) + round 2 (m1): filter control characters out of
+# every plain-text cell *and* every stderr line so API- or file-supplied
+# bytes (host names, test names, error messages, ...) can never smuggle
+# terminal escapes into a terminal. JSON mode is already safe via
+# json.dumps. Covers C0 controls and DEL (round 1), plus C1 controls
+# (U+0080-U+009F) and bidi overrides (U+202A-U+202E, U+2066-U+2069) that
+# can be used to visually reorder or hide terminal output (round 2).
+_CONTROL_CODEPOINTS = (
+    list(range(0x20))
+    + [0x7F]
+    + list(range(0x80, 0xA0))
+    + list(range(0x202A, 0x202F))
+    + list(range(0x2066, 0x206A))
+)
+_CONTROL_TRANSLATION = {codepoint: "?" for codepoint in _CONTROL_CODEPOINTS}
 
 
-def _sanitize(value) -> str:
+def sanitize(value) -> str:
+    """Sanitize any value for display on a terminal (table cell or stderr line).
+
+    Shared helper used by both the table renderer here and the CLI's stderr
+    writes, so no output path can forget the filter.
+    """
     return str(value).translate(_CONTROL_TRANSLATION)
+
+
+# Internal alias kept for readability at call sites below.
+_sanitize = sanitize
 
 
 def build_document(
@@ -52,7 +71,7 @@ def render_json(doc: dict, stream) -> None:
 
 
 _TEST_STATUS_ORDER = ("passed", "failed", "warning", "info", "error", "not_tested")
-_COLUMNS = ("STATUS", "SCORE", "FAILED", "WARNING", "INFO", "ERROR", "UNKNOWN")
+_COLUMNS = ("STATUS", "SCORE", "FAILED", "WARNING", "INFO", "ERROR", "NOT_TESTED", "UNKNOWN")
 _COL_WIDTH = 7
 
 
@@ -86,8 +105,14 @@ def render_table(doc: dict, stream) -> None:
     for host in hosts:
         domain = domains[host]
         status = domain.get("status")
-        if status == "error":
-            row = _format_row(display_host[host], host_width, ["error"] + ["-"] * 6)
+        # Round 2 (m3): the upstream domain-status enum is `ok|error`; any
+        # other value (including one we have never seen) is rendered
+        # literally and sanitized, never implied as `ok`. Per-test columns
+        # are `-`, same as the `error` case — display and gate can no
+        # longer diverge (gating.evaluate already only processes `ok`
+        # domains).
+        if status != "ok":
+            row = _format_row(display_host[host], host_width, [_sanitize(status)] + ["-"] * 7)
             lines.append(row)
             continue
 
@@ -99,7 +124,7 @@ def render_table(doc: dict, stream) -> None:
                 counts[test_status] += 1
 
         score = (domain.get("scoring") or {}).get("percentage")
-        score_str = str(score) if score is not None else "-"
+        score_str = _sanitize(score) if score is not None else "-"
         unknown_count = unknown_by_host.get(host, 0)
 
         row = _format_row(
@@ -112,6 +137,7 @@ def render_table(doc: dict, stream) -> None:
                 str(counts["warning"]),
                 str(counts["info"]),
                 str(counts["error"]),
+                str(counts["not_tested"]),
                 str(unknown_count),
             ],
         )
@@ -128,7 +154,7 @@ def render_table(doc: dict, stream) -> None:
     informational = []
     for host in hosts:
         domain = domains[host]
-        if domain.get("status") == "error":
+        if domain.get("status") != "ok":
             continue
         tests = ((domain.get("results") or {}).get("tests")) or {}
         for test_name in sorted(tests):

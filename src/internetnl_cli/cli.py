@@ -24,12 +24,24 @@ from internetnl_cli.client import BatchClient, is_valid_request_id, urllib_opene
 from internetnl_cli.errors import ApiError, InternetnlError, RunFailed, TransportError
 from internetnl_cli.hosts import collect_hosts
 from internetnl_cli.poll import poll_until_done
-from internetnl_cli.render import build_document, render_json, render_table
+from internetnl_cli.render import build_document, render_json, render_table, sanitize
 
 
 # Kept identical to poll._UNFINISHED (not imported to avoid reaching into a
 # private name across modules); see design.md's Commands section.
 _UNFINISHED_STATUSES = {"registering", "running", "generating"}
+
+
+def _write_stderr(stream: IO[str], message: str) -> None:
+    """Write one sanitized line to stderr (review round 2, m1).
+
+    Every stderr line — the `error: …` path, status lines, warnings — must
+    go through the same control-character filter as table cells, since all
+    of them can carry API- or file-supplied bytes (an error message quoting
+    a bad request id, an unrecognised status string, ...). `message` must
+    not itself contain a trailing newline.
+    """
+    stream.write(sanitize(message) + "\n")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -73,15 +85,30 @@ def _render(client, cfg, request_id, args, stdout, stderr) -> int:
     # fetch is a degraded render, never a hard failure.
     request_type = (reply.get("request") or {}).get("request_type")
     metadata_reference: set[str] = set()
+    degraded_reason: str | None = None
     try:
         metadata = client.metadata_report()
     except (ApiError, TransportError) as exc:
-        stderr.write(
-            f"warning: metadata unavailable ({exc}): "
-            "unknown-detection limited to tests in this response\n"
-        )
+        degraded_reason = str(exc)
     else:
-        metadata_reference = gating.reference_from_metadata(metadata, request_type)
+        result = gating.reference_from_metadata(metadata, request_type)
+        # Round 2 (m4): a metadata reply that parses but yields no usable
+        # test list (missing/malformed report/hierarchy/data) is a
+        # degradation just like a failed call — it must not warn silently.
+        # A structurally valid reply that simply has few/no tests for this
+        # request type returns an (possibly empty) set, not None, and is
+        # not a degradation.
+        if result is None:
+            degraded_reason = "metadata reply had no usable test list"
+        else:
+            metadata_reference = result
+
+    if degraded_reason is not None:
+        _write_stderr(
+            stderr,
+            f"warning: metadata unavailable ({degraded_reason}): "
+            "unknown-detection limited to tests in this response",
+        )
 
     checks = gating.evaluate(reply.get("domains") or {}, allow, extra_reference=metadata_reference)
     doc = build_document(cfg.endpoint_host, request_id, reply, datetime.now(timezone.utc), checks)
@@ -97,23 +124,23 @@ def _render(client, cfg, request_id, args, stdout, stderr) -> int:
 def _run_submit(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str], stderr: IO[str]) -> int:
     hosts = collect_hosts(args.file, args.hosts)
     if not hosts:
-        stderr.write("error: no hosts given\n")
+        _write_stderr(stderr, "error: no hosts given")
         return 2
     if len(hosts) > cfg.batch_size:
-        stderr.write(
-            f"error: {len(hosts)} hosts exceeds INTERNETNL_BATCH_SIZE ({cfg.batch_size})\n"
+        _write_stderr(
+            stderr, f"error: {len(hosts)} hosts exceeds INTERNETNL_BATCH_SIZE ({cfg.batch_size})"
         )
         return 2
 
     reply = client.submit(hosts, args.type, args.name)
     request_id = reply["request"]["request_id"]
-    stderr.write(f"request-id: {request_id}\n")
+    _write_stderr(stderr, f"request-id: {request_id}")
 
     if args.no_poll:
         return 0
 
     def _progress(status):
-        stderr.write(f"status: {status}\n")
+        _write_stderr(stderr, f"status: {status}")
 
     poll_until_done(
         client,
@@ -128,13 +155,14 @@ def _run_submit(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str]
 
 def _run_poll(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str], stderr: IO[str]) -> int:
     if not is_valid_request_id(args.request_id):
-        stderr.write(
-            f"error: invalid request id {args.request_id!r}: expected 32 lowercase hex characters\n"
+        _write_stderr(
+            stderr,
+            f"error: invalid request id {args.request_id!r}: expected 32 lowercase hex characters",
         )
         return 2
 
     def _progress(status):
-        stderr.write(f"status: {status}\n")
+        _write_stderr(stderr, f"status: {status}")
 
     poll_until_done(
         client,
@@ -149,8 +177,9 @@ def _run_poll(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str], 
 
 def _run_results(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str], stderr: IO[str]) -> int:
     if not is_valid_request_id(args.request_id):
-        stderr.write(
-            f"error: invalid request id {args.request_id!r}: expected 32 lowercase hex characters\n"
+        _write_stderr(
+            stderr,
+            f"error: invalid request id {args.request_id!r}: expected 32 lowercase hex characters",
         )
         return 2
 
@@ -165,7 +194,7 @@ def _run_results(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str
     if status not in _UNFINISHED_STATUSES:
         raise ApiError(f"unexpected request status '{status}' from {client.endpoint_host}")
 
-    stderr.write(f"status: {status}\n")
+    _write_stderr(stderr, f"status: {status}")
     if args.json:
         doc = build_document(
             cfg.endpoint_host, args.request_id, status_reply, datetime.now(timezone.utc), None
@@ -221,7 +250,7 @@ def main(
             stderr=stderr,
         )
     except InternetnlError as exc:
-        stderr.write(f"error: {exc}\n")
+        _write_stderr(stderr, f"error: {exc}")
         return exc.exit_code
 
 

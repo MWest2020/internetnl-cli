@@ -126,8 +126,34 @@ def test_reference_from_metadata_walks_hierarchy_for_request_type():
     assert reference_from_metadata(metadata, "web") == {"web_x_sub", "web_y"}
     assert reference_from_metadata(metadata, "mail") == set()
     assert reference_from_metadata(metadata, None) == set()
-    assert reference_from_metadata({}, "web") == set()
-    assert reference_from_metadata({"report": "not-a-dict"}, "web") == set()
+
+
+# --- Round 2 (m4): structural failure is None, not a silent empty set -------
+
+
+def test_reference_from_metadata_returns_none_on_structural_failure():
+    # Missing/non-dict `report`, or a `report` missing/non-dict `data`
+    # or `hierarchy`, is a degraded reply — the caller must be able to
+    # tell this apart from "structurally fine, just no tests for this type".
+    assert reference_from_metadata({}, "web") is None
+    assert reference_from_metadata({"report": "not-a-dict"}, "web") is None
+    assert reference_from_metadata({"report": {}}, "web") is None
+    assert reference_from_metadata({"report": {"data": {}, "hierarchy": "nope"}}, "web") is None
+    assert reference_from_metadata("not-a-dict", "web") is None
+
+
+def test_reference_from_metadata_returns_empty_set_for_structurally_valid_reply():
+    # A structurally valid reply with no tests for the given type (or no
+    # request type at all) is a normal outcome, not a degradation.
+    metadata = {
+        "report": {
+            "data": {"web_x": {"type": "test", "translation_key": "t", "status_verdict_map": {}}},
+            "hierarchy": {"web": [{"name": "web_x"}], "mail": []},
+        }
+    }
+    assert reference_from_metadata(metadata, "mail") == set()
+    assert reference_from_metadata(metadata, None) == set()
+    assert reference_from_metadata(metadata, "web") == {"web_x"}
 
 
 def test_reference_from_metadata_matches_the_vendored_sample():
