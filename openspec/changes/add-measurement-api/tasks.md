@@ -18,7 +18,7 @@
       pydantic v2), console entry point for the server
 - [x] 1.2 Settings from the environment only — upstream endpoint + credential,
       limits, retention, SQLite path; no defaults pointing anywhere
-- [ ] 1.3 SQLite schema: credentials, id-map (facade id ↔ upstream id ↔
+- [x] 1.3 SQLite schema: credentials, id-map (facade id ↔ upstream id ↔
       credential), audit (append-only — enforce via triggers or
       insert-only data layer)
 - [ ] 1.4 Test harness: no network in tests (upstream client behind the same
