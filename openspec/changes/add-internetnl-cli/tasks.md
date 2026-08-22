@@ -29,7 +29,7 @@ If 0.1 is granted, section 4 becomes optional rather than blocking.
 - [ ] 2.3 `results <id>` — renders finished results
 - [ ] 2.4 Poll loop with tunable interval and maximum duration; reports status
       instead of guessing when a run is unfinished
-- [ ] 2.5 Errors carry status and endpoint host, never the credential; verify
+- [x] 2.5 Errors carry status and endpoint host, never the credential; verify
       with a test that greps the captured output for the secret
 
 ## 3. Output and gating
