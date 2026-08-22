@@ -43,9 +43,9 @@
 
 - [ ] 3.1 Credential issuance + revocation as operator CLI/runbook
       (revocation effective immediately)
-- [ ] 3.2 Rate limit, max domains, max concurrent runs — env-tunable, tested
+- [x] 3.2 Rate limit, max domains, max concurrent runs — env-tunable, tested
       at the boundaries, 429/400 in v2 shape
-- [ ] 3.3 Audit records on submit and credential lifecycle; test proves
+- [x] 3.3 Audit records on submit and credential lifecycle; test proves
       append-only (no UPDATE/DELETE path)
 - [ ] 3.4 Retention job for result bodies and expired audit data, per the
       documented periods

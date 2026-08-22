@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from starlette.testclient import TestClient
@@ -12,6 +13,19 @@ from internetnl_cli.client import HttpResponse
 from netnl import auth, store
 from netnl.api import create_app
 from netnl.settings import Settings, load
+
+
+class Clock:
+    """An injectable, manually-advanced stand-in for wall-clock time."""
+
+    def __init__(self, start: datetime | None = None) -> None:
+        self._now = start or datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += timedelta(seconds=seconds)
 
 
 @pytest.fixture(autouse=True)
@@ -47,8 +61,13 @@ def fake_opener() -> FakeOpener:
 
 
 @pytest.fixture
-def app(settings, fake_opener):
-    return create_app(settings, opener=fake_opener)
+def clock() -> Clock:
+    return Clock()
+
+
+@pytest.fixture
+def app(settings, fake_opener, clock):
+    return create_app(settings, opener=fake_opener, now=clock)
 
 
 @pytest.fixture

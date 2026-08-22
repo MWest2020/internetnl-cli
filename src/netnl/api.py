@@ -24,7 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from internetnl_cli.client import Opener, is_valid_request_id, urllib_opener
 from internetnl_cli.errors import ApiError, TransportError
 
-from netnl import auth, store, upstream
+from netnl import auth, limits, store, upstream
 from netnl.errors import NetnlHTTPError
 from netnl.replies import NOTICE, error_body
 from netnl.settings import Settings
@@ -181,13 +181,21 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     @app.post("/requests")
     def submit(body: SubmitRequest, credential=Depends(auth.authenticate)) -> dict:
         conn = app.state.conn
+        current = app.state.now()
+
+        # Size, then rate, then concurrency — every check runs before any
+        # upstream call; a size/rate rejection never touches upstream.
+        limits.check_size(body.domains, settings)
+        limits.check_rate(conn, credential["username"], settings, current)
+        limits.check_concurrency(conn, credential["id"], client, settings)
+
         reply = call_upstream(client, client.submit, body.domains, body.type, body.name)
 
         facade_id = secrets.token_hex(16)
         upstream_request = reply["request"]
         upstream_id = upstream_request["request_id"]
         status = upstream_request["status"]
-        submitted_at = store.utcnow_iso(app.state.now)
+        submitted_at = store.utcnow_iso(lambda: current)
 
         # Both writes happen before the reply is sent, per design.md's
         # "Submission is audited" scenario.
