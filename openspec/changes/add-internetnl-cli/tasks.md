@@ -22,12 +22,12 @@ If 0.1 is granted, section 4 becomes optional rather than blocking.
 
 ## 2. Client
 
-- [ ] 2.1 `submit` — hosts from `--file`/arguments, prints the request id first,
+- [x] 2.1 `submit` — hosts from `--file`/arguments, prints the request id first,
       then polls
-- [ ] 2.2 `poll <id>` — resumes any run, including one this machine did not
+- [x] 2.2 `poll <id>` — resumes any run, including one this machine did not
       start
-- [ ] 2.3 `results <id>` — renders finished results
-- [ ] 2.4 Poll loop with tunable interval and maximum duration; reports status
+- [x] 2.3 `results <id>` — renders finished results
+- [x] 2.4 Poll loop with tunable interval and maximum duration; reports status
       instead of guessing when a run is unfinished
 - [x] 2.5 Errors carry status and endpoint host, never the credential; verify
       with a test that greps the captured output for the secret

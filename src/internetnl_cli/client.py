@@ -52,6 +52,10 @@ class BatchClient:
         self._opener = opener
         self._debug_stream = debug_stream
 
+    @property
+    def endpoint_host(self) -> str:
+        return self._config.endpoint_host
+
     def submit(self, domains: list[str], request_type: str, name: str | None) -> dict:
         payload: dict = {"type": request_type, "domains": domains}
         if name is not None:

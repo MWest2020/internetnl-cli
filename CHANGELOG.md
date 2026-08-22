@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The `internetnl` CLI: `submit`/`poll`/`results` subcommands against the
+  batch API v2, with `--json`, `--fail-on-scored` and an allowlist file.
 - MIT licence, README, and docs (Diátaxis-light: `docs/index.md` plus the
   self-hosting reference page with requirements, addressing caveat and
   batch-vs-website differences).

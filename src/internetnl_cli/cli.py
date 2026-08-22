@@ -8,19 +8,23 @@ The argparse tree here is the pinned CLI surface from design.md:
     internetnl [--debug] results REQUEST_ID [COMMON]
 
     COMMON: --json --fail-on-scored --allowlist FILE
-
-Subcommand bodies are filled in as later tasks land; until then they raise
-NotImplementedError so `--help` and argument parsing can already be tested.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
+from datetime import datetime, timezone
 from typing import IO
 
 from internetnl_cli import config as config_module
+from internetnl_cli import gating
+from internetnl_cli.client import BatchClient, urllib_opener
 from internetnl_cli.errors import InternetnlError
+from internetnl_cli.hosts import collect_hosts
+from internetnl_cli.poll import poll_until_done
+from internetnl_cli.render import build_document, render_json, render_table
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -54,16 +58,82 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_submit(args: argparse.Namespace, *, cfg, opener, sleep, stdout: IO[str], stderr: IO[str]) -> int:
-    raise NotImplementedError
+def _render(client, cfg, request_id, args, stdout, stderr) -> int:
+    reply = client.results(request_id)
+    allow = gating.parse_allowlist(args.allowlist) if args.allowlist else set()
+    checks = gating.evaluate(reply.get("domains") or {}, allow)
+    doc = build_document(cfg.endpoint_host, request_id, reply, datetime.now(timezone.utc), checks)
+    if args.json:
+        render_json(doc, stdout)
+    else:
+        render_table(doc, stdout)
+    if args.fail_on_scored:
+        gating.gate(checks)
+    return 0
 
 
-def _run_poll(args: argparse.Namespace, *, cfg, opener, sleep, stdout: IO[str], stderr: IO[str]) -> int:
-    raise NotImplementedError
+def _run_submit(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str], stderr: IO[str]) -> int:
+    hosts = collect_hosts(args.file, args.hosts)
+    if not hosts:
+        stderr.write("error: no hosts given\n")
+        return 2
+    if len(hosts) > cfg.batch_size:
+        stderr.write(
+            f"error: {len(hosts)} hosts exceeds INTERNETNL_BATCH_SIZE ({cfg.batch_size})\n"
+        )
+        return 2
+
+    reply = client.submit(hosts, args.type, args.name)
+    request_id = reply["request"]["request_id"]
+    stderr.write(f"request-id: {request_id}\n")
+
+    if args.no_poll:
+        return 0
+
+    def _progress(status):
+        stderr.write(f"status: {status}\n")
+
+    poll_until_done(
+        client,
+        request_id,
+        cfg.poll_interval,
+        cfg.poll_max,
+        sleep=sleep,
+        progress=_progress,
+    )
+    return _render(client, cfg, request_id, args, stdout, stderr)
 
 
-def _run_results(args: argparse.Namespace, *, cfg, opener, sleep, stdout: IO[str], stderr: IO[str]) -> int:
-    raise NotImplementedError
+def _run_poll(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str], stderr: IO[str]) -> int:
+    def _progress(status):
+        stderr.write(f"status: {status}\n")
+
+    poll_until_done(
+        client,
+        args.request_id,
+        cfg.poll_interval,
+        cfg.poll_max,
+        sleep=sleep,
+        progress=_progress,
+    )
+    return _render(client, cfg, args.request_id, args, stdout, stderr)
+
+
+def _run_results(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str], stderr: IO[str]) -> int:
+    status_reply = client.status(args.request_id)
+    status = status_reply["request"]["status"]
+    if status == "done":
+        return _render(client, cfg, args.request_id, args, stdout, stderr)
+
+    stderr.write(f"status: {status}\n")
+    if args.json:
+        doc = build_document(
+            cfg.endpoint_host, args.request_id, status_reply, datetime.now(timezone.utc), None
+        )
+        doc["domains"] = None
+        doc["checks"] = None
+        render_json(doc, stdout)
+    return 0
 
 
 _DISPATCH = {
@@ -83,6 +153,13 @@ def main(
 ) -> int:
     stdout = stdout if stdout is not None else sys.stdout
     stderr = stderr if stderr is not None else sys.stderr
+    for stream in (stdout, stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="backslashreplace")
+            except (ValueError, TypeError):
+                pass
 
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -90,7 +167,19 @@ def main(
     handler = _DISPATCH[args.command]
     try:
         cfg = config_module.resolve()
-        return handler(args, cfg=cfg, opener=opener, sleep=sleep, stdout=stdout, stderr=stderr)
+        client = BatchClient(
+            cfg,
+            opener=opener or urllib_opener,
+            debug_stream=stderr if args.debug else None,
+        )
+        return handler(
+            args,
+            cfg=cfg,
+            client=client,
+            sleep=sleep or time.sleep,
+            stdout=stdout,
+            stderr=stderr,
+        )
     except InternetnlError as exc:
         stderr.write(f"error: {exc}\n")
         return exc.exit_code
