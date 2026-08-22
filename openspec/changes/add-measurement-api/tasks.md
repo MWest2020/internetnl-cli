@@ -21,7 +21,7 @@
 - [x] 1.3 SQLite schema: credentials, id-map (facade id ↔ upstream id ↔
       credential), audit (append-only — enforce via triggers or
       insert-only data layer)
-- [ ] 1.4 Test harness: no network in tests (upstream client behind the same
+- [x] 1.4 Test harness: no network in tests (upstream client behind the same
       injectable-opener seam as the CLI), `$HOME`-isolation fixture, CI job
       alongside the existing suite
 
@@ -33,8 +33,8 @@
 - [ ] 2.2 `GET /requests/{id}` and `GET /requests/{id}/results`: tenant
       check (foreign/unknown id → 404), upstream fetch, passthrough with
       facade id substituted
-- [ ] 2.3 `GET /metadata/report` passthrough (cacheable)
-- [ ] 2.4 v2-shaped error bodies everywhere, incl. unimplemented paths;
+- [x] 2.3 `GET /metadata/report` passthrough (cacheable)
+- [x] 2.4 v2-shaped error bodies everywhere, incl. unimplemented paths;
       provenance header on every reply
 - [ ] 2.5 Leak test: upstream credential (and its base64 form) greppable in
       no reply, error, or captured log line
