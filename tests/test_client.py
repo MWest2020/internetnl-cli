@@ -27,8 +27,14 @@ def _ok(payload):
     return HttpResponse(status=200, body=json.dumps(payload).encode())
 
 
+def _request_reply(**overrides):
+    request = {"request_id": REQUEST_ID, "status": "registering"}
+    request.update(overrides)
+    return {"api_version": "2.6.0", "request": request}
+
+
 def test_submit_posts_to_requests_with_body():
-    opener = FakeOpener([_ok({"api_version": "2.6.0", "request": {"request_id": REQUEST_ID}})])
+    opener = FakeOpener([_ok(_request_reply())])
     client = BatchClient(_config(), opener=opener)
     client.submit(["a.example", "b.example"], "web", None)
     method, url, body, headers, timeout = opener.calls[0]
@@ -40,7 +46,7 @@ def test_submit_posts_to_requests_with_body():
 
 
 def test_submit_includes_name_when_given():
-    opener = FakeOpener([_ok({"api_version": "2.6.0", "request": {}})])
+    opener = FakeOpener([_ok(_request_reply())])
     client = BatchClient(_config(), opener=opener)
     client.submit(["a.example"], "mail", "my-run")
     payload = json.loads(opener.calls[0][2])
@@ -48,7 +54,7 @@ def test_submit_includes_name_when_given():
 
 
 def test_status_gets_request_by_id():
-    opener = FakeOpener([_ok({"api_version": "2.6.0", "request": {"status": "running"}})])
+    opener = FakeOpener([_ok(_request_reply(status="running"))])
     client = BatchClient(_config(), opener=opener)
     client.status(REQUEST_ID)
     method, url, body, headers, timeout = opener.calls[0]
@@ -68,7 +74,7 @@ def test_results_gets_results_path():
 
 
 def test_authorization_header_absent_with_empty_username():
-    opener = FakeOpener([_ok({"api_version": "2.6.0", "request": {}})])
+    opener = FakeOpener([_ok(_request_reply())])
     client = BatchClient(_config(username="", password=""), opener=opener)
     client.status(REQUEST_ID)
     headers = opener.calls[0][3]
@@ -76,7 +82,7 @@ def test_authorization_header_absent_with_empty_username():
 
 
 def test_authorization_header_present_and_correct_with_credentials():
-    opener = FakeOpener([_ok({"api_version": "2.6.0", "request": {}})])
+    opener = FakeOpener([_ok(_request_reply())])
     client = BatchClient(_config(username="alice", password="wonderland"), opener=opener)
     client.status(REQUEST_ID)
     headers = opener.calls[0][3]
@@ -88,7 +94,7 @@ def test_debug_stream_shows_method_and_url_but_not_secret():
     import io
 
     stream = io.StringIO()
-    opener = FakeOpener([_ok({"api_version": "2.6.0", "request": {"request_id": REQUEST_ID}})])
+    opener = FakeOpener([_ok(_request_reply())])
     client = BatchClient(
         _config(username="alice", password="s3cr3t"), opener=opener, debug_stream=stream
     )
@@ -168,3 +174,76 @@ def test_credentials_never_appear_in_output():
     everything = stream.getvalue() + "\n".join(captured_exceptions)
     assert secret not in everything
     assert encoded not in everything
+
+
+# --- B1: redirects are never followed ---------------------------------------
+
+
+def test_redirect_status_maps_to_api_error_not_followed():
+    opener = FakeOpener([HttpResponse(status=302, body=b"")])
+    client = BatchClient(_config(), opener=opener)
+    with pytest.raises(ApiError) as excinfo:
+        client.status(REQUEST_ID)
+    assert "302" in str(excinfo.value)
+    # Only the one (non-followed) call was ever made.
+    assert len(opener.calls) == 1
+
+
+def test_urllib_opener_redirect_handler_refuses_every_redirect():
+    import urllib.request
+
+    from internetnl_cli.client import _RefuseRedirects
+
+    handler = _RefuseRedirects()
+    result = handler.redirect_request(
+        urllib.request.Request("https://batch.example/requests/x"),
+        None,
+        302,
+        "Found",
+        {},
+        "https://evil.example/steal",
+    )
+    assert result is None
+
+
+# --- m1: malformed 200 reply fails closed ------------------------------------
+
+
+def test_reply_without_request_object_is_api_error():
+    opener = FakeOpener([_ok({"api_version": "2.6.0"})])
+    client = BatchClient(_config(), opener=opener)
+    with pytest.raises(ApiError):
+        client.status(REQUEST_ID)
+
+
+def test_reply_with_non_string_status_is_api_error():
+    opener = FakeOpener([_ok(_request_reply(status=None))])
+    client = BatchClient(_config(), opener=opener)
+    with pytest.raises(ApiError):
+        client.status(REQUEST_ID)
+
+
+# --- M2: request_id validated and quoted before it reaches a URL path ------
+
+
+def test_status_with_invalid_request_id_is_api_error_and_makes_no_call():
+    opener = FakeOpener([])
+    client = BatchClient(_config(), opener=opener)
+    with pytest.raises(ApiError):
+        client.status("../../../etc/passwd")
+    assert opener.calls == []
+
+
+def test_results_with_control_characters_in_request_id_is_api_error_and_makes_no_call():
+    opener = FakeOpener([])
+    client = BatchClient(_config(), opener=opener)
+    with pytest.raises(ApiError):
+        client.results("x\r\n")
+    assert opener.calls == []
+
+
+def test_submit_reply_with_malformed_request_id_is_api_error():
+    opener = FakeOpener([_ok(_request_reply(request_id="not-a-valid-id"))])
+    client = BatchClient(_config(), opener=opener)
+    with pytest.raises(ApiError):
+        client.submit(["a.example"], "web", None)

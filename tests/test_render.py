@@ -1,3 +1,4 @@
+import copy
 import io
 import json
 from datetime import datetime, timezone
@@ -111,3 +112,27 @@ def test_exactly_one_json_document_written():
     render_json(doc, stream)
     # A single json.loads over the whole stream content must succeed.
     json.loads(stream.getvalue())
+
+
+def test_scoring_explicitly_null_renders_dash():
+    reply = copy.deepcopy(RESULTS_REPLY)
+    reply["domains"]["example.nl"]["scoring"] = None
+    doc = build_document("batch.example", REQUEST_ID, reply, RETRIEVED_AT, _EMPTY_CHECKS)
+    stream = io.StringIO()
+    render_table(doc, stream)
+    lines = stream.getvalue().splitlines()
+    row = [line for line in lines if line.startswith("example.nl ")][0]
+    # HOST STATUS SCORE ...
+    assert row.split()[2] == "-"
+
+
+def test_control_characters_in_host_name_are_filtered_from_table():
+    reply = copy.deepcopy(RESULTS_REPLY)
+    evil_host = "example\x1b[31m.nl\r"
+    reply["domains"][evil_host] = reply["domains"].pop("example.nl")
+    doc = build_document("batch.example", REQUEST_ID, reply, RETRIEVED_AT, _EMPTY_CHECKS)
+    stream = io.StringIO()
+    render_table(doc, stream)
+    output = stream.getvalue()
+    assert "\x1b" not in output
+    assert "\r" not in output

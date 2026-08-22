@@ -151,3 +151,43 @@ def test_unknown_ini_keys_are_ignored(tmp_path):
     )
     cfg = resolve(_env(tmp_path))
     assert cfg.endpoint == "https://from-file.example/api/batch/v2"
+
+
+# --- M1: http endpoints send credentials in cleartext ------------------------
+
+
+def test_http_endpoint_without_opt_in_is_config_error(tmp_path):
+    with pytest.raises(ConfigError) as excinfo:
+        resolve(_env(tmp_path, INTERNETNL_ENDPOINT="http://batch.example/api/batch/v2"))
+    assert "INTERNETNL_ALLOW_HTTP" in str(excinfo.value)
+
+
+def test_http_endpoint_with_opt_in_works(tmp_path):
+    cfg = resolve(
+        _env(
+            tmp_path,
+            INTERNETNL_ENDPOINT="http://batch.example/api/batch/v2",
+            INTERNETNL_ALLOW_HTTP="1",
+        )
+    )
+    assert cfg.endpoint == "http://batch.example/api/batch/v2"
+
+
+# --- m3: empty/absent $HOME never degrades to a CWD-relative config path ----
+
+
+def test_default_config_path_with_empty_home_is_none():
+    assert default_config_path({}) is None
+    assert default_config_path({"HOME": ""}) is None
+
+
+def test_resolve_with_empty_home_does_not_read_a_cwd_relative_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / ".config" / "internetnl"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.ini").write_text(
+        "[internetnl]\nendpoint = https://should-not-be-read.example/api/batch/v2\n"
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        resolve({"HOME": ""})
+    assert "INTERNETNL_ENDPOINT" in str(excinfo.value)

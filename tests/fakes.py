@@ -2,7 +2,8 @@
 
 Sample payloads are built from the vendored openapi.yaml (v2.6.0):
 `RegisterReply`/`RequestReply` (request), `Domain` (status + results +
-scoring), `Test` (status + verdict).
+scoring), `Test` (status + verdict), `MetadataReportResponse` (report.data +
+report.hierarchy, ~line 604).
 """
 
 from __future__ import annotations
@@ -68,6 +69,57 @@ STATUS_DONE = {
         "status": "done",
         "submit_date": "2026-08-22T10:00:00+00:00",
         "finished_date": "2026-08-22T10:05:00+00:00",
+    },
+}
+
+METADATA_REPLY = {
+    "api_version": "2.6.0",
+    "report": {
+        "data": {
+            "web_ipv6": {"type": "category", "translation_key": "t"},
+            "web_ipv6_ns_address": {
+                "type": "test",
+                "translation_key": "t",
+                "status_verdict_map": {},
+            },
+            "web_dnssec": {"type": "category", "translation_key": "t"},
+            "web_dnssec_exist": {
+                "type": "test",
+                "translation_key": "t",
+                "status_verdict_map": {},
+            },
+            "web_https_hsts": {
+                "type": "test",
+                "translation_key": "t",
+                "status_verdict_map": {},
+            },
+            "web_appsecpriv_csp": {
+                "type": "test",
+                "translation_key": "t",
+                "status_verdict_map": {},
+            },
+            "web_https_cert_domain": {
+                "type": "test",
+                "translation_key": "t",
+                "status_verdict_map": {},
+            },
+            "web_https_starttls": {
+                "type": "test",
+                "translation_key": "t",
+                "status_verdict_map": {},
+            },
+        },
+        "hierarchy": {
+            "web": [
+                {"name": "web_ipv6", "children": [{"name": "web_ipv6_ns_address"}]},
+                {"name": "web_dnssec", "children": [{"name": "web_dnssec_exist"}]},
+                {"name": "web_https_hsts"},
+                {"name": "web_appsecpriv_csp"},
+                {"name": "web_https_cert_domain"},
+                {"name": "web_https_starttls"},
+            ],
+            "mail": [],
+        },
     },
 }
 

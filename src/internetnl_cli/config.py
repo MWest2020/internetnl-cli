@@ -40,10 +40,15 @@ class Config:
         return urllib.parse.urlsplit(self.endpoint).hostname or "unknown"
 
 
-def default_config_path(env: Mapping[str, str]) -> pathlib.Path:
+def default_config_path(env: Mapping[str, str]) -> pathlib.Path | None:
     if "INTERNETNL_CONFIG" in env:
         return pathlib.Path(env["INTERNETNL_CONFIG"])
-    return pathlib.Path(env.get("HOME", "")) / ".config" / "internetnl" / "config.ini"
+    home = env.get("HOME")
+    if not home:
+        # A missing or empty $HOME means "no default config file" — never
+        # degrade to a CWD-relative lookup (review round 1, m3).
+        return None
+    return pathlib.Path(home) / ".config" / "internetnl" / "config.ini"
 
 
 def _read_config_file(path: pathlib.Path) -> configparser.ConfigParser | None:
@@ -78,13 +83,18 @@ def _config_section(path: pathlib.Path) -> configparser.SectionProxy | None:
     return section
 
 
-def _validate_endpoint(endpoint: str) -> str:
+def _validate_endpoint(endpoint: str, env: Mapping[str, str]) -> str:
     parsed = urllib.parse.urlsplit(endpoint)
     if parsed.username is not None:
         raise ConfigError("credentials must not appear in INTERNETNL_ENDPOINT")
     if parsed.scheme not in ("http", "https"):
         raise ConfigError(
             f"INTERNETNL_ENDPOINT must use http or https: got scheme '{parsed.scheme}'"
+        )
+    if parsed.scheme == "http" and env.get("INTERNETNL_ALLOW_HTTP") != "1":
+        raise ConfigError(
+            "INTERNETNL_ENDPOINT uses http, which sends HTTP Basic credentials "
+            "in cleartext: set INTERNETNL_ALLOW_HTTP=1 to permit this (lab use only)"
         )
     if not parsed.hostname:
         raise ConfigError("INTERNETNL_ENDPOINT must include a host")
@@ -115,17 +125,19 @@ def resolve(env: Mapping[str, str] | None = None) -> Config:
     endpoint = env.get("INTERNETNL_ENDPOINT")
     config_path = default_config_path(env)
     section = None
-    if not endpoint:
+    if not endpoint and config_path is not None:
         section = _config_section(config_path)
         if section is not None:
             endpoint = section.get("endpoint")
 
     if not endpoint:
-        raise ConfigError(
-            f"no endpoint configured: set INTERNETNL_ENDPOINT (or endpoint in {config_path})"
-        )
+        if config_path is not None:
+            raise ConfigError(
+                f"no endpoint configured: set INTERNETNL_ENDPOINT (or endpoint in {config_path})"
+            )
+        raise ConfigError("no endpoint configured: set INTERNETNL_ENDPOINT")
 
-    endpoint = _validate_endpoint(endpoint)
+    endpoint = _validate_endpoint(endpoint, env)
 
     username = env.get("INTERNETNL_USERNAME", "")
     password = env.get("INTERNETNL_PASSWORD", "")

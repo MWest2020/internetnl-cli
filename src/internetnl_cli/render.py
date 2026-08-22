@@ -10,6 +10,16 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+# Review round 1 (m4): filter control characters out of every plain-text
+# table cell so API- or file-supplied bytes (host names, test names, ...)
+# can never smuggle terminal escapes into the table renderer. JSON mode is
+# already safe via json.dumps.
+_CONTROL_TRANSLATION = {codepoint: "?" for codepoint in list(range(0x20)) + [0x7F]}
+
+
+def _sanitize(value) -> str:
+    return str(value).translate(_CONTROL_TRANSLATION)
+
 
 def build_document(
     endpoint_host: str,
@@ -53,17 +63,18 @@ def _format_row(host: str, host_width: int, values: list[str]) -> str:
 
 def render_table(doc: dict, stream) -> None:
     lines = []
-    lines.append(f"endpoint: {doc['endpoint']}")
-    lines.append(f"request-id: {doc['request_id']}")
-    lines.append(f"timestamp: {doc['timestamp']}")
-    lines.append(f"api_version: {doc['api_version']}")
+    lines.append(f"endpoint: {_sanitize(doc['endpoint'])}")
+    lines.append(f"request-id: {_sanitize(doc['request_id'])}")
+    lines.append(f"timestamp: {_sanitize(doc['timestamp'])}")
+    lines.append(f"api_version: {_sanitize(doc['api_version'])}")
     lines.append("")
 
     domains = doc.get("domains") or {}
     checks = doc.get("checks") or {"failed": [], "accepted": [], "unknown": []}
 
     hosts = list(domains.keys())
-    host_width = max([len("HOST")] + [len(h) for h in hosts])
+    display_host = {host: _sanitize(host) for host in hosts}
+    host_width = max([len("HOST")] + [len(display_host[h]) for h in hosts])
 
     unknown_by_host: dict[str, int] = {}
     for entry in checks.get("unknown", []):
@@ -76,7 +87,7 @@ def render_table(doc: dict, stream) -> None:
         domain = domains[host]
         status = domain.get("status")
         if status == "error":
-            row = _format_row(host, host_width, ["error"] + ["-"] * 6)
+            row = _format_row(display_host[host], host_width, ["error"] + ["-"] * 6)
             lines.append(row)
             continue
 
@@ -87,12 +98,12 @@ def render_table(doc: dict, stream) -> None:
             if test_status in counts:
                 counts[test_status] += 1
 
-        score = domain.get("scoring", {}).get("percentage")
+        score = (domain.get("scoring") or {}).get("percentage")
         score_str = str(score) if score is not None else "-"
         unknown_count = unknown_by_host.get(host, 0)
 
         row = _format_row(
-            host,
+            display_host[host],
             host_width,
             [
                 "ok",
@@ -112,7 +123,7 @@ def render_table(doc: dict, stream) -> None:
             lines.append("")
             lines.append(f"{section}:")
             for entry in entries:
-                lines.append(f"  {entry['host']} {entry['test']}")
+                lines.append(f"  {_sanitize(entry['host'])} {_sanitize(entry['test'])}")
 
     informational = []
     for host in hosts:
@@ -123,7 +134,9 @@ def render_table(doc: dict, stream) -> None:
         for test_name in sorted(tests):
             test_status = tests[test_name].get("status")
             if test_status in ("warning", "info", "error"):
-                informational.append(f"  {host} {test_name} {test_status}")
+                informational.append(
+                    f"  {display_host[host]} {_sanitize(test_name)} {_sanitize(test_status)}"
+                )
 
     lines.append("")
     lines.append("informational:")
