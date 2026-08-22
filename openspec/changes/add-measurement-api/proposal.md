@@ -21,9 +21,13 @@ between its engine and its API surface.
 
 ## What Changes
 
-**A batch-API-v2-compatible measurement API** (working name: `loket`, the
-Dutch service counter — naming is the owner's call) in front of the
-self-hosted batch instance.
+**A batch-API-v2-compatible measurement API** (working name: `netnl`,
+owner's pick 2026-08-22 — the name keeps pointing at what this is: an
+opinion on how the internet should work, according to people in the
+Netherlands) in front of the self-hosted batch instance. Because the name
+nods at internet.nl, the service documentation and provenance header must
+state plainly that this is an independent instance, not internet.nl and not
+Platform Internetstandaarden — the tests are theirs, the operation is ours.
 
 1. **The facade speaks batch API v2.** Same paths, same reply shapes, HTTP
    Basic auth — the subset the ecosystem needs: register, status, results,

@@ -97,7 +97,9 @@ state the retention period for audit records and result bodies.
 The facade SHALL pass result bodies through unmodified and SHALL identify
 itself as the measuring party in a response header and in its documentation,
 which SHALL restate the documented differences between batch results and the
-internet.nl website.
+internet.nl website and SHALL state that the service is an independent
+instance, affiliated with neither internet.nl nor Platform
+Internetstandaarden.
 
 #### Scenario: Results are passthrough
 

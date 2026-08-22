@@ -6,9 +6,11 @@
       on a machine with a fixed public IPv4 + IPv6
 - [ ] 0.2 CLI acceptance test against that instance passes unchanged
       (`add-internetnl-cli` task 4.4)
-- [ ] 0.3 Owner decisions recorded: service name (working name `loket`),
-      public hostname, retention periods, initial limits (rate, max domains,
-      max concurrent runs)
+- [ ] 0.3 Owner decisions recorded: service name — **`netnl`** (decided
+      2026-08-22; keeps the reference to the mission: an opinion on how the
+      internet should work, according to NL); still open: public hostname,
+      retention periods, initial limits (rate, max domains, max concurrent
+      runs)
 
 ## 1. Skeleton
 
