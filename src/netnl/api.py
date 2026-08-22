@@ -8,22 +8,44 @@ Every reply — success and error — carries `X-Netnl-Instance` and
 
 from __future__ import annotations
 
+import copy
+import secrets
+import sqlite3
 import threading
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Literal
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from internetnl_cli.client import Opener, urllib_opener
+from internetnl_cli.client import Opener, is_valid_request_id, urllib_opener
 from internetnl_cli.errors import ApiError, TransportError
 
-from netnl import store, upstream
+from netnl import auth, store, upstream
 from netnl.errors import NetnlHTTPError
 from netnl.replies import NOTICE, error_body
 from netnl.settings import Settings
+
+
+class SubmitRequest(BaseModel):
+    type: Literal["web", "mail"]
+    domains: list[str] = Field(min_length=1)
+    name: str | None = None
+
+
+def _owned_request_or_404(conn, request_id: str, credential) -> sqlite3.Row:
+    """A foreign or malformed id is indistinguishable from an unknown one —
+    both are the same 404, so credential B can never tell credential A's
+    request exists (design.md, "Tenant isolation").
+    """
+    if is_valid_request_id(request_id):
+        row = store.get_request_for_credential(conn, request_id, credential["id"])
+        if row is not None:
+            return row
+    raise NetnlHTTPError(404, "unknown-request", "this request_id does not exist for the user")
 
 # Per-thread, reset at the start of every `_upstream()` call. Starlette runs
 # a sync route handler and everything it calls (including the opener) on the
@@ -155,5 +177,73 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
         payload = call_upstream(client, client.metadata_report)
         app.state.metadata_cache = {"payload": payload, "at": current}
         return payload
+
+    @app.post("/requests")
+    def submit(body: SubmitRequest, credential=Depends(auth.authenticate)) -> dict:
+        conn = app.state.conn
+        reply = call_upstream(client, client.submit, body.domains, body.type, body.name)
+
+        facade_id = secrets.token_hex(16)
+        upstream_request = reply["request"]
+        upstream_id = upstream_request["request_id"]
+        status = upstream_request["status"]
+        submitted_at = store.utcnow_iso(app.state.now)
+
+        # Both writes happen before the reply is sent, per design.md's
+        # "Submission is audited" scenario.
+        store.insert_request(
+            conn,
+            facade_id=facade_id,
+            upstream_id=upstream_id,
+            credential_id=credential["id"],
+            request_type=body.type,
+            domain_count=len(body.domains),
+            submitted_at=submitted_at,
+            last_status=status,
+        )
+        store.record_audit(
+            conn,
+            at=submitted_at,
+            credential=credential["username"],
+            event="submit",
+            facade_id=facade_id,
+            domain_count=len(body.domains),
+        )
+
+        out = copy.deepcopy(reply)
+        out["request"]["request_id"] = facade_id
+        return out
+
+    @app.get("/requests/{request_id}")
+    def get_status(request_id: str, credential=Depends(auth.authenticate)) -> dict:
+        conn = app.state.conn
+        row = _owned_request_or_404(conn, request_id, credential)
+
+        reply = call_upstream(client, client.status, row["upstream_id"])
+        upstream_request = reply["request"]
+        store.update_status(
+            conn, request_id, upstream_request["status"], upstream_request.get("finished_date")
+        )
+
+        out = copy.deepcopy(reply)
+        out["request"]["request_id"] = request_id
+        return out
+
+    @app.get("/requests/{request_id}/results")
+    def get_results(request_id: str, credential=Depends(auth.authenticate)) -> dict:
+        conn = app.state.conn
+        row = _owned_request_or_404(conn, request_id, credential)
+
+        reply = call_upstream(client, client.results, row["upstream_id"])
+        upstream_request = reply["request"]
+        store.update_status(
+            conn, request_id, upstream_request["status"], upstream_request.get("finished_date")
+        )
+
+        out = copy.deepcopy(reply)
+        out["request"]["request_id"] = request_id
+        # `domains` is carried over from `reply` untouched by the deep copy
+        # above — no key added, removed, reordered or rewritten.
+        return out
 
     return app

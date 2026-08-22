@@ -76,7 +76,11 @@ def utcnow_iso(now: Callable[[], datetime] | None = None) -> str:
 def connect(path: str | pathlib.Path) -> sqlite3.Connection:
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), isolation_level=None)
+    # `check_same_thread=False`: FastAPI runs sync route handlers (and their
+    # dependencies) in a threadpool, a different thread per call. Safe here
+    # because the underlying SQLite build is serialized
+    # (`sqlite3.threadsafety == 3`), so it does its own internal locking.
+    conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

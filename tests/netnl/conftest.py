@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 
@@ -8,6 +9,7 @@ from starlette.testclient import TestClient
 
 from fakes import FakeOpener
 from internetnl_cli.client import HttpResponse
+from netnl import auth, store
 from netnl.api import create_app
 from netnl.settings import Settings, load
 
@@ -55,3 +57,31 @@ def client(app):
     # any exception that reached the catch-all handler instead of letting
     # us observe the 500 response it produced.
     return TestClient(app, raise_server_exceptions=False)
+
+
+def basic_auth_header(username: str, password: str) -> dict:
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+def add_test_credential(app, username: str, password: str) -> None:
+    """Insert a tenant credential straight into the store — bypasses
+    `netnl-admin` (built in B6) so B4/B5 tests can authenticate.
+    """
+    conn = app.state.conn
+    salt = auth.new_salt()
+    store.add_credential(
+        conn,
+        username=username,
+        password_hash=auth.hash_password(password, salt),
+        salt=salt.hex(),
+        created_at=store.utcnow_iso(app.state.now),
+    )
+
+
+@pytest.fixture
+def tenant(app):
+    """A ready-to-use tenant credential: (username, password, auth header)."""
+    username, password = "tenant", "tenant-secret"
+    add_test_credential(app, username, password)
+    return {"username": username, "password": password, "headers": basic_auth_header(username, password)}

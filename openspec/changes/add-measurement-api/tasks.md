@@ -27,16 +27,16 @@
 
 ## 2. v2 surface
 
-- [ ] 2.1 `POST /requests`: validate, enforce limits, submit upstream with
+- [x] 2.1 `POST /requests`: validate, enforce limits, submit upstream with
       the server-side credential, issue a facade id (`^[a-f0-9]{32}$`),
       audit, reply in v2 shape
-- [ ] 2.2 `GET /requests/{id}` and `GET /requests/{id}/results`: tenant
+- [x] 2.2 `GET /requests/{id}` and `GET /requests/{id}/results`: tenant
       check (foreign/unknown id → 404), upstream fetch, passthrough with
       facade id substituted
 - [x] 2.3 `GET /metadata/report` passthrough (cacheable)
 - [x] 2.4 v2-shaped error bodies everywhere, incl. unimplemented paths;
       provenance header on every reply
-- [ ] 2.5 Leak test: upstream credential (and its base64 form) greppable in
+- [x] 2.5 Leak test: upstream credential (and its base64 form) greppable in
       no reply, error, or captured log line
 
 ## 3. Tenancy, limits, audit
