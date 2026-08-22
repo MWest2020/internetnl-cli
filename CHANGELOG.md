@@ -10,6 +10,12 @@ All notable changes to this project are documented here. The format follows
 
 - The `internetnl` CLI: `submit`/`poll`/`results` subcommands against the
   batch API v2, with `--json`, `--fail-on-scored` and an allowlist file.
+- Hardening out of the review chain: HTTP redirects are refused (Basic
+  credentials can never travel to another host), `https` is required unless
+  `INTERNETNL_ALLOW_HTTP=1`, request ids are validated before touching a URL,
+  unknown-detection uses the instance's own `/metadata/report` test list,
+  terminal output is control-character-sanitised, and CI actions are pinned
+  to commit SHAs.
 - MIT licence, README, and docs (Diátaxis-light: `docs/index.md` plus the
   self-hosting reference page with requirements, addressing caveat and
   batch-vs-website differences).
