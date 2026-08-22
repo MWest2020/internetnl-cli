@@ -97,8 +97,9 @@ without colours or terminal escapes in either mode.
 
 ### Requirement: Everything tunable
 
-Timeouts, poll interval, maximum poll duration, batch size, config path and
-endpoint SHALL be settable from the environment.
+The CLI SHALL take timeouts, poll interval, maximum poll duration, batch
+size, config path and endpoint from the environment, tunable without a code
+change.
 
 #### Scenario: Slow instance
 

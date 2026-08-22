@@ -55,6 +55,16 @@ Out of scope: reimplementing the tests, building a dashboard (upstream has
   this repo, printed, or logged.
 - Measure only hosts you operate or have permission to test.
 
+## Delivery
+
+This repo is a [habitat](https://github.com/MWest2020/habitat) target repo:
+implementation runs through the agent chain (architect → builder → reviewer →
+security), dispatched from the orchestrator host. Role definitions live in
+`.claude/agents/`, role skills in `.claude/skills/`, and `scripts/verify.sh`
+is the Stop-gate a builder run must pass (it runs the pytest suite once
+`pyproject.toml` exists). The CLI surface the builder implements is pinned in
+`openspec/changes/add-internetnl-cli/design.md`.
+
 ## Upstream sources
 
 - Code and deployment docs: <https://github.com/internetstandards/Internet.nl>
