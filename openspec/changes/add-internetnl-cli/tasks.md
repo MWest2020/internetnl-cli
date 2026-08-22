@@ -18,7 +18,7 @@ If 0.1 is granted, section 4 becomes optional rather than blocking.
 - [x] 1.2 Config resolution: environment first, then config file, then error —
       endpoint and credentials, no defaults pointing anywhere
 - [x] 1.3 `pytest` with an autouse fixture that repoints `$HOME` at a tmp dir
-- [ ] 1.4 CI that runs the suite and the HOME-isolation check
+- [x] 1.4 CI that runs the suite and the HOME-isolation check
 
 ## 2. Client
 
