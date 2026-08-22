@@ -104,8 +104,10 @@ Internetstandaarden.
 #### Scenario: Results are passthrough
 
 - WHEN results are retrieved
-- THEN the domains object is byte-for-byte the upstream reply's, and the
-  response carries a header naming the facade instance
+- THEN the domains object is structurally identical to the upstream reply's
+  (equal under canonical JSON serialisation — no key added, removed,
+  reordered or rewritten), and the response carries a header naming the
+  facade instance
 
 ### Requirement: Credential lifecycle
 

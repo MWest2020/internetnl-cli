@@ -52,7 +52,9 @@ for the internal hop).
 - `GET /requests/{id}` — tenant check; upstream status; passthrough with id
   substituted.
 - `GET /requests/{id}/results` — tenant check; passthrough, `domains`
-  byte-identical; id substituted in the `request` object.
+  structurally unmodified (equal under canonical JSON — the reply passes a
+  JSON parse/serialise, so "byte-identical" is pinned as: no key added,
+  removed or rewritten); id substituted in the `request` object.
 - `GET /metadata/report` — passthrough, cached `NETNL_METADATA_TTL` seconds.
 - Every reply (success and error) carries `X-Netnl-Instance` plus a
   `X-Netnl-Notice` header stating independence from internet.nl.
@@ -60,9 +62,12 @@ for the internal hop).
   (`{"api_version", "error": {"label", "msg"}}`), labels
   `not-implemented` (501), `unknown-request` (404), `bad-request` (400),
   `rate-limited` (429), `unauthorised` (401).
-- Errors from upstream pass through with their status; upstream transport
-  failure → 502 with label `upstream-unreachable`, naming the upstream host
-  only — never the credential.
+- Errors from upstream pass through with their status, **except** upstream
+  401/403: those are the operator's problem, not the tenant's, and map to
+  502 `upstream-error` so a tenant never mistrusts their own facade
+  credential. Upstream transport failure → 502 with label
+  `upstream-unreachable`, naming the upstream host only — never the
+  credential.
 
 ## Tenancy and identity
 
