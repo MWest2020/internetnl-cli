@@ -37,8 +37,8 @@ If 0.1 is granted, section 4 becomes optional rather than blocking.
 - [x] 3.1 Table renderer: one row per host, plain text, no colour
 - [x] 3.2 `--json`: one document on stdout, progress on stderr
 - [x] 3.3 Endpoint host, run timestamp and API version on every result
-- [ ] 3.4 `--fail-on-scored` with an allowlist file; exit codes documented
-- [ ] 3.5 Unknown or missing subtest renders as unknown, never as passing —
+- [x] 3.4 `--fail-on-scored` with an allowlist file; exit codes documented
+- [x] 3.5 Unknown or missing subtest renders as unknown, never as passing —
       with a test that feeds a response with a subtest removed
 
 ## 4. Self-hosted instance
