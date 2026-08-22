@@ -1,1 +1,1 @@
-"""internetnl-cli: a thin CLI for the Internet.nl batch API v2."""
+"""internetnl-cli: a thin CLI for a batch-testing API v2 instance."""

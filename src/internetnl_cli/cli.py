@@ -19,6 +19,7 @@ import argparse
 import sys
 from typing import IO
 
+from internetnl_cli import config as config_module
 from internetnl_cli.errors import InternetnlError
 
 
@@ -53,15 +54,15 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_submit(args: argparse.Namespace, *, opener, sleep, stdout: IO[str], stderr: IO[str]) -> int:
+def _run_submit(args: argparse.Namespace, *, cfg, opener, sleep, stdout: IO[str], stderr: IO[str]) -> int:
     raise NotImplementedError
 
 
-def _run_poll(args: argparse.Namespace, *, opener, sleep, stdout: IO[str], stderr: IO[str]) -> int:
+def _run_poll(args: argparse.Namespace, *, cfg, opener, sleep, stdout: IO[str], stderr: IO[str]) -> int:
     raise NotImplementedError
 
 
-def _run_results(args: argparse.Namespace, *, opener, sleep, stdout: IO[str], stderr: IO[str]) -> int:
+def _run_results(args: argparse.Namespace, *, cfg, opener, sleep, stdout: IO[str], stderr: IO[str]) -> int:
     raise NotImplementedError
 
 
@@ -88,7 +89,8 @@ def main(
 
     handler = _DISPATCH[args.command]
     try:
-        return handler(args, opener=opener, sleep=sleep, stdout=stdout, stderr=stderr)
+        cfg = config_module.resolve()
+        return handler(args, cfg=cfg, opener=opener, sleep=sleep, stdout=stdout, stderr=stderr)
     except InternetnlError as exc:
         stderr.write(f"error: {exc}\n")
         return exc.exit_code
