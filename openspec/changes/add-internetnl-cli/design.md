@@ -131,6 +131,29 @@ retrieval time, UTC ISO 8601), API version as reported by the server (else
 "checks": {"failed": [], "accepted": [], "unknown": []}}` where `domains` is
 the API response passed through unmodified.
 
+Rendering and robustness hardening (review round 2, all severities minor):
+
+- The control-character filter covers **everything written to a terminal**:
+  every table cell including the SCORE column, and every error/progress line
+  on stderr (the `error: …` path included). The filter also strips C1
+  controls (U+0080–U+009F) and bidi overrides (U+202A–U+202E, U+2066–U+2069),
+  not just C0 and DEL.
+- A 200 results reply whose `domains` block is not an object, or whose
+  domain/test entries are not objects, is an `ApiError` (exit 2) — the same
+  fail-closed rule as the `request` object, one layer down.
+- A domain status outside the upstream enum (`ok|error`) is rendered
+  literally (sanitized) in the STATUS column and contributes no per-test
+  entries — display and gate can no longer diverge; it is never shown as
+  `ok`.
+- When the metadata reply parses but yields no usable test list (missing
+  `report`/`hierarchy`/`data`), the same stderr degradation warning fires as
+  for a failed call — degradation is never silent.
+- `not_tested` gets its own count column in the table (between ERROR and
+  UNKNOWN), so a test that did not run is visible in plain-text mode too.
+- CI pins every third-party action to a full commit SHA:
+  `actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0`
+  alongside the setup-uv pin.
+
 Rendering hardening (review round 1): every cell the table renderer emits —
 host names, test names, statuses, verdict-derived text — passes through a
 control-character filter (anything below U+0020, plus U+007F, becomes `?`),
