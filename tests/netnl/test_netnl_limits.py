@@ -259,15 +259,30 @@ def test_oversized_request_body_is_400_without_touching_upstream(settings_env, t
         "2130706433",
         "0300.0250.0.1",
         "0x7f.0.0.1",
+        "foo.localhost",
+        "app.localhost",
+        "Foo.LOCALHOST",
+        "something.local",
+        "a.localdomain",
+        "x.lan",
+        "foo.internal",
+        "instance.internal",
+        "metadata.google.internal",
+        "metadata",
+        "db.corp",
+        "server.home",
+        "foo.localhost.",
     ],
 )
 def test_internal_or_ip_literal_target_is_400_without_touching_upstream(
     settings_env, tmp_path, domain
 ):
-    """Round-2 fix (security-MEDIUM, anti-SSRF, pinned): the facade must
-    refuse IP-address literals (every notation) and single-label names —
-    see design.md, "No internal targets (anti-SSRF)" and the spec scenario
-    "Internal targets are refused"."""
+    """Round-2/3 fix (security-MEDIUM, anti-SSRF, pinned): the facade must
+    refuse IP-address literals (every notation), single-label names, names
+    under a reserved/internal-use suffix and well-known cloud-metadata
+    hostnames — see design.md, "No internal targets (anti-SSRF)" and the
+    spec scenario "Internal targets are refused". A trailing dot must not
+    be usable to bypass the suffix check."""
     from netnl.api import create_app
     from starlette.testclient import TestClient
     from conftest import add_test_credential, basic_auth_header

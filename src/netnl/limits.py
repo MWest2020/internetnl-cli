@@ -35,6 +35,23 @@ _HOSTNAME_RE = re.compile(rf"^{_LABEL}(?:\.{_LABEL})*$")
 # not a hostname" (security-MEDIUM, design.md "No internal targets").
 _NUMERIC_LABEL_RE = re.compile(r"^(?:[0-9]+|0[xX][0-9a-fA-F]+)$")
 
+# Reserved / internal-use suffixes (design.md, "No internal targets
+# (anti-SSRF)"): any name whose last label is one of these is a
+# convention-internal name, never a public FQDN — matched case-insensitively
+# per label. `localhost` itself is already caught by the single-label check
+# above; this catches multi-label names *under* these suffixes
+# (`foo.localhost`, `db.corp`, `x.lan`, `a.localdomain`, ...).
+_RESERVED_SUFFIXES = frozenset(
+    {"localhost", "local", "internal", "intranet", "corp", "home", "lan", "localdomain"}
+)
+
+# Well-known cloud-metadata hostnames, matched case-insensitively as the
+# full (normalised) domain. Names ending in `.internal` are already caught
+# by `_RESERVED_SUFFIXES` above; this covers the bare `metadata` form (a
+# single label, also already caught) and the fully-qualified GCP name,
+# listed explicitly per design.md.
+_METADATA_HOSTNAMES = frozenset({"metadata", "metadata.google.internal"})
+
 
 def check_size(domains: list[str], settings: Settings) -> None:
     if len(domains) > settings.max_domains:
@@ -71,7 +88,17 @@ def _is_internal_target(domain: str) -> bool:
       parse on its own (`2130706433` has no dot so is already caught as
       single-label; `0300.0250.0.1`, `0x7f.0.0.1`, the short form `127.1`)
       — caught by the "TLD is all-digits/hex" check, since no real public
-      TLD is.
+      TLD is;
+    - names under a reserved or internal-use suffix (`.localhost`, `.local`,
+      `.internal`, `.intranet`, `.corp`, `.home`, `.lan`, `.localdomain`),
+      matched case-insensitively on the last label — a *named* internal
+      target is just as much a pivot into the internal network as a literal
+      address (round-3 fix, security re-check);
+    - the well-known cloud-metadata hostnames (`metadata`,
+      `metadata.google.internal`), matched case-insensitively.
+
+    A trailing dot (`foo.localhost.`) is stripped before the suffix/label
+    checks so it cannot be used to slip past them.
 
     DNS rebinding (a name that *resolves* to an internal address at request
     time) is explicitly out of scope: this facade never resolves the
@@ -85,8 +112,14 @@ def _is_internal_target(domain: str) -> bool:
     else:
         return True
 
-    labels = domain.split(".")
+    normalised = domain[:-1] if domain.endswith(".") else domain
+    if normalised.lower() in _METADATA_HOSTNAMES:
+        return True
+
+    labels = normalised.split(".")
     if len(labels) < 2:
+        return True
+    if labels[-1].lower() in _RESERVED_SUFFIXES:
         return True
     return bool(_NUMERIC_LABEL_RE.fullmatch(labels[-1]))
 
