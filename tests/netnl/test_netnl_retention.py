@@ -12,7 +12,7 @@ from netnl import retention, store
 
 
 def test_prune_removes_expired_requests_and_api_answers_404(
-    client, app, fake_opener, tenant, settings
+    client, app, fake_opener, tenant, settings, conn
 ):
     queue_json(fake_opener, REGISTER_REPLY)
     resp = client.post(
@@ -20,7 +20,6 @@ def test_prune_removes_expired_requests_and_api_answers_404(
     )
     facade_id = resp.json()["request"]["request_id"]
 
-    conn = app.state.conn
     old = store.utcnow_iso(lambda: datetime(2000, 1, 1, tzinfo=timezone.utc))
     conn.execute("UPDATE requests SET submitted_at = ? WHERE facade_id = ?", (old, facade_id))
 
@@ -33,8 +32,7 @@ def test_prune_removes_expired_requests_and_api_answers_404(
     assert lookup.json()["error"]["label"] == "unknown-request"
 
 
-def test_prune_keeps_recent_audit_and_removes_old(app, settings):
-    conn = app.state.conn
+def test_prune_keeps_recent_audit_and_removes_old(app, settings, conn):
     now = datetime.now(timezone.utc)
     recent = store.utcnow_iso(lambda: now - timedelta(days=1))
     old = store.utcnow_iso(lambda: now - timedelta(days=settings.audit_retention_days + 1))
@@ -48,16 +46,14 @@ def test_prune_keeps_recent_audit_and_removes_old(app, settings):
     assert old not in ats
 
 
-def test_prune_writes_its_own_audit_record(app, settings):
-    conn = app.state.conn
+def test_prune_writes_its_own_audit_record(app, settings, conn):
     counts = retention.prune(conn, settings, datetime.now(timezone.utc))
     row = conn.execute("SELECT * FROM audit WHERE event = 'prune'").fetchone()
     assert row is not None
     assert row["domain_count"] == counts["requests_deleted"] + counts["audit_deleted"]
 
 
-def test_manual_delete_on_audit_still_fails_after_a_successful_prune(app, settings):
-    conn = app.state.conn
+def test_manual_delete_on_audit_still_fails_after_a_successful_prune(app, settings, conn):
     retention.prune(conn, settings, datetime.now(timezone.utc))
     with pytest.raises(sqlite3.IntegrityError, match="audit is append-only"):
         conn.execute("DELETE FROM audit")
@@ -81,10 +77,9 @@ class _GuardedConnection:
         return getattr(self._real, name)
 
 
-def test_trigger_restored_after_prune(app, settings):
+def test_trigger_restored_after_prune(app, settings, conn):
     """A failure between DROP TRIGGER and its recreation must not leave the
     append-only guard missing."""
-    conn = app.state.conn
     state = {"raised": False}
 
     def guard(sql):

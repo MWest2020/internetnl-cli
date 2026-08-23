@@ -86,16 +86,35 @@ def basic_auth_header(username: str, password: str) -> dict:
 def add_test_credential(app, username: str, password: str) -> None:
     """Insert a tenant credential straight into the store — bypasses
     `netnl-admin` (built in B6) so B4/B5 tests can authenticate.
+
+    Round-1 fix (B1): there is no shared `app.state.conn` any more — every
+    request opens and closes its own connection (`store.get_conn`). Test
+    setup that needs to touch the database does the same: open its own
+    short-lived connection to the same file.
     """
-    conn = app.state.conn
-    salt = auth.new_salt()
-    store.add_credential(
-        conn,
-        username=username,
-        password_hash=auth.hash_password(password, salt),
-        salt=salt.hex(),
-        created_at=store.utcnow_iso(app.state.now),
-    )
+    conn = store.connect(app.state.settings.db)
+    try:
+        salt = auth.new_salt()
+        store.add_credential(
+            conn,
+            username=username,
+            password_hash=auth.hash_password(password, salt),
+            salt=salt.hex(),
+            created_at=store.utcnow_iso(app.state.now),
+        )
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def conn(app):
+    """A connection for tests to inspect/mutate the facade's database
+    directly — distinct from (and closed independently of) any connection a
+    request handler opens via `store.get_conn` (round-1 fix, B1).
+    """
+    c = store.connect(app.state.settings.db)
+    yield c
+    c.close()
 
 
 @pytest.fixture

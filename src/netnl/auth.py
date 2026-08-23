@@ -14,7 +14,9 @@ import hashlib
 import hmac
 import secrets
 
-from fastapi import Request
+import sqlite3
+
+from fastapi import Depends, Request
 
 from netnl import store
 from netnl.errors import NetnlHTTPError
@@ -58,7 +60,7 @@ def _parse_basic_auth(header: str | None) -> tuple[str, str] | None:
     return username, password
 
 
-def authenticate(request: Request):
+def authenticate(request: Request, conn: sqlite3.Connection = Depends(store.get_conn)):
     """FastAPI dependency: validate `Authorization: Basic`, return the
     `credentials` row on success.
 
@@ -66,8 +68,12 @@ def authenticate(request: Request):
     non-v2-shaped error. Every failure path raises the same
     `NetnlHTTPError(401, "unauthorised", ...)`, whose handler adds the
     `WWW-Authenticate` header.
+
+    `conn` comes from `store.get_conn`, the per-request connection (round-1
+    fix B1) — never a connection shared across requests or threads. Route
+    handlers that also declare `Depends(store.get_conn)` get the very same
+    connection back (FastAPI caches dependencies per request).
     """
-    conn = request.app.state.conn
     parsed = _parse_basic_auth(request.headers.get("authorization"))
     if parsed is None:
         hash_password("", _DUMMY_SALT)  # keep "no header" as slow as a real check

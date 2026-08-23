@@ -143,6 +143,109 @@ def test_max_concurrent_blocks_then_succeeds_after_refresh_marks_done(settings_e
     assert third.status_code == 200
 
 
+def test_domain_exceeding_max_length_is_400_without_touching_upstream(settings_env, tmp_path):
+    """Round-1 fix (M6)."""
+    from netnl.api import create_app
+    from starlette.testclient import TestClient
+    from conftest import add_test_credential, basic_auth_header
+    from fakes import FakeOpener
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_MAX_DOMAIN_LENGTH"] = "10"
+    env["NETNL_DB"] = str(tmp_path / "domain-length.sqlite3")
+    settings = load(env)
+    fake_opener = FakeOpener()
+    app = create_app(settings, opener=fake_opener)
+    add_test_credential(app, "tenant", "secret")
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = basic_auth_header("tenant", "secret")
+
+    resp = _submit(client, fake_opener, headers, ["a" * 20 + ".example"], queue_reply=False)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["label"] == "bad-request"
+    assert len(fake_opener.calls) == 0
+
+
+def test_domain_with_whitespace_is_400_without_touching_upstream(settings_env, tmp_path):
+    """Round-1 fix (M6): whitespace could otherwise smuggle a URL/path
+    through to the private upstream instance."""
+    from netnl.api import create_app
+    from starlette.testclient import TestClient
+    from conftest import add_test_credential, basic_auth_header
+    from fakes import FakeOpener
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_DB"] = str(tmp_path / "domain-whitespace.sqlite3")
+    settings = load(env)
+    fake_opener = FakeOpener()
+    app = create_app(settings, opener=fake_opener)
+    add_test_credential(app, "tenant", "secret")
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = basic_auth_header("tenant", "secret")
+
+    resp = _submit(client, fake_opener, headers, ["example.nl and-more"], queue_reply=False)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["label"] == "bad-request"
+    assert len(fake_opener.calls) == 0
+
+
+def test_domain_with_crlf_is_400_without_touching_upstream(settings_env, tmp_path):
+    """Round-1 fix (M6): control characters (CR/LF header/log injection)
+    must be rejected before anything is written or forwarded."""
+    from netnl.api import create_app
+    from starlette.testclient import TestClient
+    from conftest import add_test_credential, basic_auth_header
+    from fakes import FakeOpener
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_DB"] = str(tmp_path / "domain-crlf.sqlite3")
+    settings = load(env)
+    fake_opener = FakeOpener()
+    app = create_app(settings, opener=fake_opener)
+    add_test_credential(app, "tenant", "secret")
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = basic_auth_header("tenant", "secret")
+
+    resp = _submit(client, fake_opener, headers, ["example.nl\r\nX-Injected: 1"], queue_reply=False)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["label"] == "bad-request"
+    assert len(fake_opener.calls) == 0
+
+
+def test_oversized_request_body_is_400_without_touching_upstream(settings_env, tmp_path):
+    """Round-1 fix (M6): a total request-body size cap, enforced before the
+    body is parsed."""
+    from netnl.api import create_app
+    from starlette.testclient import TestClient
+    from conftest import add_test_credential, basic_auth_header
+    from fakes import FakeOpener
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_MAX_BODY_BYTES"] = "1024"
+    env["NETNL_DB"] = str(tmp_path / "body-size.sqlite3")
+    settings = load(env)
+    fake_opener = FakeOpener()
+    app = create_app(settings, opener=fake_opener)
+    add_test_credential(app, "tenant", "secret")
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = basic_auth_header("tenant", "secret")
+
+    huge_name = "x" * 5000
+    resp = client.post(
+        "/requests",
+        json={"type": "web", "domains": ["example.nl"], "name": huge_name},
+        headers=headers,
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["label"] == "bad-request"
+    assert len(fake_opener.calls) == 0
+    assert resp.headers["X-Netnl-Instance"] == settings.instance
+
+
 def test_provenance_headers_present_on_limit_errors(settings_env, tmp_path):
     from netnl.api import create_app
     from starlette.testclient import TestClient

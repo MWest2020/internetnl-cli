@@ -43,10 +43,9 @@ def test_foreign_id_is_indistinguishable_from_unknown(client, app, fake_opener, 
     assert own.status_code == 200
 
 
-def test_revoked_credential_is_rejected_immediately(client, app, fake_opener, tenant):
+def test_revoked_credential_is_rejected_immediately(client, app, fake_opener, tenant, conn):
     facade_id = _submit_as(client, fake_opener, tenant["headers"])
 
-    conn = app.state.conn
     revoked_at = store.utcnow_iso(lambda: datetime.now(timezone.utc))
     assert store.revoke_credential(conn, tenant["username"], revoked_at) is True
 

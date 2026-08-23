@@ -8,12 +8,21 @@ an injectable `now` for tests.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sqlite3
 from datetime import datetime, timezone
 from typing import Callable
 
+from fastapi import Request
+
 _TERMINAL_STATUSES = {"done", "error", "cancelled"}
+
+# A row reserved inside the atomic reserve-then-submit transaction (see
+# `reserve_submission` in `limits.py`) before upstream has been contacted.
+# Not a terminal status: it counts toward concurrency and is retrievable
+# only by its owner (design.md, "Concurrency and storage").
+RESERVING = "reserving"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS credentials (
@@ -28,7 +37,7 @@ CREATE TABLE IF NOT EXISTS credentials (
 CREATE TABLE IF NOT EXISTS requests (
     id INTEGER PRIMARY KEY,
     facade_id TEXT NOT NULL UNIQUE,
-    upstream_id TEXT NOT NULL,
+    upstream_id TEXT,
     credential_id INTEGER NOT NULL REFERENCES credentials(id),
     request_type TEXT NOT NULL,
     domain_count INTEGER NOT NULL,
@@ -74,17 +83,44 @@ def utcnow_iso(now: Callable[[], datetime] | None = None) -> str:
 
 
 def connect(path: str | pathlib.Path) -> sqlite3.Connection:
+    """Open one connection to the database file.
+
+    Round-1 fix (B1): callers MUST open one of these per request and close
+    it when done (see `get_conn` below) — never share a connection across
+    threads. `check_same_thread` is left at its safe default (`True`): a
+    shared `check_same_thread=False` connection let CPython's per-connection
+    statement cache and cursor state interleave rows between concurrent
+    requests, leaking one tenant's row (and `upstream_id`) to another. WAL
+    mode makes many short-lived connections cheap.
+    """
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # `check_same_thread=False`: FastAPI runs sync route handlers (and their
-    # dependencies) in a threadpool, a different thread per call. Safe here
-    # because the underlying SQLite build is serialized
-    # (`sqlite3.threadsafety == 3`), so it does its own internal locking.
-    conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
+    # Round-1 fix (m8): create the file mode 0600 (owner-only) before any
+    # data is written — it holds password hashes, the id-map and the audit
+    # trail. `os.open`'s mode only takes effect when the file is actually
+    # created; opening an existing file leaves its mode untouched.
+    fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
+    os.close(fd)
+    conn = sqlite3.connect(str(path), isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def get_conn(request: Request):
+    """FastAPI dependency: one connection per request, closed when the
+    request is done. Multiple `Depends(get_conn)` in the same request
+    (directly, or via `auth.authenticate`) resolve to the very same
+    connection — FastAPI caches dependencies per request — so this is still
+    exactly one connection, never a connection shared across requests or
+    threads (design.md, "Concurrency and storage").
+    """
+    conn = connect(request.app.state.settings.db)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def migrate(conn: sqlite3.Connection) -> None:
@@ -143,6 +179,39 @@ def insert_request(
             submitted_at,
             last_status,
         ),
+    )
+
+
+def insert_reserving_request(
+    conn: sqlite3.Connection,
+    *,
+    facade_id: str,
+    credential_id: int,
+    request_type: str,
+    domain_count: int,
+    submitted_at: str,
+) -> None:
+    """Round-1 fix (B2): the "reserve" half of reserve-then-submit — issued
+    inside the caller's `BEGIN IMMEDIATE` transaction, before upstream is
+    ever contacted. `upstream_id` is NULL until `finalize_reservation`.
+    """
+    conn.execute(
+        "INSERT INTO requests "
+        "(facade_id, upstream_id, credential_id, request_type, domain_count, "
+        " submitted_at, last_status, finished_at) "
+        "VALUES (?, NULL, ?, ?, ?, ?, ?, NULL)",
+        (facade_id, credential_id, request_type, domain_count, submitted_at, RESERVING),
+    )
+
+
+def finalize_reservation(
+    conn: sqlite3.Connection, facade_id: str, *, upstream_id: str, status: str
+) -> None:
+    """The "submit" half: called after upstream accepted the request,
+    outside the reservation transaction/lock."""
+    conn.execute(
+        "UPDATE requests SET upstream_id = ?, last_status = ? WHERE facade_id = ?",
+        (upstream_id, status, facade_id),
     )
 
 

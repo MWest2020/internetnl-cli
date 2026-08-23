@@ -10,7 +10,7 @@ from conftest import queue_json
 _FACADE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 
 
-def test_submit_returns_v2_shaped_reply_with_facade_id(client, app, fake_opener, tenant):
+def test_submit_returns_v2_shaped_reply_with_facade_id(client, app, fake_opener, tenant, conn):
     from fakes import REGISTER_REPLY
 
     queue_json(fake_opener, REGISTER_REPLY)
@@ -29,7 +29,7 @@ def test_submit_returns_v2_shaped_reply_with_facade_id(client, app, fake_opener,
     assert body["request"]["name"] == REGISTER_REPLY["request"]["name"]
     assert body["request"]["status"] == REGISTER_REPLY["request"]["status"]
 
-    row = app.state.conn.execute(
+    row = conn.execute(
         "SELECT upstream_id FROM requests WHERE facade_id = ?", (facade_id,)
     ).fetchone()
     assert row["upstream_id"] == REQUEST_ID

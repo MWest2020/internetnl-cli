@@ -32,6 +32,11 @@ _NUMERIC_DEFAULTS = {
     "NETNL_AUDIT_RETENTION_DAYS": ("audit_retention_days", 90),
     "NETNL_METADATA_TTL": ("metadata_ttl", 3600),
     "NETNL_TIMEOUT": ("timeout", 30),
+    # Round-1 fix (M6): per-domain length cap and a total request-body size
+    # cap, so a tenant cannot push arbitrarily large or malformed strings
+    # through to the private instance. 253 is the DNS hostname length limit.
+    "NETNL_MAX_DOMAIN_LENGTH": ("max_domain_length", 253),
+    "NETNL_MAX_BODY_BYTES": ("max_body_bytes", 1_048_576),
 }
 
 
@@ -49,6 +54,8 @@ class Settings:
     audit_retention_days: int
     metadata_ttl: int
     timeout: int
+    max_domain_length: int
+    max_body_bytes: int
     allow_http: bool
 
 

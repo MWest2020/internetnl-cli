@@ -26,7 +26,7 @@ from internetnl_cli.errors import ApiError, TransportError
 
 from netnl import auth, limits, store, upstream
 from netnl.errors import NetnlHTTPError
-from netnl.replies import NOTICE, error_body
+from netnl.replies import API_VERSION, NOTICE, error_body
 from netnl.settings import Settings
 
 
@@ -66,6 +66,18 @@ def _status_tracking_opener(opener: Opener) -> Opener:
     return _wrapped
 
 
+# Round-1 fix (M5): known upstream statuses keep their existing label and
+# message. Any other non-2xx status is passed through with its *real*
+# status — not forced to 502 — under the generic "upstream-error" label, so
+# e.g. an upstream 503 reaches the tenant as 503, not a misleading 502.
+_KNOWN_UPSTREAM_LABELS = {
+    400: ("bad-request", "the upstream instance at {host} rejected the request"),
+    404: ("unknown-request", "the upstream instance at {host} does not know this request"),
+    429: ("rate-limited", "the upstream instance at {host} is rate-limiting the facade"),
+    500: ("server-error", "the upstream instance at {host} reported an internal error"),
+}
+
+
 def _translate_api_error(exc: ApiError, status: int | None, host: str) -> NetnlHTTPError:
     """One helper for every upstream call: `ApiError`'s status is not
     reliably recoverable from the message alone, so the opener wrapper
@@ -74,26 +86,39 @@ def _translate_api_error(exc: ApiError, status: int | None, host: str) -> NetnlH
     Upstream 401/403 are the operator's problem, not the tenant's — they
     map to 502 `upstream-error` so a tenant never mistrusts its own facade
     credential (design.md, "Upstream credential never leaves the server").
+    A `status` of `None`, or a 2xx status that still produced an `ApiError`
+    (a malformed 200 reply), means there is no real upstream status to pass
+    through — that is also a 502 `upstream-error`.
     """
     if status in (401, 403):
         return NetnlHTTPError(
             502, "upstream-error", f"the upstream instance at {host} rejected the facade credential"
         )
-    if status == 400:
-        return NetnlHTTPError(400, "bad-request", f"the upstream instance at {host} rejected the request")
-    if status == 404:
-        return NetnlHTTPError(
-            404, "unknown-request", f"the upstream instance at {host} does not know this request"
-        )
-    if status == 429:
-        return NetnlHTTPError(
-            429, "rate-limited", f"the upstream instance at {host} is rate-limiting the facade"
-        )
-    if status == 500:
-        return NetnlHTTPError(
-            500, "server-error", f"the upstream instance at {host} reported an internal error"
-        )
-    return NetnlHTTPError(502, "upstream-error", f"unexpected reply from the upstream instance at {host}")
+    if status is None or 200 <= status < 300:
+        return NetnlHTTPError(502, "upstream-error", f"unexpected reply from the upstream instance at {host}")
+    label, template = _KNOWN_UPSTREAM_LABELS.get(
+        status, ("upstream-error", "the upstream instance at {host} reported HTTP " + str(status))
+    )
+    return NetnlHTTPError(status, label, template.format(host=host))
+
+
+def _reserving_reply(row: sqlite3.Row) -> dict:
+    """The reply body for a row still `reserving` — upstream was never
+    contacted (crash between the reservation commit and finalize; see
+    design.md, "Concurrency and storage"). Owner-only, `request_id` is the
+    facade id since no upstream id exists yet.
+    """
+    return {
+        "api_version": API_VERSION,
+        "request": {
+            "request_id": row["facade_id"],
+            "name": None,
+            "request_type": row["request_type"],
+            "status": store.RESERVING,
+            "submit_date": row["submitted_at"],
+            "finished_date": None,
+        },
+    }
 
 
 def call_upstream(client, fn: Callable, *args, **kwargs):
@@ -120,16 +145,45 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     raw_opener = opener or urllib_opener
     client = upstream.build_client(settings, opener=_status_tracking_opener(raw_opener))
 
-    conn = store.connect(settings.db)
-    store.migrate(conn)
+    # Round-1 fix (B1): schema migration uses its own short-lived
+    # connection, closed immediately — it is not kept around as a shared
+    # connection. Every request opens (and closes) its own connection via
+    # `store.get_conn`; see that dependency and design.md, "Concurrency and
+    # storage".
+    migration_conn = store.connect(settings.db)
+    try:
+        store.migrate(migration_conn)
+    finally:
+        migration_conn.close()
 
     clock = now or (lambda: datetime.now(timezone.utc))
 
     app.state.settings = settings
     app.state.client = client
-    app.state.conn = conn
     app.state.now = clock
     app.state.metadata_cache = None  # {"payload": dict, "at": datetime} | None
+
+    @app.middleware("http")
+    async def enforce_body_size(request: Request, call_next):
+        # Round-1 fix (M6): a total request-body size cap, checked from
+        # `Content-Length` before the body is ever read or parsed, so a
+        # megabyte-scale payload cannot reach pydantic's JSON parser.
+        raw_length = request.headers.get("content-length")
+        if raw_length is not None:
+            try:
+                length = int(raw_length)
+            except ValueError:
+                length = None
+            if length is not None and length > settings.max_body_bytes:
+                return JSONResponse(
+                    error_body(
+                        "bad-request",
+                        f"request body of {length} bytes exceeds the "
+                        f"{settings.max_body_bytes}-byte limit",
+                    ),
+                    status_code=400,
+                )
+        return await call_next(request)
 
     @app.middleware("http")
     async def provenance_headers(request: Request, call_next):
@@ -164,10 +218,23 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
 
     @app.exception_handler(Exception)
     async def handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
-        return JSONResponse(error_body("server-error", "an unexpected error occurred"), status_code=500)
+        # Round-1 fix (M4): this handler is Starlette's `ServerErrorMiddleware`
+        # handler (registered for the `Exception` class), which sits *outside*
+        # the `@app.middleware("http")` stack above — `provenance_headers`
+        # never runs on this path, so the headers are added here directly,
+        # ensuring every error path carries them.
+        return JSONResponse(
+            error_body("server-error", "an unexpected error occurred"),
+            status_code=500,
+            headers={"X-Netnl-Instance": settings.instance, "X-Netnl-Notice": NOTICE},
+        )
 
     @app.get("/metadata/report")
-    def get_metadata_report() -> dict:
+    def get_metadata_report(credential=Depends(auth.authenticate)) -> dict:
+        # Round-1 fix (B3): authenticated like every other route in the v2
+        # subset — `auth.authenticate` runs (and can reject with 401) before
+        # this body executes, so an anonymous caller never reaches the cache
+        # or upstream.
         cache = app.state.metadata_cache
         current = app.state.now()
         if cache is not None:
@@ -179,53 +246,64 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
         return payload
 
     @app.post("/requests")
-    def submit(body: SubmitRequest, credential=Depends(auth.authenticate)) -> dict:
-        conn = app.state.conn
+    def submit(
+        body: SubmitRequest,
+        credential=Depends(auth.authenticate),
+        conn=Depends(store.get_conn),
+    ) -> dict:
         current = app.state.now()
 
-        # Size, then rate, then concurrency — every check runs before any
-        # upstream call; a size/rate rejection never touches upstream.
+        # Size and domain-shape checks run before any database or upstream
+        # work — a rejection here never touches either (M6).
         limits.check_size(body.domains, settings)
-        limits.check_rate(conn, credential["username"], settings, current)
-        limits.check_concurrency(conn, credential["id"], client, settings)
+        limits.check_domains(body.domains, settings)
 
-        reply = call_upstream(client, client.submit, body.domains, body.type, body.name)
+        # Refresh stale non-terminal rows before reserving: kept outside the
+        # write-lock transaction below (design.md, "Limits").
+        limits.refresh_stale_non_terminal(conn, credential["id"], client, settings)
 
         facade_id = secrets.token_hex(16)
-        upstream_request = reply["request"]
-        upstream_id = upstream_request["request_id"]
-        status = upstream_request["status"]
         submitted_at = store.utcnow_iso(lambda: current)
 
-        # Both writes happen before the reply is sent, per design.md's
-        # "Submission is audited" scenario.
-        store.insert_request(
+        # Round-1 fix (B2/M7): reserve rate + concurrency + the audit row
+        # atomically, inside one `BEGIN IMMEDIATE` transaction, before
+        # upstream is ever contacted — see `limits.reserve_submission`.
+        limits.reserve_submission(
             conn,
+            credential=credential,
+            settings=settings,
+            now=current,
             facade_id=facade_id,
-            upstream_id=upstream_id,
-            credential_id=credential["id"],
             request_type=body.type,
             domain_count=len(body.domains),
             submitted_at=submitted_at,
-            last_status=status,
         )
-        store.record_audit(
-            conn,
-            at=submitted_at,
-            credential=credential["username"],
-            event="submit",
-            facade_id=facade_id,
-            domain_count=len(body.domains),
-        )
+
+        # Only after the reservation committed — and outside the write
+        # lock — is upstream contacted. If this raises, the reserved row
+        # stays `reserving` (counts toward concurrency until pruned; see
+        # design.md) rather than being left half-written.
+        reply = call_upstream(client, client.submit, body.domains, body.type, body.name)
+
+        upstream_request = reply["request"]
+        upstream_id = upstream_request["request_id"]
+        status = upstream_request["status"]
+        store.finalize_reservation(conn, facade_id, upstream_id=upstream_id, status=status)
 
         out = copy.deepcopy(reply)
         out["request"]["request_id"] = facade_id
         return out
 
     @app.get("/requests/{request_id}")
-    def get_status(request_id: str, credential=Depends(auth.authenticate)) -> dict:
-        conn = app.state.conn
+    def get_status(
+        request_id: str, credential=Depends(auth.authenticate), conn=Depends(store.get_conn)
+    ) -> dict:
         row = _owned_request_or_404(conn, request_id, credential)
+        if row["upstream_id"] is None:
+            # Still `reserving` — upstream was never contacted (or a crash
+            # happened between commit and finalize). Owner-only, per
+            # design.md; nothing to ask upstream yet.
+            return _reserving_reply(row)
 
         reply = call_upstream(client, client.status, row["upstream_id"])
         upstream_request = reply["request"]
@@ -238,9 +316,14 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
         return out
 
     @app.get("/requests/{request_id}/results")
-    def get_results(request_id: str, credential=Depends(auth.authenticate)) -> dict:
-        conn = app.state.conn
+    def get_results(
+        request_id: str, credential=Depends(auth.authenticate), conn=Depends(store.get_conn)
+    ) -> dict:
         row = _owned_request_or_404(conn, request_id, credential)
+        if row["upstream_id"] is None:
+            out = _reserving_reply(row)
+            out["domains"] = {}
+            return out
 
         reply = call_upstream(client, client.results, row["upstream_id"])
         upstream_request = reply["request"]
