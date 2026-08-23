@@ -229,6 +229,18 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
             headers={"X-Netnl-Instance": settings.instance, "X-Netnl-Notice": NOTICE},
         )
 
+    @app.get("/health")
+    def get_health() -> dict:
+        # Anonymous by design (no `Depends(auth.authenticate)`, no DB
+        # connection dependency): a K8s liveness/readiness probe must have a
+        # target that needs no credential. It touches neither `client` (the
+        # upstream instance) nor the store, and returns a fixed body — no
+        # `api_version`, upstream host or credential can leak from a route
+        # that does nothing but return a constant (design.md, "Facade image
+        # and liveness"; spec.md, "Authenticated surface"). It is not part
+        # of the v2 measurement subset.
+        return {"status": "ok"}
+
     @app.get("/metadata/report")
     def get_metadata_report(credential=Depends(auth.authenticate)) -> dict:
         # Round-1 fix (B3): authenticated like every other route in the v2
