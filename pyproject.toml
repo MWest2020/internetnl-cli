@@ -7,16 +7,21 @@ readme = "README.md"
 
 [project.scripts]
 internetnl = "internetnl_cli.cli:main"
+netnl-serve = "netnl.server:main"
+netnl-admin = "netnl.admin:main"
+
+[project.optional-dependencies]
+api = ["fastapi>=0.115", "pydantic>=2", "uvicorn>=0.30"]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.27", "internetnl-cli[api]"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/internetnl_cli"]
+packages = ["src/internetnl_cli", "src/netnl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

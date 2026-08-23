@@ -42,6 +42,13 @@ SHALL be facade-issued; upstream ids SHALL never reach a client.
 - THEN it contains the facade-issued id only, never the upstream instance's
   request id
 
+#### Scenario: Isolation holds under concurrent requests
+
+- WHEN many requests from different credentials are served concurrently
+- THEN no request ever receives a row belonging to another credential, and a
+  status or results lookup for a credential's own id returns only that
+  credential's data
+
 ### Requirement: Upstream credential never leaves the server
 
 The facade SHALL keep its upstream batch credential exclusively in
@@ -73,6 +80,39 @@ appropriate status codes (429 for rate, 400 for size).
 - WHEN a submission exceeds the configured maximum domains per request
 - THEN the facade answers 400 naming the limit, and nothing is submitted
   upstream
+
+#### Scenario: Concurrent submits cannot exceed the limit
+
+- WHEN a credential fires more simultaneous submissions than its rate or
+  concurrency limit allows
+- THEN no more than the limit reach the upstream instance, and every accepted
+  submission has an audit record written before upstream was contacted
+
+#### Scenario: Internal targets are refused
+
+- WHEN a submission contains an IP-address literal, a single-label name, a
+  name under a reserved or internal-use suffix (`.localhost`, `.local`,
+  `.internal`, `.corp`, `.home`, `.lan`, …), or a known cloud-metadata
+  hostname
+- THEN the facade answers 400 and submits nothing upstream, so it cannot be
+  used to probe the internal network by literal address or by a
+  convention-internal name
+
+#### Scenario: A stranded reservation frees its slot
+
+- WHEN a submission reserves a slot but its upstream call never completes
+- THEN after the reserving grace the prune job clears the stale reservation,
+  and the credential's concurrency slot is available again
+
+### Requirement: Authenticated surface
+
+Every route in the v2 subset, `GET /metadata/report` included, SHALL require
+valid HTTP Basic credentials; no route SHALL be anonymous.
+
+#### Scenario: Anonymous metadata request
+
+- WHEN `GET /metadata/report` is called without valid credentials
+- THEN the facade answers 401 and does not contact the upstream instance
 
 ### Requirement: Append-only audit trail
 

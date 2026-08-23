@@ -55,9 +55,15 @@ for the internal hop).
   structurally unmodified (equal under canonical JSON — the reply passes a
   JSON parse/serialise, so "byte-identical" is pinned as: no key added,
   removed or rewritten); id substituted in the `request` object.
-- `GET /metadata/report` — passthrough, cached `NETNL_METADATA_TTL` seconds.
+- `GET /metadata/report` — **authenticated** (HTTP Basic, same as every
+  other route); passthrough, cached `NETNL_METADATA_TTL` seconds. No route
+  in the v2 subset is anonymous.
 - Every reply (success and error) carries `X-Netnl-Instance` plus a
-  `X-Netnl-Notice` header stating independence from internet.nl.
+  `X-Netnl-Notice` header stating independence from internet.nl — including
+  the catch-all 500. Because Starlette's `ServerErrorMiddleware` sits outside
+  the user middleware stack, the provenance headers are added by the 500
+  handler itself (or an outer wrapper), not only by the middleware, so no
+  error path escapes unlabelled.
 - Any other path or method → v2-shaped error body
   (`{"api_version", "error": {"label", "msg"}}`), labels
   `not-implemented` (501), `unknown-request` (404), `bad-request` (400),
@@ -69,15 +75,50 @@ for the internal hop).
   `upstream-unreachable`, naming the upstream host only — never the
   credential.
 
+## Concurrency and storage (review round 1 — the load-bearing fix)
+
+The facade is multi-threaded (FastAPI runs sync handlers in a threadpool) and
+public, so storage must be correct under concurrent requests, not only
+sequentially.
+
+- **One SQLite connection per request, never shared across threads.** A
+  FastAPI dependency opens a connection at request start and closes it at
+  request end; `check_same_thread` stays at its safe default. A shared
+  connection with `check_same_thread=False` is forbidden — CPython's
+  per-connection statement cache and cursor state interleave rows between
+  concurrent threads, which leaked one tenant's row (and `upstream_id`) to
+  another. WAL mode makes many short-lived connections cheap and is the
+  intended pattern.
+- **Limit enforcement is atomic — reserve, then call upstream.** Rate,
+  size and concurrency are check-then-act and must not race. Inside a single
+  `BEGIN IMMEDIATE` transaction the handler: (1) counts submits in the window
+  and non-terminal runs for the credential, (2) rejects with 429 if at or
+  over a limit, (3) otherwise inserts the audit `submit` row **and** a
+  `requests` row in state `reserving` (facade id issued, `upstream_id` still
+  NULL), then commits. The write lock serialises concurrent submits so the
+  counts cannot be read stale. Only **after** the commit does the handler
+  call upstream (outside the lock, so a slow network call never blocks other
+  tenants); it then updates the reserved row with the real `upstream_id` and
+  status. Size is checked before the transaction (no state needed). Result:
+  the audit row exists before upstream is contacted — the rate counter can
+  never be under-reported by an in-flight submit.
+- A reserved row whose upstream submit never completed (crash between commit
+  and update) stays `reserving`; it counts toward concurrency until pruned,
+  and is retrievable only by its owner, showing status `reserving`. `prune`
+  clears stale `reserving` rows older than a short fixed grace.
+
 ## Tenancy and identity
 
 - Table `credentials(id, username UNIQUE, password_hash, created_at,
   revoked_at NULL)`. Hashing: stdlib `hashlib.scrypt` with per-credential
   salt; comparison via `hmac.compare_digest`. Revocation = setting
-  `revoked_at`; enforcement is immediate (checked per request).
-- Table `requests(facade_id UNIQUE, upstream_id, credential_id, request_type,
-  domain_count, submitted_at, last_status, finished_at NULL)`. Upstream ids
-  never leave the server.
+  `revoked_at`; enforcement is immediate (checked per request). The DB file
+  is created with mode `0600` (owner-only) — it holds password hashes, the
+  id-map and the audit trail.
+- Table `requests(facade_id UNIQUE, upstream_id NULL, credential_id,
+  request_type, domain_count, submitted_at, last_status, finished_at NULL)`.
+  `upstream_id` is NULL only while a row is `reserving` (see the atomic-limit
+  flow above). Upstream ids never leave the server.
 - Foreign or unknown facade id → 404 `unknown-request`, indistinguishable
   from nonexistent. Expired (past result retention) → the row is pruned, so
   the same 404.
@@ -88,23 +129,48 @@ for the internal hop).
 
 ## Limits
 
+All three are enforced inside the single `BEGIN IMMEDIATE` reservation
+transaction described under "Concurrency and storage", so parallel submits
+from one credential cannot each read a stale count.
+
+- Size: `len(domains) > NETNL_MAX_DOMAINS` → 400 naming the limit; also a
+  per-domain length cap and a total request-body size cap, so a tenant cannot
+  push arbitrarily large or malformed strings through to the private instance
+  (a domain is length-bounded and must be a plausible hostname token — no
+  whitespace, no control characters).
+- **No internal targets (anti-SSRF).** The facade fronts a scanner that
+  resolves and connects to whatever it is given, so a domain must be a
+  public, multi-label FQDN: reject IP-address literals (v4/v6, and
+  decimal/octal/hex integer forms), single-label names (`localhost`), names
+  under a reserved or internal-use suffix (`.localhost`, `.local`,
+  `.internal`, `.intranet`, `.corp`, `.home`, `.lan`, `.localdomain`), and
+  the well-known cloud-metadata hostnames (`metadata.google.internal` and
+  the like) — all matched case-insensitively per label. Any such target is
+  out of scope for a hostname token — the CLI passes hostnames, not addresses. A rejected
+  target → 400 `bad-request`, nothing submitted upstream. This stops a tenant
+  using the facade as a pivot to probe the internal network (`10.0.0.0/8`,
+  `127.0.0.0/8`, `169.254.169.254`, etc.).
 - Rate: submissions per credential in the past hour, counted from the audit
-  table; at the limit → 429, upstream untouched.
-- Size: `len(domains) > NETNL_MAX_DOMAINS` → 400 naming the limit.
-- Concurrency: non-terminal rows (`last_status` not in done/error/cancelled)
-  for this credential; before rejecting, refresh those rows' status from
-  upstream (bounded by `NETNL_MAX_CONCURRENT`, so cheap) — at the limit →
-  429 with label `rate-limited` and a msg naming concurrency.
+  table inside the transaction; at the limit → 429, upstream untouched.
+- Concurrency: non-terminal rows (`last_status` not in
+  done/error/cancelled, and `reserving` counts as in-progress) for this
+  credential; at the limit → 429 with label `rate-limited` and a msg naming
+  concurrency. Refreshing stale non-terminal rows from upstream is a separate
+  concern kept out of the write transaction.
 
 ## Audit
 
 - Table `audit(id INTEGER PRIMARY KEY, at, credential, event, facade_id,
   domain_count)` — events: `submit`, `user-add`, `user-revoke`, `prune`.
 - Append-only enforced in the schema: `BEFORE UPDATE` and `BEFORE DELETE`
-  triggers that `RAISE(ABORT)`; `prune` removes only `requests` rows and
-  audit rows older than `NETNL_AUDIT_RETENTION_DAYS` via a dedicated path
-  that drops and recreates the triggers inside one transaction — and writes
-  a `prune` audit record stating how many rows went.
+  triggers that `RAISE(ABORT)`; `prune` removes (a) `requests` rows past
+  `NETNL_RESULT_RETENTION_DAYS`, (b) **stale `reserving` rows** older than a
+  short fixed grace (`NETNL_RESERVING_GRACE_SECONDS`, default 300) — a
+  reservation whose upstream submit never completed must not pin a
+  concurrency slot for days — and (c) audit rows older than
+  `NETNL_AUDIT_RETENTION_DAYS`, via a dedicated path that drops and recreates
+  the append-only triggers inside one transaction, and writes a `prune` audit
+  record stating how many rows went.
 - Domain **lists** are not stored anywhere in the facade; only counts.
 
 ## Testing constraints

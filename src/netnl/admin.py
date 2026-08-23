@@ -1,0 +1,123 @@
+"""Operator CLI: `netnl-admin` — credential issuance/revocation and prune.
+
+Exit codes: 0 ok, 1 usage/settings error, 2 argparse's own usage error
+(unchanged convention — see `internetnl_cli.cli`, which lets argparse's
+`SystemExit(2)` propagate rather than catching it).
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from datetime import datetime, timezone
+from typing import IO, Mapping
+
+from netnl import auth, retention, store
+from netnl.errors import SettingsError
+from netnl.settings import load
+
+
+def _build_parser():
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="netnl-admin")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    user = subparsers.add_parser("user", help="manage tenant credentials")
+    user_sub = user.add_subparsers(dest="user_command", required=True)
+
+    add = user_sub.add_parser("add", help="issue a new credential")
+    add.add_argument("name")
+
+    revoke = user_sub.add_parser("revoke", help="revoke a credential")
+    revoke.add_argument("name")
+
+    user_sub.add_parser("list", help="list credentials")
+
+    subparsers.add_parser("prune", help="apply retention windows")
+
+    return parser
+
+
+def _user_add(conn, name: str, now: datetime, stdout: IO[str], stderr: IO[str]) -> int:
+    if store.find_credential(conn, name) is not None:
+        print(f"error: user '{name}' already exists", file=stderr)
+        return 1
+    password = auth.new_password()
+    salt = auth.new_salt()
+    created_at = store.utcnow_iso(lambda: now)
+    store.add_credential(
+        conn,
+        username=name,
+        password_hash=auth.hash_password(password, salt),
+        salt=salt.hex(),
+        created_at=created_at,
+    )
+    store.record_audit(conn, at=created_at, credential=name, event="user-add")
+    # The generated password is shown exactly once, here, and stored nowhere.
+    print(password, file=stdout)
+    return 0
+
+
+def _user_revoke(conn, name: str, now: datetime, stderr: IO[str]) -> int:
+    revoked_at = store.utcnow_iso(lambda: now)
+    if not store.revoke_credential(conn, name, revoked_at):
+        print(f"error: no active user '{name}'", file=stderr)
+        return 1
+    store.record_audit(conn, at=revoked_at, credential=name, event="user-revoke")
+    return 0
+
+
+def _user_list(conn, stdout: IO[str]) -> int:
+    for row in store.list_credentials(conn):
+        state = row["revoked_at"] if row["revoked_at"] is not None else "active"
+        print(f"{row['username']}\t{row['created_at']}\t{state}", file=stdout)
+    return 0
+
+
+def _prune(conn, settings, now: datetime, stdout: IO[str]) -> int:
+    counts = retention.prune(conn, settings, now)
+    print(f"requests pruned: {counts['requests_deleted']}", file=stdout)
+    print(f"audit records pruned: {counts['audit_deleted']}", file=stdout)
+    return 0
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    stdout: IO[str] | None = None,
+    stderr: IO[str] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    stdout = stdout if stdout is not None else sys.stdout
+    stderr = stderr if stderr is not None else sys.stderr
+    env = env if env is not None else os.environ
+
+    parser = _build_parser()
+    args = parser.parse_args(argv)  # argparse's own usage errors: SystemExit(2)
+
+    try:
+        settings = load(env)
+    except SettingsError as exc:
+        print(f"error: {exc}", file=stderr)
+        return 1
+
+    conn = store.connect(settings.db)
+    store.migrate(conn)
+    now = datetime.now(timezone.utc)
+
+    if args.command == "user":
+        if args.user_command == "add":
+            return _user_add(conn, args.name, now, stdout, stderr)
+        if args.user_command == "revoke":
+            return _user_revoke(conn, args.name, now, stderr)
+        if args.user_command == "list":
+            return _user_list(conn, stdout)
+    if args.command == "prune":
+        return _prune(conn, settings, now, stdout)
+
+    return 1  # unreachable: argparse enforces valid subcommands
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

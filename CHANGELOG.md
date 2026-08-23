@@ -8,6 +8,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `netnl`, an independent batch API v2 facade (`src/netnl/`, console
+  scripts `netnl-serve`/`netnl-admin`) fronting a private batch instance:
+  tenant credentials with immediate revocation, per-credential rate/size/
+  concurrency limits, an append-only SQLite audit trail, and a
+  `netnl-admin` CLI for credential issuance and retention. Facade ids never
+  reveal the upstream instance's own ids; every reply carries a provenance
+  header naming the facade as an independent instance, affiliated with
+  neither internet.nl nor Platform Internetstandaarden. The existing
+  `internetnl` CLI works against it unchanged (only its `INTERNETNL_*`
+  variables differ). Hardened through the review chain: one SQLite connection
+  per request (no cross-tenant row bleed under concurrency), atomic
+  reserve-then-submit limit enforcement, anti-SSRF domain validation
+  (IP-literals and reserved/internal-use names refused so the facade cannot
+  be used to probe the internal network), and a `0600` database file.
 - The `internetnl` CLI: `submit`/`poll`/`results` subcommands against the
   batch API v2, with `--json`, `--fail-on-scored` and an allowlist file.
 - Hardening out of the review chain: HTTP redirects are refused (Basic
