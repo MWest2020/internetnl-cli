@@ -173,6 +173,40 @@ from one credential cannot each read a stale count.
   record stating how many rows went.
 - Domain **lists** are not stored anywhere in the facade; only counts.
 
+## Deployment (section 4.1)
+
+A small compose unit that runs the facade and an edge proxy alongside — but
+not inside — the upstream batch instance's own stack. It lives in `deploy/`.
+
+- **Files:** `deploy/Dockerfile` (facade image), `deploy/compose.yaml`,
+  `deploy/Caddyfile` (edge TLS + reverse proxy), `deploy/.env.example`, and
+  `docs/how-to/deploy-facade.md`. `deploy/.env` is gitignored — the real
+  upstream credential never enters the repo.
+- **Facade image:** `python:3.12-slim`, dependencies installed with `uv`
+  (`.[api]` extra), runs as a **non-root** user, launches `netnl-serve`
+  bound to `0.0.0.0` *inside the container only*. It publishes **no** host
+  port — it is reachable solely on the compose networks.
+- **Edge:** Caddy, the only service with published ports (80/443), obtains
+  and renews TLS automatically for `NETNL_PUBLIC_HOST` (owner supplies the
+  hostname via env — no hostname is hardcoded, consistent with "endpoint is
+  configuration"), and reverse-proxies to `netnl:8000`.
+- **The batch instance is not in this compose.** It runs its own upstream
+  stack. The facade joins an **external** docker network the instance shares
+  (`NETNL_UPSTREAM_NETWORK`, e.g. the instance's internal bridge); the
+  instance must publish no public API port, so the only public path to it is
+  through the facade. `NETNL_UPSTREAM_ENDPOINT` points at the instance over
+  that internal network.
+- **State:** a named volume holds the SQLite DB (`NETNL_DB` inside the
+  container). Created `0600` by the app.
+- **Secrets:** `env_file: .env` for the run; the file carries
+  `NETNL_UPSTREAM_PASSWORD` and is never committed. Docker/compose secrets
+  are noted in the how-to as the hardening step for a real deployment.
+- **prune:** a `prune` compose *profile* service that runs `netnl-admin
+  prune` once and exits, plus a documented host-cron / systemd-timer line
+  (`docker compose run --rm prune`) — cadence bounds the retention grace
+  (task 4.1 note). No in-process scheduler.
+- This is a homelab-grade recipe, stated plainly; it is not an SLA.
+
 ## Testing constraints
 
 - No network I/O: FastAPI's in-process `TestClient`; upstream faked with the
