@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 dist/
+
+# Deploy secrets — real upstream credentials never enter the repo.
+deploy/.env
+**/.env

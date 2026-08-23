@@ -1,0 +1,8 @@
+# Edge proxy for the netnl facade. Caddy obtains and renews TLS
+# automatically for the hostname in NETNL_PUBLIC_HOST (set via .env; see
+# deploy/.env.example). No hostname is hardcoded here — the endpoint is
+# configuration, same rule as the facade's own upstream endpoint.
+
+{$NETNL_PUBLIC_HOST} {
+	reverse_proxy netnl:8000
+}
