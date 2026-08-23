@@ -52,7 +52,7 @@
 
 ## 4. Deploy and beta
 
-- [ ] 4.1 Compose unit next to the batch instance: facade public, instance
+- [x] 4.1 Compose unit next to the batch instance: facade public, instance
       internal-only; TLS at the edge
       - Deploy-aandachtspunt (round-1 fix, m9): schedule `netnl-admin prune`
         frequently (cron) — an expired request stays queryable by its owner

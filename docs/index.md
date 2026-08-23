@@ -12,6 +12,12 @@ commands, environment variables, exit codes — lives in
 [`openspec/changes/add-internetnl-cli/design.md`](../openspec/changes/add-internetnl-cli/design.md)
 until the implementation lands.
 
+## How-to
+
+- [Deploying the netnl facade](how-to/deploy-facade.md) — compose unit,
+  edge TLS, credential issuance and the prune cron for the public facade
+  in front of a private batch instance.
+
 ## Reference
 
 - [Self-hosting a batch instance](reference/self-hosted.md) — requirements,

@@ -1,0 +1,88 @@
+# Deploy unit for the netnl facade — see design.md, "Deployment (section
+# 4.1)", and docs/how-to/deploy-facade.md for the full runbook.
+#
+# The batch instance is NOT part of this compose file. It runs its own
+# upstream stack (see docs/reference/self-hosted.md) and must publish no
+# public API port — the only public path to it is through this facade,
+# via the shared external network below.
+#
+# Only the `edge` (Caddy) service publishes host ports (80/443). `netnl`
+# and `prune` are reachable solely on the compose networks.
+
+services:
+  netnl:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file: .env
+    environment:
+      NETNL_HOST: 0.0.0.0
+      NETNL_PORT: "8000"
+      NETNL_DB: /data/netnl.sqlite3
+    volumes:
+      - netnl-data:/data
+    networks:
+      - edge
+      # External network shared with the upstream batch instance's own
+      # compose stack — set NETNL_UPSTREAM_NETWORK in .env to its name.
+      # `NETNL_UPSTREAM_ENDPOINT` must resolve on this network.
+      - upstream
+    # No `ports:` — not reachable from outside the compose networks.
+    restart: unless-stopped
+
+  edge:
+    image: caddy:2-alpine
+    depends_on:
+      - netnl
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      NETNL_PUBLIC_HOST: ${NETNL_PUBLIC_HOST}
+    networks:
+      - edge
+    restart: unless-stopped
+
+  # One-shot retention job — see design.md "Audit" and tasks.md 4.1's
+  # deploy note: an expired request stays queryable by its owner until
+  # `prune` runs, so the cron cadence bounds that grace window.
+  #
+  # Not started by `docker compose up`. Run it on a schedule instead:
+  #   docker compose run --rm prune
+  # e.g. from host cron or a systemd timer — see the how-to.
+  prune:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file: .env
+    environment:
+      NETNL_DB: /data/netnl.sqlite3
+    volumes:
+      - netnl-data:/data
+    command: ["netnl-admin", "prune"]
+    networks:
+      - upstream
+    profiles: ["prune"]
+
+networks:
+  # Internal-facing network between the facade and the edge proxy. It has
+  # no bearing on public reachability by itself — isolation comes from the
+  # fact that only `edge` declares `ports:`.
+  edge: {}
+  # The upstream batch instance's own internal network. This must already
+  # exist (created by the instance's compose stack) and the instance must
+  # not publish a public port on it. Override the name via
+  # NETNL_UPSTREAM_NETWORK in .env; the placeholder below is never used
+  # as-is in production.
+  upstream:
+    name: ${NETNL_UPSTREAM_NETWORK:-internetnl-batch_default}
+    external: true
+
+volumes:
+  netnl-data: {}
+  caddy-data: {}
+  caddy-config: {}
