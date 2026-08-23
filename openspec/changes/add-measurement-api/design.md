@@ -211,6 +211,38 @@ not inside — the upstream batch instance's own stack. It lives in `deploy/`.
   (task 4.1 note). No in-process scheduler.
 - This is a homelab-grade recipe, stated plainly; it is not an SLA.
 
+### Two supported topologies
+
+The compose recipe above co-locates facade and instance. The deployment we
+actually run separates them, because the batch instance needs a fixed public
+IPv4+IPv6 (it measures from its own address) which a NAT'd homelab cannot
+give:
+
+1. **Instance on a VPS, facade in the homelab K8s cluster.** The upstream
+   batch instance runs its own Compose stack on a VPS with a fixed public
+   IPv4+IPv6 (see `docs/how-to/deploy-instance-vps.md`). The facade runs in
+   the homelab as an ArgoCD app and reaches the instance over the tailnet
+   (`NETNL_UPSTREAM_ENDPOINT` = the instance's tailnet address; the VPS does
+   not publish its batch API publicly). The facade is exposed publicly via
+   **Tailscale Funnel** — Tailscale terminates TLS and gives an `*.ts.net`
+   hostname, so no Caddy edge is needed in K8s. The compose `Caddyfile`/`edge`
+   service belongs to topology (2) only.
+2. **Co-located** (the compose recipe): facade + instance on one host with a
+   public IP, Caddy at the edge. Simpler, but needs a public-IP host that
+   also runs the full instance stack.
+
+### Facade image and liveness (for the K8s topology)
+
+- **Image:** `deploy/Dockerfile` is built and pushed to
+  `ghcr.io/mwest2020/internetnl-cli` by a CI workflow, tagged `sha-<short>`
+  (and `latest` on `main`), matching the ecosystem's per-SHA image
+  convention. The homelab manifests pin a specific `sha-` tag.
+- **Liveness:** the facade exposes `GET /health`, an anonymous, static
+  `{"status": "ok"}` that touches neither the upstream instance nor the DB
+  and discloses no version/host/credential — it exists so K8s
+  liveness/readiness probes have a target without credentials. It is not part
+  of the v2 measurement subset.
+
 ## Testing constraints
 
 - No network I/O: FastAPI's in-process `TestClient`; upstream faked with the

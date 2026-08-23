@@ -106,13 +106,24 @@ appropriate status codes (429 for rate, 400 for size).
 
 ### Requirement: Authenticated surface
 
-Every route in the v2 subset, `GET /metadata/report` included, SHALL require
-valid HTTP Basic credentials; no route SHALL be anonymous.
+The facade SHALL require valid HTTP Basic credentials on every route in the
+v2 measurement subset, `GET /metadata/report` included; no measurement route
+SHALL be anonymous. A single operational liveness endpoint (`GET /health`) MAY be
+anonymous, but SHALL reveal nothing beyond a static ok status — no API
+version, no upstream host, no credential, and it SHALL NOT contact the
+upstream instance or read tenant data.
 
 #### Scenario: Anonymous metadata request
 
 - WHEN `GET /metadata/report` is called without valid credentials
 - THEN the facade answers 401 and does not contact the upstream instance
+
+#### Scenario: Liveness probe needs no credentials and leaks nothing
+
+- WHEN `GET /health` is called without credentials
+- THEN the facade answers 200 with a static status, contacts neither the
+  upstream instance nor tenant data, and discloses no API version, upstream
+  host or credential
 
 ### Requirement: Append-only audit trail
 
