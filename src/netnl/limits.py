@@ -9,6 +9,7 @@ checked before any database or upstream work, since they need no state.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import sqlite3
 from datetime import datetime, timedelta
@@ -25,6 +26,14 @@ from netnl.settings import Settings
 # be the last word on what is a "real" hostname.
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 _HOSTNAME_RE = re.compile(rf"^{_LABEL}(?:\.{_LABEL})*$")
+
+# A label made up entirely of decimal or hex digits — the shape the last
+# label of a dotted "IP written as digits" literal takes (`10.0.0.5`,
+# `0x7f.0.0.1`, the trailing `1` of `0300.0250.0.1`, the short form
+# `127.1`). No real public TLD is all-digits or a hex number, so a
+# fully-numeric/hex last label is a reliable signal of "this is an address,
+# not a hostname" (security-MEDIUM, design.md "No internal targets").
+_NUMERIC_LABEL_RE = re.compile(r"^(?:[0-9]+|0[xX][0-9a-fA-F]+)$")
 
 
 def check_size(domains: list[str], settings: Settings) -> None:
@@ -45,10 +54,49 @@ def _looks_like_hostname(domain: str, max_length: int) -> bool:
     return bool(_HOSTNAME_RE.fullmatch(domain))
 
 
+def _is_internal_target(domain: str) -> bool:
+    """Round-2 fix (security-MEDIUM, anti-SSRF): the facade fronts a scanner
+    that resolves and connects to whatever target it is given, so only a
+    public, multi-label FQDN token is accepted here — never an address. See
+    design.md, "No internal targets (anti-SSRF)".
+
+    Rejects:
+
+    - anything `ipaddress` recognises directly: dotted IPv4 (`10.0.0.5`,
+      `127.0.0.1`, `169.254.169.254`, ...) and every IPv6 form (`::1`, and
+      any form that would even reach here — `_HOSTNAME_RE` already excludes
+      `:`);
+    - single-label names (`localhost` — no public name is a single label);
+    - dotted decimal/octal/hex integer notations `ipaddress` does *not*
+      parse on its own (`2130706433` has no dot so is already caught as
+      single-label; `0300.0250.0.1`, `0x7f.0.0.1`, the short form `127.1`)
+      — caught by the "TLD is all-digits/hex" check, since no real public
+      TLD is.
+
+    DNS rebinding (a name that *resolves* to an internal address at request
+    time) is explicitly out of scope: this facade never resolves the
+    hostname it is handed — the upstream scanner does its own resolution
+    and connects itself.
+    """
+    try:
+        ipaddress.ip_address(domain)
+    except ValueError:
+        pass
+    else:
+        return True
+
+    labels = domain.split(".")
+    if len(labels) < 2:
+        return True
+    return bool(_NUMERIC_LABEL_RE.fullmatch(labels[-1]))
+
+
 def check_domains(domains: list[str], settings: Settings) -> None:
     """Round-1 fix (M6): per-domain length cap and a plausible-hostname
     check, so a tenant cannot push whitespace/control characters, URLs or
-    megabyte-strings through to the private scanner.
+    megabyte-strings through to the private scanner. Round-2 fix
+    (security-MEDIUM): reject IP-literal/internal-looking targets — see
+    `_is_internal_target`.
     """
     for domain in domains:
         if not _looks_like_hostname(domain, settings.max_domain_length):
@@ -58,6 +106,14 @@ def check_domains(domains: list[str], settings: Settings) -> None:
                 f"invalid domain {domain!r}: expected a plausible hostname of at most "
                 f"{settings.max_domain_length} characters, with no whitespace or control "
                 "characters",
+            )
+        if _is_internal_target(domain):
+            raise NetnlHTTPError(
+                400,
+                "bad-request",
+                f"invalid domain {domain!r}: IP-address literals and single-label or "
+                "numeric-TLD names are refused — the facade only accepts a public, "
+                "multi-label hostname (anti-SSRF)",
             )
 
 

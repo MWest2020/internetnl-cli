@@ -105,6 +105,13 @@ def connect(path: str | pathlib.Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # Reviewer-minor (round-2): under write contention (two credentials'
+    # `BEGIN IMMEDIATE` reservation transactions overlapping), SQLite's
+    # default busy behaviour is to fail immediately with SQLITE_BUSY, which
+    # would otherwise surface as a spurious 500 instead of the connection
+    # simply waiting its turn for the (very short-lived) write lock. 5000ms
+    # comfortably covers a reservation transaction's lifetime.
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 

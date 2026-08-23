@@ -50,7 +50,92 @@ def test_prune_writes_its_own_audit_record(app, settings, conn):
     counts = retention.prune(conn, settings, datetime.now(timezone.utc))
     row = conn.execute("SELECT * FROM audit WHERE event = 'prune'").fetchone()
     assert row is not None
-    assert row["domain_count"] == counts["requests_deleted"] + counts["audit_deleted"]
+    assert (
+        row["domain_count"]
+        == counts["requests_deleted"] + counts["reserving_deleted"] + counts["audit_deleted"]
+    )
+
+
+def test_stranded_reservation_older_than_grace_is_pruned_and_frees_slot(settings_env, tmp_path):
+    """Round-2 fix (security-LOW, pinned): a `reserving` row whose upstream
+    submit never completed must not pin a concurrency slot forever — see
+    design.md, "Audit" (reserving-prune), and the spec scenario "A stranded
+    reservation frees its slot".
+    """
+    from netnl.api import create_app
+    from starlette.testclient import TestClient
+    from conftest import add_test_credential, basic_auth_header
+    from fakes import FakeOpener
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_MAX_CONCURRENT"] = "1"
+    env["NETNL_DB"] = str(tmp_path / "reserving-prune.sqlite3")
+    settings = load(env)
+    fake_opener = FakeOpener()
+    app = create_app(settings, opener=fake_opener)
+    add_test_credential(app, "tenant", "secret")
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = basic_auth_header("tenant", "secret")
+
+    conn = store.connect(settings.db)
+    try:
+        cred = store.find_credential(conn, "tenant")
+
+        now = datetime.now(timezone.utc)
+        stale_submitted_at = store.utcnow_iso(
+            lambda: now - timedelta(seconds=settings.reserving_grace_seconds + 1)
+        )
+        store.insert_reserving_request(
+            conn,
+            facade_id="s" * 32,
+            credential_id=cred["id"],
+            request_type="web",
+            domain_count=1,
+            submitted_at=stale_submitted_at,
+        )
+
+        # With only one concurrency slot and the stranded reservation
+        # occupying it, a fresh submit is blocked.
+        blocked = client.post(
+            "/requests", json={"type": "web", "domains": ["example.nl"]}, headers=headers
+        )
+        assert blocked.status_code == 429
+        assert len(fake_opener.calls) == 0
+
+        counts = retention.prune(conn, settings, now)
+        assert counts["reserving_deleted"] == 1
+        assert store.get_request(conn, "s" * 32) is None
+
+        # The slot is free again: the same submit now succeeds.
+        queue_json(fake_opener, REGISTER_REPLY)
+        freed = client.post(
+            "/requests", json={"type": "web", "domains": ["example.nl"]}, headers=headers
+        )
+        assert freed.status_code == 200
+    finally:
+        conn.close()
+
+
+def test_reservation_within_grace_is_not_pruned(app, settings, conn, tenant):
+    cred = store.find_credential(conn, tenant["username"])
+    now = datetime.now(timezone.utc)
+    fresh_submitted_at = store.utcnow_iso(
+        lambda: now - timedelta(seconds=max(settings.reserving_grace_seconds - 60, 0))
+    )
+    store.insert_reserving_request(
+        conn,
+        facade_id="f" * 32,
+        credential_id=cred["id"],
+        request_type="web",
+        domain_count=1,
+        submitted_at=fresh_submitted_at,
+    )
+
+    counts = retention.prune(conn, settings, now)
+
+    assert counts["reserving_deleted"] == 0
+    assert store.get_request(conn, "f" * 32) is not None
 
 
 def test_manual_delete_on_audit_still_fails_after_a_successful_prune(app, settings, conn):

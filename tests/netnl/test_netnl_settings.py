@@ -32,6 +32,7 @@ def test_defaults_match_design(settings_env):
     assert s.audit_retention_days == 90
     assert s.metadata_ttl == 3600
     assert s.timeout == 30
+    assert s.reserving_grace_seconds == 300
     assert s.allow_http is False
 
 

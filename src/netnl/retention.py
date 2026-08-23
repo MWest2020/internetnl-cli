@@ -27,6 +27,16 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
     result_cutoff = store.utcnow_iso(
         lambda: now - timedelta(days=settings.result_retention_days)
     )
+    # Round-2 fix (security-LOW, pinned): a row still `reserving` (no
+    # `upstream_id` yet) whose upstream submit never completed — the
+    # process crashed, or the upstream call hung past every retry — would
+    # otherwise count toward `max_concurrent` forever, a self-inflicted DoS
+    # on that credential. A short grace lets an in-flight submit finish
+    # normally; only a *stranded* reservation older than the grace is
+    # cleared. See design.md, "Audit" (reserving-prune).
+    reserving_cutoff = store.utcnow_iso(
+        lambda: now - timedelta(seconds=settings.reserving_grace_seconds)
+    )
     audit_cutoff = store.utcnow_iso(
         lambda: now - timedelta(days=settings.audit_retention_days)
     )
@@ -35,6 +45,12 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
     try:
         cur = conn.execute("DELETE FROM requests WHERE submitted_at < ?", (result_cutoff,))
         requests_deleted = cur.rowcount if cur.rowcount >= 0 else 0
+
+        cur = conn.execute(
+            "DELETE FROM requests WHERE upstream_id IS NULL AND submitted_at < ?",
+            (reserving_cutoff,),
+        )
+        reserving_deleted = cur.rowcount if cur.rowcount >= 0 else 0
 
         conn.execute("DROP TRIGGER audit_no_delete")
         cur = conn.execute("DELETE FROM audit WHERE at < ?", (audit_cutoff,))
@@ -47,7 +63,7 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
             credential=None,
             event="prune",
             facade_id=None,
-            domain_count=requests_deleted + audit_deleted,
+            domain_count=requests_deleted + reserving_deleted + audit_deleted,
         )
         conn.execute("COMMIT")
     except Exception:
@@ -58,4 +74,8 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
         conn.execute(_RECREATE_AUDIT_NO_DELETE)
         raise
 
-    return {"requests_deleted": requests_deleted, "audit_deleted": audit_deleted}
+    return {
+        "requests_deleted": requests_deleted,
+        "reserving_deleted": reserving_deleted,
+        "audit_deleted": audit_deleted,
+    }

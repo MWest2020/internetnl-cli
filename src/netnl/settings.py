@@ -37,6 +37,11 @@ _NUMERIC_DEFAULTS = {
     # through to the private instance. 253 is the DNS hostname length limit.
     "NETNL_MAX_DOMAIN_LENGTH": ("max_domain_length", 253),
     "NETNL_MAX_BODY_BYTES": ("max_body_bytes", 1_048_576),
+    # Round-2 fix (security-LOW): a `reserving` row whose upstream submit
+    # never completed (crash, timeout) would otherwise pin a concurrency
+    # slot forever — see design.md, "Audit" (reserving-prune) and
+    # retention.py.
+    "NETNL_RESERVING_GRACE_SECONDS": ("reserving_grace_seconds", 300),
 }
 
 
@@ -56,6 +61,7 @@ class Settings:
     timeout: int
     max_domain_length: int
     max_body_bytes: int
+    reserving_grace_seconds: int
     allow_http: bool
 
 

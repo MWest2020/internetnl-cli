@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from fakes import REGISTER_REPLY, STATUS_DONE, STATUS_RUNNING
 
 from conftest import queue_json
@@ -244,6 +246,69 @@ def test_oversized_request_body_is_400_without_touching_upstream(settings_env, t
     assert resp.json()["error"]["label"] == "bad-request"
     assert len(fake_opener.calls) == 0
     assert resp.headers["X-Netnl-Instance"] == settings.instance
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "localhost",
+        "10.0.0.5",
+        "127.0.0.1",
+        "169.254.169.254",
+        "::1",
+        "2130706433",
+        "0300.0250.0.1",
+        "0x7f.0.0.1",
+    ],
+)
+def test_internal_or_ip_literal_target_is_400_without_touching_upstream(
+    settings_env, tmp_path, domain
+):
+    """Round-2 fix (security-MEDIUM, anti-SSRF, pinned): the facade must
+    refuse IP-address literals (every notation) and single-label names —
+    see design.md, "No internal targets (anti-SSRF)" and the spec scenario
+    "Internal targets are refused"."""
+    from netnl.api import create_app
+    from starlette.testclient import TestClient
+    from conftest import add_test_credential, basic_auth_header
+    from fakes import FakeOpener
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_DB"] = str(tmp_path / "ssrf.sqlite3")
+    settings = load(env)
+    fake_opener = FakeOpener()
+    app = create_app(settings, opener=fake_opener)
+    add_test_credential(app, "tenant", "secret")
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = basic_auth_header("tenant", "secret")
+
+    resp = _submit(client, fake_opener, headers, [domain], queue_reply=False)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["label"] == "bad-request"
+    assert len(fake_opener.calls) == 0
+
+
+@pytest.mark.parametrize("domain", ["example.nl", "sub.example.co.uk"])
+def test_public_multi_label_fqdn_is_accepted(settings_env, tmp_path, domain):
+    from netnl.api import create_app
+    from starlette.testclient import TestClient
+    from conftest import add_test_credential, basic_auth_header
+    from fakes import FakeOpener
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_DB"] = str(tmp_path / "ssrf-ok.sqlite3")
+    settings = load(env)
+    fake_opener = FakeOpener()
+    app = create_app(settings, opener=fake_opener)
+    add_test_credential(app, "tenant", "secret")
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = basic_auth_header("tenant", "secret")
+
+    resp = _submit(client, fake_opener, headers, [domain])
+    assert resp.status_code == 200
+    assert len(fake_opener.calls) == 1
 
 
 def test_provenance_headers_present_on_limit_errors(settings_env, tmp_path):
