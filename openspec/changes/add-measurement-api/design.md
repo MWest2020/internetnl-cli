@@ -138,6 +138,15 @@ from one credential cannot each read a stale count.
   push arbitrarily large or malformed strings through to the private instance
   (a domain is length-bounded and must be a plausible hostname token — no
   whitespace, no control characters).
+- **No internal targets (anti-SSRF).** The facade fronts a scanner that
+  resolves and connects to whatever it is given, so a domain must be a
+  public, multi-label FQDN: reject IP-address literals (v4/v6, and
+  decimal/octal/hex integer forms), single-label names (`localhost`), and any
+  name resolving into a private/reserved/link-local range is out of scope for
+  a hostname token — the CLI passes hostnames, not addresses. A rejected
+  target → 400 `bad-request`, nothing submitted upstream. This stops a tenant
+  using the facade as a pivot to probe the internal network (`10.0.0.0/8`,
+  `127.0.0.0/8`, `169.254.169.254`, etc.).
 - Rate: submissions per credential in the past hour, counted from the audit
   table inside the transaction; at the limit → 429, upstream untouched.
 - Concurrency: non-terminal rows (`last_status` not in
@@ -151,10 +160,14 @@ from one credential cannot each read a stale count.
 - Table `audit(id INTEGER PRIMARY KEY, at, credential, event, facade_id,
   domain_count)` — events: `submit`, `user-add`, `user-revoke`, `prune`.
 - Append-only enforced in the schema: `BEFORE UPDATE` and `BEFORE DELETE`
-  triggers that `RAISE(ABORT)`; `prune` removes only `requests` rows and
-  audit rows older than `NETNL_AUDIT_RETENTION_DAYS` via a dedicated path
-  that drops and recreates the triggers inside one transaction — and writes
-  a `prune` audit record stating how many rows went.
+  triggers that `RAISE(ABORT)`; `prune` removes (a) `requests` rows past
+  `NETNL_RESULT_RETENTION_DAYS`, (b) **stale `reserving` rows** older than a
+  short fixed grace (`NETNL_RESERVING_GRACE_SECONDS`, default 300) — a
+  reservation whose upstream submit never completed must not pin a
+  concurrency slot for days — and (c) audit rows older than
+  `NETNL_AUDIT_RETENTION_DAYS`, via a dedicated path that drops and recreates
+  the append-only triggers inside one transaction, and writes a `prune` audit
+  record stating how many rows went.
 - Domain **lists** are not stored anywhere in the facade; only counts.
 
 ## Testing constraints

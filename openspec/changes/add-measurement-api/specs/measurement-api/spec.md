@@ -88,6 +88,19 @@ appropriate status codes (429 for rate, 400 for size).
 - THEN no more than the limit reach the upstream instance, and every accepted
   submission has an audit record written before upstream was contacted
 
+#### Scenario: Internal targets are refused
+
+- WHEN a submission contains an IP-address literal, a single-label name, or a
+  target in a private, loopback or link-local range
+- THEN the facade answers 400 and submits nothing upstream, so it cannot be
+  used to probe the internal network
+
+#### Scenario: A stranded reservation frees its slot
+
+- WHEN a submission reserves a slot but its upstream call never completes
+- THEN after the reserving grace the prune job clears the stale reservation,
+  and the credential's concurrency slot is available again
+
 ### Requirement: Authenticated surface
 
 Every route in the v2 subset, `GET /metadata/report` included, SHALL require
