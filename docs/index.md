@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-08-22
+last_reviewed: 2026-08-23
 ---
 
 # internetnl-cli documentation
@@ -16,7 +16,11 @@ until the implementation lands.
 
 - [Deploying the netnl facade](how-to/deploy-facade.md) — compose unit,
   edge TLS, credential issuance and the prune cron for the public facade
-  in front of a private batch instance.
+  in front of a private batch instance; also covers the two supported
+  topologies (co-located, and facade-in-K8s over a tailnet).
+- [Deploying the upstream instance on a VPS, reached over a tailnet](how-to/deploy-instance-vps.md) —
+  the batch instance on a fixed-public-IP VPS, joined to a Tailscale
+  tailnet so a homelab facade can reach it privately.
 
 ## Reference
 

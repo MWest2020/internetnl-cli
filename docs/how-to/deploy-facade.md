@@ -8,10 +8,30 @@ last_reviewed: 2026-08-23
 The facade (`netnl-serve`, package `src/netnl/`) is a small public gateway
 that fronts a **private** batch instance: it validates, rate-limits and
 audits requests, then submits them upstream with a server-side credential
-that tenants never see. This page deploys `deploy/compose.yaml` next to
-(not inside) that instance's own stack. It does not replace
+that tenants never see. It does not replace
 [Self-hosting a batch instance](../reference/self-hosted.md) — read that
 first if the instance itself does not exist yet.
+
+## Two supported topologies
+
+`openspec/changes/add-measurement-api/design.md` ("Two supported
+topologies") pins two ways to run the facade:
+
+1. **Instance on a VPS, facade in a Kubernetes cluster (the one we run).**
+   The batch instance runs on a VPS with a fixed public IPv4+IPv6, reached
+   over a Tailscale tailnet — see
+   [Deploying the upstream instance on a VPS, reached over a tailnet](deploy-instance-vps.md).
+   The facade runs in Kubernetes, exposed publicly via Tailscale Funnel
+   (no Caddy edge needed there); the K8s manifests for that deployment
+   live in a separate homelab repo — a link will replace this note once
+   they are public.
+2. **Co-located** (the recipe on the rest of this page): facade + instance
+   on one host with a public IP, `deploy/compose.yaml` plus Caddy at the
+   edge. Simpler, but needs a public-IP host that also runs the full
+   instance stack.
+
+The rest of this page covers topology 2. This page deploys
+`deploy/compose.yaml` next to (not inside) the instance's own stack.
 
 ## Prerequisites
 
