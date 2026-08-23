@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import stat
 
 import pytest
 
@@ -166,6 +167,28 @@ def test_list_credentials(conn):
     )
     names = [row["username"] for row in store.list_credentials(conn)]
     assert names == ["a", "b"]
+
+
+def test_db_file_created_with_mode_0600(tmp_path):
+    """Round-1 fix (m8): the database file holds password hashes, the
+    id-map and the audit trail — it must never be world/group-readable."""
+    path = tmp_path / "perm.sqlite3"
+    c = store.connect(path)
+    c.close()
+    mode = stat.S_IMODE(path.stat().st_mode)
+    assert mode == 0o600
+
+
+def test_existing_db_file_mode_is_left_untouched(tmp_path):
+    """Opening an already-existing file must not silently change a mode an
+    operator deliberately set."""
+    path = tmp_path / "existing.sqlite3"
+    path.touch()
+    path.chmod(0o640)
+    c = store.connect(path)
+    c.close()
+    mode = stat.S_IMODE(path.stat().st_mode)
+    assert mode == 0o640
 
 
 def test_utcnow_iso_is_lexicographically_comparable():
