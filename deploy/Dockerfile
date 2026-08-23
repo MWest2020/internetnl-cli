@@ -5,12 +5,13 @@
 # no port is published here — that is the compose file's decision, and this
 # image never publishes one on its own.
 
-FROM python:3.12-slim
+# Pinned to the python:3.12-slim multi-arch index digest for a fully
+# reproducible build. Keep the tag in this comment; bump both together.
+FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
-# Pin the uv binary itself by digest-stable tag from the official image so
-# the install step is reproducible independent of the base image's package
-# index state.
-COPY --from=ghcr.io/astral-sh/uv:0.7.13 /uv /uvx /usr/local/bin/
+# Pin the uv binary's source image by digest (tag 0.7.13) so the install step
+# is reproducible independent of the base image's package index state.
+COPY --from=ghcr.io/astral-sh/uv:0.7.13@sha256:6c1e19020ec221986a210027040044a5df8de762eb36d5240e382bc41d7a9043 /uv /uvx /usr/local/bin/
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \

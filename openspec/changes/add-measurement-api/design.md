@@ -186,6 +186,10 @@ not inside — the upstream batch instance's own stack. It lives in `deploy/`.
   (`.[api]` extra), runs as a **non-root** user, launches `netnl-serve`
   bound to `0.0.0.0` *inside the container only*. It publishes **no** host
   port — it is reachable solely on the compose networks.
+- **Base images are pinned to their multi-arch index digest** (facade base,
+  the uv source image, and Caddy), with the tag kept in a comment; a bump
+  moves both together. This makes the build reproducible; refreshing a digest
+  is a deliberate, reviewable change.
 - **Edge:** Caddy, the only service with published ports (80/443), obtains
   and renews TLS automatically for `NETNL_PUBLIC_HOST` (owner supplies the
   hostname via env — no hostname is hardcoded, consistent with "endpoint is
