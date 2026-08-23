@@ -54,6 +54,12 @@
 
 - [ ] 4.1 Compose unit next to the batch instance: facade public, instance
       internal-only; TLS at the edge
+      - Deploy-aandachtspunt (round-1 fix, m9): schedule `netnl-admin prune`
+        frequently (cron) — an expired request stays queryable by its owner
+        until `prune` runs, so the compose unit's cron cadence bounds that
+        grace window. No code change: `prune` staying a deploy-scheduled job
+        rather than an in-process thread is intentional (design.md,
+        "Tenancy and identity").
 - [ ] 4.2 Acceptance test: `internetnl` CLI against the facade, unchanged,
       green — and the instance unreachable from outside
 - [ ] 4.3 Private beta with issued credentials; capacity observations fed
