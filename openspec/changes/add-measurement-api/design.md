@@ -141,9 +141,12 @@ from one credential cannot each read a stale count.
 - **No internal targets (anti-SSRF).** The facade fronts a scanner that
   resolves and connects to whatever it is given, so a domain must be a
   public, multi-label FQDN: reject IP-address literals (v4/v6, and
-  decimal/octal/hex integer forms), single-label names (`localhost`), and any
-  name resolving into a private/reserved/link-local range is out of scope for
-  a hostname token — the CLI passes hostnames, not addresses. A rejected
+  decimal/octal/hex integer forms), single-label names (`localhost`), names
+  under a reserved or internal-use suffix (`.localhost`, `.local`,
+  `.internal`, `.intranet`, `.corp`, `.home`, `.lan`, `.localdomain`), and
+  the well-known cloud-metadata hostnames (`metadata.google.internal` and
+  the like) — all matched case-insensitively per label. Any such target is
+  out of scope for a hostname token — the CLI passes hostnames, not addresses. A rejected
   target → 400 `bad-request`, nothing submitted upstream. This stops a tenant
   using the facade as a pivot to probe the internal network (`10.0.0.0/8`,
   `127.0.0.0/8`, `169.254.169.254`, etc.).

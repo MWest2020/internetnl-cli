@@ -90,10 +90,13 @@ appropriate status codes (429 for rate, 400 for size).
 
 #### Scenario: Internal targets are refused
 
-- WHEN a submission contains an IP-address literal, a single-label name, or a
-  target in a private, loopback or link-local range
+- WHEN a submission contains an IP-address literal, a single-label name, a
+  name under a reserved or internal-use suffix (`.localhost`, `.local`,
+  `.internal`, `.corp`, `.home`, `.lan`, …), or a known cloud-metadata
+  hostname
 - THEN the facade answers 400 and submits nothing upstream, so it cannot be
-  used to probe the internal network
+  used to probe the internal network by literal address or by a
+  convention-internal name
 
 #### Scenario: A stranded reservation frees its slot
 
