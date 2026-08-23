@@ -124,6 +124,83 @@ owner, and a stale `reserving` row keeps pinning a concurrency slot,
 until `prune` next runs. Hourly is a reasonable starting cadence; nothing
 in the facade enforces a maximum.
 
+## Hardening: the upstream credential via Docker/Compose secrets
+
+Step 2 above puts `NETNL_UPSTREAM_USERNAME`/`NETNL_UPSTREAM_PASSWORD` in
+`deploy/.env`, loaded into the `netnl` container via `env_file: .env`. For
+a homelab-grade deployment that is acceptable — the file itself is
+gitignored and readable only by whoever can already read the compose
+directory. But once the container is running, that credential sits in
+the container's *environment*, which is visible to anyone who already has
+host-level access to the container: `docker inspect <container>` prints
+it (Compose promotes `env_file` entries into the container's `Config.Env`
+the same as `environment:` does), and so does reading
+`/proc/<pid>/environ` for the container's process. If you consider
+host/daemon access itself a boundary worth hardening against, move the
+credential to a Docker/Compose **secret** instead — a file, not an
+environment variable, mounted read-only at `/run/secrets/<name>` inside
+the container and never written into `Config.Env` or the process
+environment as delivered.
+
+Note what this does *not* do: `netnl` (`src/netnl/settings.py`) only
+reads plain environment variables — there is no `NETNL_UPSTREAM_PASSWORD_FILE`
+(or similar `*_FILE`) convention in the current code, so a secret file by
+itself is not enough. The credential still has to end up as an
+environment variable *inside the container* before `netnl-serve` starts;
+secrets just change how it gets there (from a root-owned, non-inspectable
+file, at container start) instead of storing it directly in the
+container's declared environment.
+
+The simplest change that works with the image as built (no code or
+`Dockerfile` change required) is to declare the secret and override the
+`netnl` service's `command:` with a small shell wrapper that reads the
+secret file into the environment and then execs `netnl-serve`. In
+`deploy/compose.yaml` (or a `docker-compose.override.yaml` next to it, to
+keep the default `env_file` path working for anyone who does not opt in):
+
+```yaml
+services:
+  netnl:
+    secrets:
+      - netnl_upstream_password
+    environment:
+      # No longer set NETNL_UPSTREAM_PASSWORD here or in .env — it now
+      # comes from the secret file at container start.
+      NETNL_UPSTREAM_PASSWORD_FILE: /run/secrets/netnl_upstream_password
+    command:
+      - sh
+      - -c
+      - >-
+        export NETNL_UPSTREAM_PASSWORD="$(cat "$NETNL_UPSTREAM_PASSWORD_FILE")" &&
+        exec netnl-serve
+
+secrets:
+  netnl_upstream_password:
+    file: ./secrets/netnl_upstream_password.txt   # gitignored, 0600, not the real password shown here
+```
+
+`NETNL_UPSTREAM_USERNAME` is not normally sensitive enough to need the
+same treatment, but the identical pattern applies if you want it too
+(a second secret, a second `_FILE` var, appended to the same `export`
+line).
+
+Assumptions this relies on:
+
+- Local (non-Swarm) Compose file-based secrets are used, so no Swarm
+  cluster is required — `file:` secrets work with plain `docker compose
+  up`.
+- The secret file itself (`./secrets/netnl_upstream_password.txt` above)
+  is created by you on the host, kept out of git, and readable only by
+  the user running `docker compose`; Compose mounts it read-only into the
+  container at `/run/secrets/netnl_upstream_password`.
+- The `netnl` image (`deploy/Dockerfile`, `python:3.12-slim`) has `/bin/sh`
+  available, so the wrapper command runs without any image changes.
+- This hardens against *inspecting the running container's declared
+  environment* (`docker inspect`, `env_file`-sourced vars). It does not
+  protect against someone with a shell inside the container or root on
+  the host reading the process's live environment or `/run/secrets/*`
+  directly — that level of isolation is out of scope for this recipe.
+
 ## Batch vs. website results
 
 The facade passes through whatever the underlying batch instance
