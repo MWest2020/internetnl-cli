@@ -21,6 +21,10 @@ until the implementation lands.
 - [Deploying the upstream instance on a VPS, reached over a tailnet](how-to/deploy-instance-vps.md) —
   the batch instance on a fixed-public-IP VPS, joined to a Tailscale
   tailnet so a homelab facade can reach it privately.
+- [Running the netnl private beta](how-to/beta.md) — issuing and
+  revoking tenant credentials, onboarding a handful of known beta
+  users, what to observe against the default limits, and the
+  acceptance script that gates going live.
 
 ## Reference
 

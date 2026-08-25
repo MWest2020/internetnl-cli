@@ -62,8 +62,16 @@
         "Tenancy and identity").
 - [ ] 4.2 Acceptance test: `internetnl` CLI against the facade, unchanged,
       green — and the instance unreachable from outside
+      - Tooling ready: `scripts/acceptance.sh` (shellcheck-clean, exercises
+        the unmodified `internetnl` CLI's submit/results and the
+        instance-not-public probe). Not yet run — waiting on the live VPS
+        instance and facade.
 - [ ] 4.3 Private beta with issued credentials; capacity observations fed
       back into the default limits
+      - Runbook ready: `docs/how-to/beta.md` (credential issuance/
+        revocation, onboarding, terms, what to observe against the default
+        limits and how to adjust them). Beta itself not yet run — waiting
+        on the live VPS instance and facade.
 
 ## 5. Community opening
 
