@@ -15,8 +15,16 @@
 # Required environment:
 #   NETNL_FACADE_URL      https://netnl.<tailnet>.ts.net (or equivalent) —
 #                          the facade's public base URL, *without* a
-#                          trailing /api/batch/v2 (this script appends the
-#                          right endpoint form for INTERNETNL_ENDPOINT).
+#                          trailing /api/batch/v2. This script sets
+#                          INTERNETNL_ENDPOINT to NETNL_FACADE_URL
+#                          verbatim (the CLI itself appends /api/batch/v2,
+#                          exactly as it does against a bare batch
+#                          instance). If NETNL_FACADE_URL already ends in
+#                          /api/batch/v2 — a natural habit carried over
+#                          from a self-hosted instance's own endpoint —
+#                          this script strips that suffix and warns,
+#                          rather than silently 404ing on the doubled
+#                          path.
 #   INTERNETNL_USERNAME    a tenant credential issued via `netnl-admin
 #                          user add` (see docs/how-to/beta.md).
 #   INTERNETNL_PASSWORD    that credential's password.
@@ -90,6 +98,20 @@ POLL_MAX_SECONDS="${ACCEPTANCE_POLL_MAX_SECONDS:-60}"
 # ("Acceptance check") and the CLI's --json contract (design.md: submit,
 # poll and results are unchanged when only INTERNETNL_ENDPOINT/USERNAME/
 # PASSWORD point at the facade instead of a batch instance).
+#
+# INTERNETNL_ENDPOINT is set to NETNL_FACADE_URL verbatim below, not
+# appended to — the CLI itself appends /api/batch/v2, the same as it
+# does against a bare batch instance. Guard against the natural habit
+# (carried over from a self-hosted instance's own INTERNETNL_ENDPOINT)
+# of NETNL_FACADE_URL already ending in /api/batch/v2, which would
+# otherwise double the path and 404.
+case "$NETNL_FACADE_URL" in
+    */api/batch/v2 | */api/batch/v2/)
+        _note "NETNL_FACADE_URL already ends in /api/batch/v2 (the CLI appends this itself) — stripping it to avoid a doubled path/404. Original: $NETNL_FACADE_URL"
+        NETNL_FACADE_URL="${NETNL_FACADE_URL%/api/batch/v2/}"
+        NETNL_FACADE_URL="${NETNL_FACADE_URL%/api/batch/v2}"
+        ;;
+esac
 INTERNETNL_ENDPOINT="$NETNL_FACADE_URL"
 export INTERNETNL_ENDPOINT INTERNETNL_USERNAME INTERNETNL_PASSWORD
 
@@ -108,6 +130,17 @@ echo "facade:      $NETNL_FACADE_URL"
 echo "test domain: $TEST_DOMAIN"
 echo
 
+# All temp files used below are declared here (empty) and cleaned up by a
+# single EXIT trap, so a _fail() partway through never leaks one —
+# regardless of which step created it or whether that step ran at all.
+submit_stdout=""
+submit_stderr=""
+poll_stdout=""
+poll_stderr=""
+results_stdout=""
+results_stderr=""
+trap 'rm -f "$submit_stdout" "$submit_stderr" "$poll_stdout" "$poll_stderr" "$results_stdout" "$results_stderr"' EXIT
+
 # --- Step 1: submit ----------------------------------------------------------
 #
 # NOTE on --json + --no-poll: the CLI only ever renders a JSON document via
@@ -122,7 +155,6 @@ echo
 # stderr, empty stdout — rather than expecting JSON on stdout.
 submit_stdout="$(mktemp)"
 submit_stderr="$(mktemp)"
-trap 'rm -f "$submit_stdout" "$submit_stderr"' EXIT
 
 submit_exit=0
 uv run internetnl submit "$TEST_DOMAIN" --no-poll --json \
@@ -180,7 +212,6 @@ if [ "$DEMO_POLL" = "1" ]; then
             _fail "poll exited $poll_exit (expected 0 or 4)"
             ;;
     esac
-    rm -f "$poll_stdout" "$poll_stderr"
     echo
 else
     _note "ACCEPTANCE_DEMO_POLL not set to 1: skipping the 'internetnl poll' smoke test (step 3 already polls 'results' to completion)"
@@ -193,7 +224,6 @@ elapsed=0
 status="unknown"
 results_stdout="$(mktemp)"
 results_stderr="$(mktemp)"
-trap 'rm -f "$submit_stdout" "$submit_stderr" "$results_stdout" "$results_stderr"' EXIT
 
 while [ "$elapsed" -lt "$RESULTS_MAX_WAIT_SECONDS" ]; do
     results_exit=0
@@ -244,15 +274,38 @@ _pass "results document has endpoint/timestamp/api_version/request_id/domains"
 echo
 
 # --- Step 4: the instance must not be publicly reachable ---------------------
+#
+# instance_privacy_verified tracks whether this check actually ran AND
+# passed, so the final banner never claims requirement (b) ("the
+# instance stays private") was verified when it was skipped or
+# inconclusive.
 
-if [ -n "${NETNL_INSTANCE_PROBE_URL:-}" ]; then
-    if curl --silent --show-error --max-time 5 --output /dev/null "$NETNL_INSTANCE_PROBE_URL" 2>/dev/null; then
-        _fail "the upstream instance answered at $NETNL_INSTANCE_PROBE_URL — it must not be publicly reachable; only the facade may answer publicly"
-    fi
-    _pass "the upstream instance did not answer at $NETNL_INSTANCE_PROBE_URL (connection refused/timeout, as expected)"
-else
+instance_privacy_verified=0
+
+if [ -z "${NETNL_INSTANCE_PROBE_URL:-}" ]; then
     _note "NETNL_INSTANCE_PROBE_URL not set: skipping the 'instance not public' probe. Run this check from a host OUTSIDE the instance's tailnet (this script cannot tell from inside the tailnet whether the instance would also answer from the public internet)."
+elif ! command -v curl >/dev/null 2>&1; then
+    _note "curl not found on PATH: the 'instance not public' probe is INCONCLUSIVE, not a pass. Install curl, or run this check manually from a host outside the instance's tailnet."
+else
+    curl_exit=0
+    curl --silent --show-error --max-time 5 --output /dev/null "$NETNL_INSTANCE_PROBE_URL" || curl_exit=$?
+    case "$curl_exit" in
+        0)
+            _fail "the upstream instance answered at $NETNL_INSTANCE_PROBE_URL (curl exit 0) — it must not be publicly reachable; only the facade may answer publicly"
+            ;;
+        7 | 28)
+            _pass "the upstream instance did not answer at $NETNL_INSTANCE_PROBE_URL (curl exit $curl_exit = connection refused/timeout, as expected)"
+            instance_privacy_verified=1
+            ;;
+        *)
+            _note "the 'instance not public' probe is INCONCLUSIVE: curl exited $curl_exit at $NETNL_INSTANCE_PROBE_URL (expected 7 = refused or 28 = timeout for a private instance; this exit code means something else went wrong — e.g. 6 = could not resolve host — not that the instance is private). Verify manually from a host outside the instance's tailnet."
+            ;;
+    esac
 fi
 echo
 
-echo "=== all checks passed ==="
+if [ "$instance_privacy_verified" = "1" ]; then
+    echo "=== all checks passed (instance-privacy-check verified) ==="
+else
+    echo "=== CLI checks passed — LET OP: instance-privacy-check niet uitgevoerd of inconclusive, verifieer van buiten de tailnet ==="
+fi

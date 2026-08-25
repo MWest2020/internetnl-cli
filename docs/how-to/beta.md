@@ -30,6 +30,11 @@ In the K8s topology (facade fronted by Tailscale Funnel, per
 kubectl -n netnl exec deploy/netnl -- netnl-admin user add <naam>
 ```
 
+(The namespace `netnl`, deployment `netnl` and `netnl-config` ConfigMap
+named above match the homelab manifests introduced in
+[MWest2020/homelab#13](https://github.com/MWest2020/homelab/pull/13), so
+these names are traceable back to their source.)
+
 Both print the generated password **once**, to stdout. It is hashed
 (`scrypt`, per-credential salt) before it ever touches the database, so
 it cannot be recovered later — only rotated (`user revoke` followed by
