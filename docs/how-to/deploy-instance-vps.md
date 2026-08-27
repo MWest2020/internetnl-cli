@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-08-23
+last_reviewed: 2026-08-27
 ---
 
 # Deploying the upstream instance on a VPS, reached over a tailnet
@@ -30,32 +30,92 @@ facade is the only path a tenant gets. A tailnet gives a private,
 authenticated, encrypted address between the two hosts without opening
 any port on the VPS's public interface for the batch API itself.
 
-## 1. Provision the VPS and deploy the instance
+## 1. Provisioning on Hetzner
 
-Follow [reference/self-hosted.md](../reference/self-hosted.md) for the
-machine sizing (2-4 CPU, 4-8 GB RAM, 50-100 GB disk) and the upstream
-Docker Compose deployment guide:
-<https://github.com/internetstandards/Internet.nl/blob/main/documentation/Docker-deployment-batch.md>.
-Nothing about that procedure changes here — the VPS just happens to also
-run Tailscale alongside it. Create a batch user with upstream's
-`user_manage.sh` as usual; that credential becomes
-`NETNL_UPSTREAM_USERNAME` / `NETNL_UPSTREAM_PASSWORD` for the facade.
+This step creates the VPS host itself — Ubuntu, Docker CE + the compose
+plugin, Tailscale, a hardened non-root user, a host firewall — using
+`deploy/vps/cloud-init.yaml` and `deploy/vps/create-vps.sh`. It does
+**not** deploy the Internet.nl batch stack; that stays upstream's guide,
+covered in step 2 below.
 
-## 2. Join the VPS to the tailnet
+### Prerequisites
 
-Install Tailscale on the VPS and bring it up:
+- The [`hcloud` CLI](https://github.com/hetznercloud/cli), logged in
+  against a Hetzner Cloud project of your own (`hcloud context create` /
+  `HCLOUD_TOKEN` — this token is *your* project credential, never
+  committed anywhere in this repo).
+- An SSH key of yours registered in that Hetzner project (`hcloud
+  ssh-key list`, or add one with `hcloud ssh-key create`), or the path
+  to a local public key file — either works as `SSH_KEY_NAME` below.
+- A Tailscale [pre-auth
+  key](https://tailscale.com/kb/1085/auth-keys), created **ephemeral**
+  and **tagged** (Tailscale admin console → Settings → Keys): ephemeral
+  so the device is removed automatically if it's ever redeployed rather
+  than piling up stale entries, tagged so it's governed by your tailnet
+  ACL policy rather than a personal user identity. This becomes
+  `TS_AUTHKEY` below — never commit it, and treat it like any other
+  credential (it authorises a device to join your tailnet).
+
+### Create the VPS
 
 ```sh
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
+HCLOUD_TOKEN=<your Hetzner project token> \
+TS_AUTHKEY=<ephemeral, tagged Tailscale pre-auth key> \
+SSH_KEY_NAME=<hcloud SSH key name, or a path to a local .pub file> \
+deploy/vps/create-vps.sh --yes
 ```
 
-Note the tailnet IPv4 address Tailscale assigns the machine (or give it a
+Drop `--yes` to get an interactive confirmation prompt instead — this
+creates a **billable** Hetzner resource (a `cx22` by default, roughly
+€3–5/month; see `VPS_TYPE`/`VPS_LOCATION`/`VPS_IMAGE`/`VPS_NAME` in the
+script's header if you want a different size or region). The script
+never provisions anything without either `--yes` or that confirmation.
+It prints the server's public IPv4, public IPv6 and its tailnet
+hostname (`netnl-instance` by default) once done; wait for cloud-init to
+finish on the host (a minute or two) before continuing — `cloud-init
+status --wait` over SSH as the `deploy` user confirms it.
+
+What this buys you, concretely: Docker CE + the compose plugin and
+Tailscale installed from their official apt repositories (no `curl |
+sh`), a non-root `deploy` user with your SSH key and no root login left
+open, `PasswordAuthentication no`, a `ufw` firewall that default-denies
+inbound and only opens SSH (rate-limited) and the Tailscale UDP port,
+and the host already joined to your tailnet. See
+`deploy/vps/cloud-init.yaml` for the exact detail, and
+`openspec/changes/add-measurement-api/design.md`, "VPS provisioning
+(Hetzner) — for topology 1", for why each piece is there.
+
+The instance's batch API is **not** opened publicly by any of this —
+only ports needed for the batch stack itself (see step 2) go in the
+clearly-marked "Internet.nl public ports" block in
+`deploy/vps/cloud-init.yaml`'s firewall rules, and even those are left
+commented out until you confirm the exact set against upstream's guide.
+
+## 2. Deploy the Internet.nl batch stack
+
+The VPS from step 1 is a provisioned, Tailscale-joined host — nothing
+Internet.nl-specific runs on it yet. Follow
+[reference/self-hosted.md](../reference/self-hosted.md) for the sizing
+context and the upstream Docker Compose deployment guide:
+<https://github.com/internetstandards/Internet.nl/blob/main/documentation/Docker-deployment-batch.md>.
+This part is entirely upstream's guide, not reproduced here — it covers
+the instance's own `.env`, DNS delegation for the domains it will
+measure, and bringing up its compose stack. A `/opt/internetnl-batch/`
+directory with a pointer back to that guide is already there, left by
+cloud-init, as a landing spot (not a reproduction of the stack itself).
+Create a batch user with upstream's `user_manage.sh` as usual; that
+credential becomes `NETNL_UPSTREAM_USERNAME` / `NETNL_UPSTREAM_PASSWORD`
+for the facade in step 5.
+
+## 3. Confirm the tailnet address
+
+The VPS already joined your tailnet during step 1 (`tailscale up` runs
+as part of cloud-init). Note its tailnet IPv4 address, or give it a
 stable [MagicDNS](https://tailscale.com/kb/1081/magicdns) name instead —
-either works as the endpoint host below):
+either works as the endpoint host in step 5:
 
 ```sh
-tailscale ip -4
+ssh deploy@<public-ipv4-from-step-1> -- tailscale ip -4
 ```
 
 The facade's Kubernetes node(s) (or, at minimum, the node the facade pod
@@ -63,7 +123,7 @@ runs on) must be on the same tailnet — join them the same way, or run
 Tailscale as a sidecar/subnet-router per your cluster's networking setup;
 that part is cluster-specific and out of scope here.
 
-## 3. Do not publish the batch API publicly
+## 4. Do not publish the batch API publicly
 
 The instance's own Compose stack must **not** expose the batch API's port
 on the VPS's public interface. Bind it to `127.0.0.1` or to the
@@ -74,25 +134,47 @@ API port is unreachable — the same check topology 2's runbook
 ([deploy-facade.md](deploy-facade.md)) asks for with its internal docker
 network, applied here to the tailnet boundary instead.
 
-## 4. Point the homelab facade at the tailnet address
+## 5. Wire the facade to the tailnet address
 
-In the facade's configuration (the homelab ArgoCD app / K8s manifests
-that carry `NETNL_UPSTREAM_ENDPOINT` and the credential, per
-`openspec/changes/add-measurement-api/design.md`, "Configuration"), set:
+This is the only step that touches the facade side (homelab Kubernetes),
+not the VPS. It has two parts: a Secret carrying the batch credential
+from step 2, and a ConfigMap entry pointing at the VPS's tailnet
+address from step 3.
+
+Create (or update) the `netnl-upstream` Secret from the batch user you
+created in step 2 — the same credential pair, never the facade's own
+tenant credentials:
+
+```sh
+kubectl -n netnl create secret generic netnl-upstream \
+  --from-literal=NETNL_UPSTREAM_USERNAME=<batch credential username> \
+  --from-literal=NETNL_UPSTREAM_PASSWORD=<batch credential password> \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+(`--dry-run=client -o yaml | kubectl apply -f -` so re-running this
+after a credential rotation updates the Secret in place, instead of
+`kubectl create` failing because it already exists.)
+
+Then set `NETNL_UPSTREAM_ENDPOINT` in the homelab `netnl-config`
+ConfigMap (the same one referenced in
+[beta.md](beta.md#what-to-observe-during-the-beta-and-how-to-act-on-it),
+from
+[MWest2020/homelab#13](https://github.com/MWest2020/homelab/pull/13)) to
+the VPS's tailnet address or MagicDNS name from step 3 — **never** its
+public IP:
 
 ```
 NETNL_UPSTREAM_ENDPOINT=https://<vps-tailnet-address-or-magicdns-name>/api/batch/v2
-NETNL_UPSTREAM_USERNAME=<batch credential username>
-NETNL_UPSTREAM_PASSWORD=<batch credential password>
 ```
 
-using the tailnet address (or MagicDNS name) from step 2 — never the
-VPS's public IP. If the instance serves plain HTTP over the tailnet
-(no TLS terminated on that internal hop), also set
-`NETNL_ALLOW_HTTP=1`, matching the same internal-hop allowance the
-co-located compose recipe documents.
+If the instance serves plain HTTP over the tailnet (no TLS terminated on
+that internal hop), also set `NETNL_ALLOW_HTTP=1` in the same
+ConfigMap, matching the same internal-hop allowance the co-located
+compose recipe documents. Roll the facade deployment (or let ArgoCD
+sync) to pick up both changes.
 
-## 5. Expose the facade, not the instance
+## 6. Expose the facade, not the instance
 
 The facade itself is what tenants reach publicly. In the K8s topology it
 is exposed via **Tailscale Funnel** on the homelab cluster (Tailscale
@@ -114,6 +196,14 @@ curl -u "$NETNL_UPSTREAM_USERNAME:$NETNL_UPSTREAM_PASSWORD" \
 and, from a host outside the tailnet, confirm the same request against
 the VPS's **public** address fails (connection refused/timeout) — the
 batch API must have no public listener.
+
+Finally, run [`scripts/acceptance.sh`](../../scripts/acceptance.sh)
+(task 4.2) against the live facade — it exercises the unmodified
+`internetnl` CLI's `submit`/`results` against the facade and, optionally
+(`NETNL_INSTANCE_PROBE_URL`), confirms the instance itself is
+unreachable from outside the tailnet. See the script's own header
+comment for the required environment, and
+[beta.md](beta.md#gono-go) for how this gates opening the beta.
 
 ## Not an SLA
 
