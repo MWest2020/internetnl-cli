@@ -1,0 +1,177 @@
+#cloud-config
+#
+# Hetzner Cloud user-data for the Internet.nl batch-instance VPS
+# (topology 1 — see openspec/changes/add-measurement-api/design.md, "VPS
+# provisioning (Hetzner) — for topology 1", and
+# docs/how-to/deploy-instance-vps.md for the full runbook).
+#
+# This file is a TEMPLATE. It carries three placeholders (spelled out
+# below without their dollar-brace syntax here, so this descriptive
+# comment itself is not rewritten by the substitution — see the actual
+# markers further down, in `hostname:`, `users:` and `runcmd:`),
+# substituted by deploy/vps/create-vps.sh into a throwaway temp file
+# right before the server is created — NEVER filled in or committed
+# here:
+#
+#   TS_AUTHKEY              Tailscale pre-auth key. Use an EPHEMERAL,
+#                            TAGGED, SINGLE-USE (reusable=false), SHORT-TTL
+#                            key (see the how-to for why).
+#   OPERATOR_SSH_PUBLIC_KEY  the operator's SSH public key, one line.
+#   VPS_NAME                 the server name from create-vps.sh, also used
+#                            as this host's OS hostname and Tailscale
+#                            hostname below (`hostname:` and
+#                            `tailscale up --hostname=`), so all three
+#                            stay consistent.
+#
+# Package route, deliberately: Docker CE and Tailscale are installed
+# from their OFFICIAL apt repositories below (GPG key fetched to a file
+# with `curl -o`, never piped into a shell — no `curl | sh`), matching
+# each project's own documented apt-repo install method:
+#   https://docs.docker.com/engine/install/ubuntu/#install-using-the-repository
+#   https://tailscale.com/kb/1023/install-ubuntu
+#
+# This host runs Ubuntu 22.04 (jammy) — deploy/vps/create-vps.sh defaults
+# VPS_IMAGE to ubuntu-22.04; the Tailscale repo file below is pinned to
+# jammy to match. If you ever change VPS_IMAGE, update that line too.
+
+hostname: ${VPS_NAME}
+
+package_update: true
+package_upgrade: true
+
+# Only base tools here — Docker and Tailscale come from repos added in
+# runcmd below, which must run before they can be apt-installed.
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - ufw
+
+users:
+  - name: deploy
+    gecos: netnl instance deploy user
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${OPERATOR_SSH_PUBLIC_KEY}
+
+write_files:
+  # SSH hardening drop-in (sshd_config.d(5) — read after the distro's own
+  # /etc/ssh/sshd_config, so this overrides it). Applied by `systemctl
+  # restart ssh` in runcmd, once cloud-init has confirmed the deploy
+  # user's key above is in place.
+  - path: /etc/ssh/sshd_config.d/99-netnl-hardening.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+
+  # Bootstrap scaffold for the Internet.nl batch stack itself. This is
+  # NOT a reproduction of upstream's compose stack — that stack is
+  # upstream's to maintain and changes on its own schedule. This is only
+  # a placeholder directory + pointer; ownership is fixed to the deploy
+  # user in runcmd below (write_files itself always writes as root).
+  - path: /opt/internetnl-batch/README.md
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Internet.nl batch instance — bootstrap scaffold
+
+      This directory is a placeholder. Docker CE, the compose plugin and
+      Tailscale are already installed on this host by cloud-init;
+      internetnl-cli's deploy/vps/create-vps.sh provisions the host and
+      deliberately stops there.
+
+      The Internet.nl batch stack itself (its `.env`, DNS delegation,
+      the `docker-compose.yml`, and creating a batch user with
+      `user_manage.sh`) is upstream's guide, not reproduced here — follow
+      it exactly, in this directory or wherever it ends up:
+
+        https://github.com/internetstandards/Internet.nl/blob/main/documentation/Docker-deployment-batch.md
+
+      See also docs/how-to/deploy-instance-vps.md in the internetnl-cli
+      repo for how this VPS, the tailnet and the facade fit together, and
+      docs/reference/self-hosted.md for the sizing/addressing
+      requirements this host was provisioned to satisfy.
+
+      Reminder: the batch API itself must never be published on this
+      host's public interface — only over the tailnet. The host firewall
+      (ufw, see cloud-init.yaml) does not open a public port for it.
+
+runcmd:
+  # --- Docker CE: official apt repository -------------------------------
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - >
+    bash -c 'echo "deb [arch=$(dpkg --print-architecture)
+    signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu
+    $(. /etc/os-release && echo "$VERSION_CODENAME") stable" >
+    /etc/apt/sources.list.d/docker.list'
+
+  # --- Tailscale: official apt repository (pinned to jammy) -------------
+  - curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+  - curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list
+
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin tailscale
+
+  - usermod -aG docker deploy
+
+  # --- Bootstrap scaffold ownership --------------------------------------
+  - chown -R deploy:deploy /opt/internetnl-batch
+
+  # --- SSH hardening: apply the drop-in written above --------------------
+  # (Only restarted now, after confirming above that the deploy user and
+  # its ssh_authorized_keys already exist — never disable root login
+  # before another way in is in place.)
+  - systemctl restart ssh
+
+  # --- Host firewall (ufw), default-deny inbound --------------------------
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw limit 22/tcp comment 'ssh (rate-limited)'
+  - ufw allow 41641/udp comment 'tailscale'
+  # --- BEGIN Internet.nl public ports: CONFIRM/FILL IN PER UPSTREAM GUIDE ---
+  # The Internet.nl batch instance runs its own authoritative DNS and
+  # other components that need public ports open on THIS host — the
+  # exact set is upstream's to specify, not internetnl-cli's:
+  #   https://github.com/internetstandards/Internet.nl/blob/main/documentation/Docker-deployment-batch.md
+  # Uncomment/add the rules the upstream guide calls for once the batch
+  # stack itself is deployed. The batch API (its HTTP port) must NEVER
+  # be opened here — it stays reachable only over the tailnet (see
+  # docs/how-to/deploy-instance-vps.md, "Do not publish the batch API
+  # publicly").
+  # - ufw allow 53/tcp comment 'authoritative DNS (internet.nl, upstream guide)'
+  # - ufw allow 53/udp comment 'authoritative DNS (internet.nl, upstream guide)'
+  # --- END Internet.nl public ports ---
+  - ufw --force enable
+
+  # --- Join the tailnet ----------------------------------------------------
+  # The TS_AUTHKEY placeholder below is substituted by create-vps.sh from
+  # the environment at create time and is never written to this repo as
+  # such. Use an ephemeral, tagged pre-auth key so it cannot re-register
+  # another device later and is scoped by ACL tag rather than by a
+  # long-lived user identity.
+  # `--ssh` is optional (Tailscale SSH as a tailnet-only backup path);
+  # drop it if you don't want that surface.
+  #
+  # WARNING — at-rest exposure: cloud-init caches the rendered user-data
+  # (this file, with TS_AUTHKEY filled in in plaintext) on the host at
+  # /var/lib/cloud/instance/user-data.txt and in cloud-init's own
+  # per-instance script/log copies, root-only but readable by the `deploy`
+  # user via its NOPASSWD sudo. There is no reliable way to scrub every
+  # one of those copies from within this same cloud-init run without
+  # risking breaking cloud-init itself (see
+  # docs/how-to/deploy-instance-vps.md, "Tailscale auth key at-rest on
+  # the host" for the full reasoning). Mitigation instead: use a
+  # SINGLE-USE (reusable=false) key with a SHORT TTL, so the leftover
+  # plaintext copy is worthless for re-registering a device by the time
+  # anyone could read it.
+  - tailscale up --authkey=${TS_AUTHKEY} --hostname=${VPS_NAME} --ssh
+
+final_message: "${VPS_NAME} cloud-init finished after $UPTIME seconds. Docker, the compose plugin and Tailscale are installed; SSH is hardened; ufw is enabled. Next: the Internet.nl-specific steps in docs/how-to/deploy-instance-vps.md."
