@@ -243,6 +243,37 @@ give:
   liveness/readiness probes have a target without credentials. It is not part
   of the v2 measurement subset.
 
+### VPS provisioning (Hetzner) — for topology 1
+
+The batch instance needs a fixed public IPv4 + IPv6 (it measures from its own
+address), which the NAT'd homelab cannot give — confirmed empirically (no
+working public IPv6, shared NAT IPv4). So the instance runs on a Hetzner Cloud
+VPS. Provisioning lives in `deploy/vps/`:
+
+- **`deploy/vps/cloud-init.yaml`** — Hetzner user-data run on first boot:
+  system update, Docker CE + compose plugin, Tailscale; a non-root user; SSH
+  hardening (no root login, key-only); a host firewall that allows SSH
+  (restricted), the Tailscale UDP port, and a clearly-marked slot for the
+  Internet.nl-required public ports (notably authoritative DNS) per upstream's
+  batch guide — the batch **API** itself is never opened publicly, only
+  reachable over the tailnet. Joins the tailnet with `${TS_AUTHKEY}` (an
+  ephemeral, tagged, pre-auth key — injected at create time, never committed).
+- **`deploy/vps/create-vps.sh`** — `hcloud` script: creates the server
+  (type/image/location configurable, IPv6 on, a Hetzner firewall, the operator's
+  SSH key) with the cloud-init as user-data; reads `HCLOUD_TOKEN` and
+  `TS_AUTHKEY` from the environment; prints the public IPv4/IPv6 and the
+  tailnet name. No secret is hardcoded.
+- **`docs/how-to/deploy-instance-vps.md`** carries the runbook, extended with:
+  create the VPS, then the Internet.nl-specific config that only the operator
+  can do (upstream batch deployment guide, the instance `.env`, DNS delegation,
+  a batch user via `user_manage.sh`), then wire the facade — create the
+  `netnl-upstream` Secret from that batch user and set `NETNL_UPSTREAM_ENDPOINT`
+  to the VPS's tailnet address — and finally run `scripts/acceptance.sh`.
+- The script provisions the host and lays out the stack scaffold; the
+  Internet.nl stack config (domain, DNS, batch user) stays upstream's guide,
+  not reproduced here. Creating billable cloud resources is the operator's
+  action (their `HCLOUD_TOKEN`), never automatic.
+
 ## Testing constraints
 
 - No network I/O: FastAPI's in-process `TestClient`; upstream faked with the
