@@ -48,19 +48,56 @@ covered in step 2 below.
   ssh-key list`, or add one with `hcloud ssh-key create`), or the path
   to a local public key file — either works as `SSH_KEY_NAME` below.
 - A Tailscale [pre-auth
-  key](https://tailscale.com/kb/1085/auth-keys), created **ephemeral**
-  and **tagged** (Tailscale admin console → Settings → Keys): ephemeral
-  so the device is removed automatically if it's ever redeployed rather
-  than piling up stale entries, tagged so it's governed by your tailnet
-  ACL policy rather than a personal user identity. This becomes
-  `TS_AUTHKEY` below — never commit it, and treat it like any other
-  credential (it authorises a device to join your tailnet).
+  key](https://tailscale.com/kb/1085/auth-keys), created **ephemeral**,
+  **tagged**, **single-use** (`reusable: false`) and with the
+  **shortest TTL** the admin console allows (Tailscale admin console →
+  Settings → Keys): ephemeral so the device is removed automatically if
+  it's ever redeployed rather than piling up stale entries, tagged so
+  it's governed by your tailnet ACL policy rather than a personal user
+  identity, single-use + short-TTL because of the at-rest exposure
+  described below. This becomes `TS_AUTHKEY` below — never commit it,
+  and treat it like any other credential (it authorises a device to join
+  your tailnet).
+
+  **Tailscale auth key at-rest on the host.** `create-vps.sh` never
+  writes the rendered cloud-init (with the key filled in) anywhere but a
+  throwaway temp file on *your* machine, deleted immediately after the
+  server is created. However, the *server itself* receives that same
+  rendered cloud-init as its user-data, and cloud-init caches it,
+  plaintext, on the host — at minimum
+  `/var/lib/cloud/instance/user-data.txt`, and in cloud-init's own
+  per-instance script/log copies under `/var/lib/cloud/instance/`. That
+  cache is root-only (`0600`/`0640` depending on the file), but the
+  `deploy` user has `NOPASSWD:ALL` sudo, so in practice anyone who can
+  SSH in as `deploy` can read it.
+
+  We deliberately do **not** try to have cloud-init scrub or shred its
+  own cached user-data as a `runcmd` step: cloud-init keeps *more than
+  one* copy of the same data during a run (for example, `runcmd` itself
+  is first extracted into its own script file under
+  `/var/lib/cloud/instance/scripts/`, separate from
+  `user-data.txt`), so a single `rm`/`shred` step would not reliably get
+  all of them, would need to run as the very last thing cloud-init does
+  (or risk breaking later modules that still expect to read the cached
+  data), and touching cloud-init's own bookkeeping files from inside a
+  `runcmd` step is exactly the kind of fragile, easy-to-get-subtly-wrong
+  change that turns "cleans up a secret" into "silently breaks
+  provisioning or locks out the next `cloud-init` run." That trade-off
+  isn't worth it here.
+
+  The mitigation instead: make the key **single-use and short-TTL**, so
+  by the time anyone reads the leftover plaintext copy, Tailscale has
+  already consumed it and it cannot register another device. If you want
+  the at-rest copy gone too, wipe it yourself once you've confirmed the
+  host joined the tailnet (for example `ssh deploy@<host> sudo shred -u
+  /var/lib/cloud/instance/user-data.txt`) — that is a manual, deliberate
+  step outside cloud-init's own execution, not automated by this recipe.
 
 ### Create the VPS
 
 ```sh
 HCLOUD_TOKEN=<your Hetzner project token> \
-TS_AUTHKEY=<ephemeral, tagged Tailscale pre-auth key> \
+TS_AUTHKEY=<ephemeral, tagged, single-use, short-TTL Tailscale pre-auth key> \
 SSH_KEY_NAME=<hcloud SSH key name, or a path to a local .pub file> \
 deploy/vps/create-vps.sh --yes
 ```
@@ -71,14 +108,17 @@ creates a **billable** Hetzner resource (a `cx22` by default, roughly
 script's header if you want a different size or region). The script
 never provisions anything without either `--yes` or that confirmation.
 It prints the server's public IPv4, public IPv6 and its tailnet
-hostname (`netnl-instance` by default) once done; wait for cloud-init to
+hostname (`VPS_NAME`, `netnl-instance` by default — the same value also
+becomes the host's OS hostname and its `tailscale up --hostname=`, so
+all three are guaranteed to match) once done; wait for cloud-init to
 finish on the host (a minute or two) before continuing — `cloud-init
 status --wait` over SSH as the `deploy` user confirms it.
 
 What this buys you, concretely: Docker CE + the compose plugin and
 Tailscale installed from their official apt repositories (no `curl |
 sh`), a non-root `deploy` user with your SSH key and no root login left
-open, `PasswordAuthentication no`, a `ufw` firewall that default-denies
+open, `PasswordAuthentication no` and `KbdInteractiveAuthentication no`
+(only your SSH key gets in), a `ufw` firewall that default-denies
 inbound and only opens SSH (rate-limited) and the Tailscale UDP port,
 and the host already joined to your tailnet. See
 `deploy/vps/cloud-init.yaml` for the exact detail, and

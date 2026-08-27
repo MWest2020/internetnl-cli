@@ -5,16 +5,23 @@
 # provisioning (Hetzner) — for topology 1", and
 # docs/how-to/deploy-instance-vps.md for the full runbook).
 #
-# This file is a TEMPLATE. It carries two placeholders (spelled out below
-# without their dollar-brace syntax here, so this descriptive comment
-# itself is not rewritten by the substitution — see the actual markers
-# further down, in `users:` and `runcmd:`), substituted by
-# deploy/vps/create-vps.sh into a throwaway temp file right before the
-# server is created — NEVER filled in or committed here:
+# This file is a TEMPLATE. It carries three placeholders (spelled out
+# below without their dollar-brace syntax here, so this descriptive
+# comment itself is not rewritten by the substitution — see the actual
+# markers further down, in `hostname:`, `users:` and `runcmd:`),
+# substituted by deploy/vps/create-vps.sh into a throwaway temp file
+# right before the server is created — NEVER filled in or committed
+# here:
 #
 #   TS_AUTHKEY              Tailscale pre-auth key. Use an EPHEMERAL,
-#                            TAGGED key (see the how-to for why).
+#                            TAGGED, SINGLE-USE (reusable=false), SHORT-TTL
+#                            key (see the how-to for why).
 #   OPERATOR_SSH_PUBLIC_KEY  the operator's SSH public key, one line.
+#   VPS_NAME                 the server name from create-vps.sh, also used
+#                            as this host's OS hostname and Tailscale
+#                            hostname below (`hostname:` and
+#                            `tailscale up --hostname=`), so all three
+#                            stay consistent.
 #
 # Package route, deliberately: Docker CE and Tailscale are installed
 # from their OFFICIAL apt repositories below (GPG key fetched to a file
@@ -27,7 +34,7 @@
 # VPS_IMAGE to ubuntu-22.04; the Tailscale repo file below is pinned to
 # jammy to match. If you ever change VPS_IMAGE, update that line too.
 
-hostname: netnl-instance
+hostname: ${VPS_NAME}
 
 package_update: true
 package_upgrade: true
@@ -61,6 +68,7 @@ write_files:
     content: |
       PermitRootLogin no
       PasswordAuthentication no
+      KbdInteractiveAuthentication no
 
   # Bootstrap scaffold for the Internet.nl batch stack itself. This is
   # NOT a reproduction of upstream's compose stack — that stack is
@@ -146,11 +154,24 @@ runcmd:
   # --- Join the tailnet ----------------------------------------------------
   # The TS_AUTHKEY placeholder below is substituted by create-vps.sh from
   # the environment at create time and is never written to this repo as
-  # such. Use an ephemeral,
-  # tagged pre-auth key so it cannot re-register another device later and
-  # is scoped by ACL tag rather than by a long-lived user identity.
+  # such. Use an ephemeral, tagged pre-auth key so it cannot re-register
+  # another device later and is scoped by ACL tag rather than by a
+  # long-lived user identity.
   # `--ssh` is optional (Tailscale SSH as a tailnet-only backup path);
   # drop it if you don't want that surface.
-  - tailscale up --authkey=${TS_AUTHKEY} --hostname=netnl-instance --ssh
+  #
+  # WARNING — at-rest exposure: cloud-init caches the rendered user-data
+  # (this file, with TS_AUTHKEY filled in in plaintext) on the host at
+  # /var/lib/cloud/instance/user-data.txt and in cloud-init's own
+  # per-instance script/log copies, root-only but readable by the `deploy`
+  # user via its NOPASSWD sudo. There is no reliable way to scrub every
+  # one of those copies from within this same cloud-init run without
+  # risking breaking cloud-init itself (see
+  # docs/how-to/deploy-instance-vps.md, "Tailscale auth key at-rest on
+  # the host" for the full reasoning). Mitigation instead: use a
+  # SINGLE-USE (reusable=false) key with a SHORT TTL, so the leftover
+  # plaintext copy is worthless for re-registering a device by the time
+  # anyone could read it.
+  - tailscale up --authkey=${TS_AUTHKEY} --hostname=${VPS_NAME} --ssh
 
-final_message: "netnl-instance cloud-init finished after $UPTIME seconds. Docker, the compose plugin and Tailscale are installed; SSH is hardened; ufw is enabled. Next: the Internet.nl-specific steps in docs/how-to/deploy-instance-vps.md."
+final_message: "${VPS_NAME} cloud-init finished after $UPTIME seconds. Docker, the compose plugin and Tailscale are installed; SSH is hardened; ufw is enabled. Next: the Internet.nl-specific steps in docs/how-to/deploy-instance-vps.md."
