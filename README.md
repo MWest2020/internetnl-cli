@@ -13,6 +13,12 @@ for pipelines.
 > [`openspec/changes/add-internetnl-cli/design.md`](openspec/changes/add-internetnl-cli/design.md);
 > the commands below match the current behaviour.
 
+**New here?** See the illustrated
+[**how-it-works page**](https://claude.ai/code/artifact/82279ff8-2a68-43ee-a7b5-2d8fa0ebfa12)
+(the whole flow, the commands, the deploy topology), or the runnable
+[**internetnl-cli-demo**](https://github.com/MWest2020/internetnl-cli-demo)
+(quickstart + example hosts + CI-gate example).
+
 ## The rule
 
 **Only measure hosts you operate or have explicit permission to test.**
