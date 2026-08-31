@@ -13,13 +13,20 @@
 # any other credential); grep this file if in doubt.
 #
 # Required environment:
-#   NETNL_FACADE_URL      https://netnl.<tailnet>.ts.net (or equivalent) —
-#                          the facade's public base URL, *without* a
-#                          trailing /api/batch/v2. This script sets
+#   NETNL_FACADE_URL      https://api.westerweel.work (or, as a fallback
+#                          example, https://netnl.<tailnet>.ts.net) — the
+#                          facade's public base URL, *without* a trailing
+#                          /api/batch/v2. This script sets
 #                          INTERNETNL_ENDPOINT to NETNL_FACADE_URL
-#                          verbatim (the CLI itself appends /api/batch/v2,
-#                          exactly as it does against a bare batch
-#                          instance). If NETNL_FACADE_URL already ends in
+#                          verbatim. The CLI appends only the v2 route
+#                          paths (/requests, /requests/{id},
+#                          /requests/{id}/results, /metadata/report) to
+#                          whatever INTERNETNL_ENDPOINT is set to — it never
+#                          adds /api/batch/v2 itself; a bare batch instance
+#                          needs that prefix baked into its own
+#                          INTERNETNL_ENDPOINT, but the facade serves the
+#                          v2 routes at the root, so pass the bare base URL
+#                          here. If NETNL_FACADE_URL already ends in
 #                          /api/batch/v2 — a natural habit carried over
 #                          from a self-hosted instance's own endpoint —
 #                          this script strips that suffix and warns,
@@ -100,14 +107,16 @@ POLL_MAX_SECONDS="${ACCEPTANCE_POLL_MAX_SECONDS:-60}"
 # PASSWORD point at the facade instead of a batch instance).
 #
 # INTERNETNL_ENDPOINT is set to NETNL_FACADE_URL verbatim below, not
-# appended to — the CLI itself appends /api/batch/v2, the same as it
-# does against a bare batch instance. Guard against the natural habit
-# (carried over from a self-hosted instance's own INTERNETNL_ENDPOINT)
-# of NETNL_FACADE_URL already ending in /api/batch/v2, which would
-# otherwise double the path and 404.
+# appended to — the CLI appends only the v2 route paths (/requests, ...)
+# to whatever base URL it is given; it never adds /api/batch/v2 itself.
+# The facade serves those routes at the root, so the bare base URL is
+# exactly right here. Guard against the natural habit (carried over from
+# a self-hosted instance's own INTERNETNL_ENDPOINT, which does need that
+# prefix baked in) of NETNL_FACADE_URL already ending in /api/batch/v2,
+# which would otherwise double the path and 404.
 case "$NETNL_FACADE_URL" in
     */api/batch/v2 | */api/batch/v2/)
-        _note "NETNL_FACADE_URL already ends in /api/batch/v2 (the CLI appends this itself) — stripping it to avoid a doubled path/404. Original: $NETNL_FACADE_URL"
+        _note "NETNL_FACADE_URL already ends in /api/batch/v2 (the facade serves the v2 routes at the root, so this suffix is not needed here) — stripping it to avoid a doubled path/404. Original: $NETNL_FACADE_URL"
         NETNL_FACADE_URL="${NETNL_FACADE_URL%/api/batch/v2/}"
         NETNL_FACADE_URL="${NETNL_FACADE_URL%/api/batch/v2}"
         ;;

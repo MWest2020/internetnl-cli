@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-08-27
+last_reviewed: 2026-08-31
 ---
 
 # Deploying the upstream instance on a VPS, reached over a tailnet
@@ -217,8 +217,10 @@ sync) to pick up both changes.
 ## 6. Expose the facade, not the instance
 
 The facade itself is what tenants reach publicly. In the K8s topology it
-is exposed via **Tailscale Funnel** on the homelab cluster (Tailscale
-terminates TLS and provides an `*.ts.net` hostname), not via the compose
+is exposed via **two parallel public paths**: a **Cloudflare Tunnel** on a
+branded hostname (`https://api.westerweel.work`, primary — decided
+2026-08-31, owner Mark) and the **Tailscale Funnel** `*.ts.net` hostname
+(fallback, kept up in parallel). Neither uses the compose
 `Caddyfile`/`edge` service — that belongs only to the co-located topology.
 The VPS in this runbook never needs a public path to its batch API at
 all; only the facade, running elsewhere, needs a private path to it.

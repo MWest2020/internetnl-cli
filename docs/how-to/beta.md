@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-08-25
+last_reviewed: 2026-08-31
 ---
 
 # Running the netnl private beta
@@ -23,8 +23,10 @@ container/pod. In the co-located compose topology
 docker compose -f deploy/compose.yaml exec netnl netnl-admin user add <naam>
 ```
 
-In the K8s topology (facade fronted by Tailscale Funnel, per
-`design.md`'s "Two supported topologies"), the equivalent is:
+In the K8s topology (per `design.md`'s "Two supported topologies" —
+the facade is now fronted publicly by a Cloudflare Tunnel as the
+primary path, with the Tailscale Funnel hostname kept up in parallel
+as a fallback), the equivalent is:
 
 ```sh
 kubectl -n netnl exec deploy/netnl -- netnl-admin user add <naam>
@@ -63,8 +65,27 @@ shows only username, `created_at` and state.
 
 For each of the handful of known beta users, hand over:
 
-- The endpoint: `https://netnl.<tailnet>.ts.net` (the facade's public
-  Funnel hostname — fill in your actual tailnet name).
+- The endpoint: **`https://api.westerweel.work`** — the facade's
+  primary, branded hostname, hand this out by default. The Funnel hostname
+  (`https://netnl.<tailnet>.ts.net` — fill in your actual tailnet name)
+  keeps working in parallel as a fallback if the primary name is ever
+  unreachable; both currently front the same facade.
+
+  **Provenance of the primary path:** a Cloudflare Tunnel named `netnl-api`
+  (remotely-managed; its ingress config lives at Cloudflare, not in this
+  repo), served by the `cloudflared` Deployment `netnl-tunnel` in the
+  homelab's `netnl` namespace. The tunnel's run-token lives only in the
+  out-of-band Secret `netnl-tunnel` — never in this repo. DNS is a proxied
+  CNAME, `api.westerweel.work` → `<tunnel-id>.cfargotunnel.com`.
+- `INTERNETNL_ENDPOINT` must be the **bare base URL** (e.g.
+  `https://api.westerweel.work`, no trailing path) — the facade serves
+  the batch-v2 routes (`/requests`, `/requests/{id}`,
+  `/requests/{id}/results`, `/metadata/report`) directly on the root, with
+  no `/api/batch/v2` prefix. `/health` is served at the root too, but it
+  is a separate, **unauthenticated** liveness route, not part of the
+  batch-v2 subset (see design.md, "Facade image and liveness"). Any path
+  the facade doesn't proxy replies `501 not-implemented` by design; that
+  is not a misconfiguration to chase down.
 - Their own `INTERNETNL_USERNAME` / `INTERNETNL_PASSWORD` pair from
   `user add` above.
 - A pointer to the `internetnl` CLI quickstart in the top-level
@@ -131,15 +152,18 @@ observation to fold back into the deploy schedule.
 
 ## Go/no-go
 
-Run [`scripts/acceptance.sh`](../../scripts/acceptance.sh) against the
-live facade before handing out the first beta credential, and again
-after any limit/config change you make in response to what the beta
-turns up. It exercises the unmodified `internetnl` CLI end to end
-(submit, results, and the instance-not-public check) and is the go/no-go
-signal for task 4.2. Read the script's own header comment for the
-environment variables it needs (`NETNL_FACADE_URL`,
-`INTERNETNL_USERNAME`, `INTERNETNL_PASSWORD`, `TEST_DOMAIN`, and the
-optional `NETNL_INSTANCE_PROBE_URL`).
+Run [`scripts/acceptance.sh`](../../scripts/acceptance.sh) against **both**
+public URLs — the primary `https://api.westerweel.work` and the Funnel
+fallback — before handing out the first beta credential, and again after
+any limit/config change you make in response to what the beta turns up.
+Both must pass: a beta user might be handed either URL (the fallback
+matters only if it actually works), and a tunnel-specific misconfiguration
+on one path would otherwise go unnoticed while the other stays green. It
+exercises the unmodified `internetnl` CLI end to end (submit, results, and
+the instance-not-public check) and is the go/no-go signal for task 4.2.
+Read the script's own header comment for the environment variables it
+needs (`NETNL_FACADE_URL`, `INTERNETNL_USERNAME`, `INTERNETNL_PASSWORD`,
+`TEST_DOMAIN`, and the optional `NETNL_INSTANCE_PROBE_URL`).
 
 ## After the beta
 

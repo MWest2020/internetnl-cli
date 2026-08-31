@@ -3,9 +3,12 @@
 Pins the buildable surface for sections 1–3 of `tasks.md` — the facade code
 and its tests, which need no live instance (the upstream client is faked at
 the same opener seam the CLI uses). Sections 0, 4 and 5 need real
-infrastructure and stay open. Owner decisions still pending (hostname, final
-retention and limit values) are represented here as environment-tunable
-defaults, so building now commits to nothing.
+infrastructure and stay open. The public hostname is decided (2026-08-31,
+owner Mark): `https://api.westerweel.work`, a Cloudflare Tunnel, primary,
+with the Tailscale Funnel hostname kept up in parallel as a fallback — see
+"Two supported topologies" below. Final retention and limit values are
+still pending and are represented here as environment-tunable defaults, so
+building now commits to nothing on those.
 
 ## Placement and stack
 
@@ -224,9 +227,12 @@ give:
    the homelab as an ArgoCD app and reaches the instance over the tailnet
    (`NETNL_UPSTREAM_ENDPOINT` = the instance's tailnet address; the VPS does
    not publish its batch API publicly). The facade is exposed publicly via
-   **Tailscale Funnel** — Tailscale terminates TLS and gives an `*.ts.net`
-   hostname, so no Caddy edge is needed in K8s. The compose `Caddyfile`/`edge`
-   service belongs to topology (2) only.
+   **two parallel paths**: a **Cloudflare Tunnel** on a branded hostname
+   (ours: `https://api.westerweel.work`) as the primary path, and the
+   **Tailscale Funnel** `*.ts.net` hostname kept up in parallel as a
+   fallback. Both terminate TLS themselves, so no Caddy edge is needed in
+   K8s either way. The compose `Caddyfile`/`edge` service belongs to
+   topology (2) only.
 2. **Co-located** (the compose recipe): facade + instance on one host with a
    public IP, Caddy at the edge. Simpler, but needs a public-IP host that
    also runs the full instance stack.
