@@ -1,5 +1,6 @@
 import base64
 import copy
+import importlib.metadata
 import json
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from internetnl_cli.client import BatchClient, HttpResponse
 from internetnl_cli.config import Config
 from internetnl_cli.errors import ApiError, TransportError
-from fakes import REQUEST_ID, RESULTS_REPLY, FakeOpener, raising_opener
+from fakes import METADATA_REPLY, REQUEST_ID, RESULTS_REPLY, FakeOpener, raising_opener
 
 
 def _config(**overrides):
@@ -89,6 +90,51 @@ def test_authorization_header_present_and_correct_with_credentials():
     headers = opener.calls[0][3]
     expected = "Basic " + base64.b64encode(b"alice:wonderland").decode()
     assert headers["Authorization"] == expected
+
+
+def _submit_call(client):
+    client.submit(["a.example"], "web", None)
+
+
+def _status_call(client):
+    client.status(REQUEST_ID)
+
+
+def _results_call(client):
+    client.results(REQUEST_ID)
+
+
+def _metadata_report_call(client):
+    client.metadata_report()
+
+
+@pytest.mark.parametrize(
+    "response, make_call",
+    [
+        (_ok(_request_reply()), _submit_call),
+        (_ok(_request_reply(status="running")), _status_call),
+        (_ok(RESULTS_REPLY), _results_call),
+        (_ok(METADATA_REPLY), _metadata_report_call),
+    ],
+    ids=["submit", "status", "results", "metadata_report"],
+)
+def test_user_agent_header_present_on_every_request(response, make_call):
+    opener = FakeOpener([response])
+    client = BatchClient(_config(), opener=opener)
+    make_call(client)
+    headers = opener.calls[0][3]
+    expected = f"internetnl-cli/{importlib.metadata.version('internetnl-cli')}"
+    assert headers["User-Agent"] == expected
+
+
+def test_package_version_falls_back_to_unknown_on_any_lookup_failure(monkeypatch):
+    import internetnl_cli.client as client_module
+
+    def raise_not_found(name):
+        raise client_module.PackageNotFoundError(name)
+
+    monkeypatch.setattr(client_module, "version", raise_not_found)
+    assert client_module._package_version() == "unknown"
 
 
 def test_debug_stream_shows_method_and_url_but_not_secret():
@@ -205,6 +251,60 @@ def test_urllib_opener_redirect_handler_refuses_every_redirect():
         "https://evil.example/steal",
     )
     assert result is None
+
+
+# --- u1: the urllib layer itself must not fall back to its default UA -------
+
+
+def test_urllib_opener_does_not_let_urllib_inject_its_default_user_agent():
+    """Regression: a header dict handed to `urllib_opener` must win.
+
+    The unit tests above only prove `BatchClient` puts `User-Agent` into the
+    headers dict it builds; they never exercise `urllib_opener` itself, so
+    they could not catch `urllib.request` silently overriding — or
+    appending its own `Python-urllib/x.y` — default `User-Agent`. Cloudflare
+    (and other bot-protection in front of a batch instance) blocks exactly
+    that default string with a 403, which is the real-world failure this
+    header exists to prevent. This drives a real request through
+    `urllib_opener` to a real local HTTP server, so nothing about the
+    `urllib` request/opener plumbing is faked away.
+    """
+    import http.server
+    import threading
+
+    from internetnl_cli.client import _USER_AGENT, urllib_opener
+
+    received: dict = {}
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            received["user_agent"] = self.headers.get("User-Agent")
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+            pass  # keep test output quiet
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        url = f"http://{host}:{port}/"
+        response = urllib_opener("GET", url, None, {"User-Agent": _USER_AGENT}, 5.0)
+    finally:
+        server.shutdown()
+        thread.join()
+
+    assert response.status == 200
+    user_agent = received.get("user_agent")
+    assert user_agent is not None
+    assert user_agent.startswith("internetnl-cli/")
+    assert "Python-urllib" not in user_agent
 
 
 # --- m1: malformed 200 reply fails closed ------------------------------------

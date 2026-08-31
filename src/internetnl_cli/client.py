@@ -13,10 +13,31 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from typing import Callable, TextIO
 
 from internetnl_cli.config import Config
 from internetnl_cli.errors import ApiError, TransportError
+
+
+def _package_version() -> str:
+    """The installed distribution version, or a safe fallback.
+
+    An editable install without build metadata (or any other reason the
+    distribution can't be found) must not crash request-building — a
+    missing version string is not a reason to fail an HTTP call. This is
+    computed at *import* time (see `_USER_AGENT` below), so any exception
+    here — not just `PackageNotFoundError` (e.g. corrupt dist-info
+    METADATA) — must be swallowed: an exception escaping this function
+    would crash importing this module, and with it `netnl-serve`.
+    """
+    try:
+        return version("internetnl-cli")
+    except Exception:
+        return "unknown"
+
+
+_USER_AGENT = f"internetnl-cli/{_package_version()}"
 
 
 @dataclass(frozen=True)
@@ -168,6 +189,7 @@ class BatchClient:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": _USER_AGENT,
         }
         if self._config.username:
             token = f"{self._config.username}:{self._config.password}".encode()
