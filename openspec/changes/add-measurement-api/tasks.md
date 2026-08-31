@@ -8,9 +8,11 @@
       (`add-internetnl-cli` task 4.4)
 - [ ] 0.3 Owner decisions recorded: service name — **`netnl`** (decided
       2026-08-22; keeps the reference to the mission: an opinion on how the
-      internet should work, according to NL); still open: public hostname,
-      retention periods, initial limits (rate, max domains, max concurrent
-      runs)
+      internet should work, according to NL); public hostname — decided
+      2026-08-31 (owner Mark): `https://api.westerweel.work` primary
+      (Cloudflare Tunnel), the Tailscale Funnel `*.ts.net` hostname kept up
+      in parallel as a fallback; still open: retention periods, initial
+      limits (rate, max domains, max concurrent runs)
 
 ## 1. Skeleton
 
@@ -60,18 +62,33 @@
         grace window. No code change: `prune` staying a deploy-scheduled job
         rather than an in-process thread is intentional (design.md,
         "Tenancy and identity").
-- [ ] 4.2 Acceptance test: `internetnl` CLI against the facade, unchanged,
+- [x] 4.2 Acceptance test: `internetnl` CLI against the facade, unchanged,
       green — and the instance unreachable from outside
-      - Tooling ready: `scripts/acceptance.sh` (shellcheck-clean, exercises
-        the unmodified `internetnl` CLI's submit/results and the
-        instance-not-public probe). Not yet run — waiting on the live VPS
-        instance and facade.
+      - Tooling: `scripts/acceptance.sh` (shellcheck-clean, exercises the
+        unmodified `internetnl` CLI's submit/results and the
+        instance-not-public probe).
+      - **2026-08-30**: ran green against the live chain via the Funnel URL
+        (facade `https://netnl.tail8f7877.ts.net`): submit of
+        westerweel.work (request `2024c2e8ffef4091a84f65658c21eff4`, type
+        web) → status `done`, results a valid v2 JSON document;
+        instance-privacy-check PASS (`https://5.75.159.196` timeout).
+      - **2026-08-31**: Cloudflare Tunnel (`https://api.westerweel.work`)
+        brought up in parallel; parity verified against both URLs:
+        `GET /health` → 200 on both `https://api.westerweel.work` and the
+        Funnel URL; `POST /requests` with wrong credentials → 401 with a
+        v2-shaped error body on both.
 - [ ] 4.3 Private beta with issued credentials; capacity observations fed
       back into the default limits
       - Runbook ready: `docs/how-to/beta.md` (credential issuance/
         revocation, onboarding, terms, what to observe against the default
-        limits and how to adjust them). Beta itself not yet run — waiting
-        on the live VPS instance and facade.
+        limits and how to adjust them).
+      - Public hostname decided (2026-08-31, owner Mark): the runbook now
+        hands out `https://api.westerweel.work` by default, Funnel as
+        fallback, and instructs running `scripts/acceptance.sh` against
+        both before the first credential is issued (see task 4.2's
+        2026-08-31 evidence above). The beta itself — issuing credentials
+        to real beta users and folding their observations back into the
+        default limits — has not started yet.
 
 ## 5. Community opening
 
