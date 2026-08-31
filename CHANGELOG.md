@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The CLI now sends a `User-Agent: internetnl-cli/<version>` header on every
+  request instead of letting `urllib` fall back to its default
+  `Python-urllib/x.y` string — Cloudflare's bot protection in front of the
+  primary batch endpoint was blocking the CLI's default `urllib`
+  `User-Agent` with an HTTP 403.
+
 ### Added
 
 - `netnl`, an independent batch API v2 facade (`src/netnl/`, console

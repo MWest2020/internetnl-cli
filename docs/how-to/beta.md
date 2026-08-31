@@ -76,7 +76,10 @@ For each of the handful of known beta users, hand over:
   repo), served by the `cloudflared` Deployment `netnl-tunnel` in the
   homelab's `netnl` namespace. The tunnel's run-token lives only in the
   out-of-band Secret `netnl-tunnel` — never in this repo. DNS is a proxied
-  CNAME, `api.westerweel.work` → `<tunnel-id>.cfargotunnel.com`.
+  CNAME, `api.westerweel.work` → `<tunnel-id>.cfargotunnel.com`. A CLI build
+  from before the `User-Agent` fix (see CHANGELOG) sends `urllib`'s default
+  `Python-urllib/x.y` string and gets a 403 from Cloudflare before it ever
+  reaches the facade — make sure beta users are on a current build.
 - `INTERNETNL_ENDPOINT` must be the **bare base URL** (e.g.
   `https://api.westerweel.work`, no trailing path) — the facade serves
   the batch-v2 routes (`/requests`, `/requests/{id}`,

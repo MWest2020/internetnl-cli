@@ -25,11 +25,15 @@ def _package_version() -> str:
 
     An editable install without build metadata (or any other reason the
     distribution can't be found) must not crash request-building — a
-    missing version string is not a reason to fail an HTTP call.
+    missing version string is not a reason to fail an HTTP call. This is
+    computed at *import* time (see `_USER_AGENT` below), so any exception
+    here — not just `PackageNotFoundError` (e.g. corrupt dist-info
+    METADATA) — must be swallowed: an exception escaping this function
+    would crash importing this module, and with it `netnl-serve`.
     """
     try:
         return version("internetnl-cli")
-    except PackageNotFoundError:
+    except Exception:
         return "unknown"
 
 
