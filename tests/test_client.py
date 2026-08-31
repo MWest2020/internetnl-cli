@@ -1,6 +1,7 @@
 import base64
 import copy
 import json
+import re
 
 import pytest
 
@@ -89,6 +90,16 @@ def test_authorization_header_present_and_correct_with_credentials():
     headers = opener.calls[0][3]
     expected = "Basic " + base64.b64encode(b"alice:wonderland").decode()
     assert headers["Authorization"] == expected
+
+
+def test_user_agent_header_present_on_every_request():
+    opener = FakeOpener([_ok(_request_reply()), _ok(_request_reply())])
+    client = BatchClient(_config(), opener=opener)
+    client.submit(["a.example"], "web", None)
+    client.status(REQUEST_ID)
+    for call in opener.calls:
+        headers = call[3]
+        assert re.fullmatch(r"internetnl-cli/.+", headers["User-Agent"])
 
 
 def test_debug_stream_shows_method_and_url_but_not_secret():
