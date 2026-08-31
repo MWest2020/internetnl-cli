@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-08-25
+last_reviewed: 2026-08-31
 ---
 
 # Running the netnl private beta
@@ -23,8 +23,10 @@ container/pod. In the co-located compose topology
 docker compose -f deploy/compose.yaml exec netnl netnl-admin user add <naam>
 ```
 
-In the K8s topology (facade fronted by Tailscale Funnel, per
-`design.md`'s "Two supported topologies"), the equivalent is:
+In the K8s topology (per `design.md`'s "Two supported topologies" —
+the facade is now fronted publicly by a Cloudflare Tunnel as the
+primary path, with the Tailscale Funnel hostname kept up in parallel
+as a fallback), the equivalent is:
 
 ```sh
 kubectl -n netnl exec deploy/netnl -- netnl-admin user add <naam>
@@ -63,8 +65,19 @@ shows only username, `created_at` and state.
 
 For each of the handful of known beta users, hand over:
 
-- The endpoint: `https://netnl.<tailnet>.ts.net` (the facade's public
-  Funnel hostname — fill in your actual tailnet name).
+- The endpoint: **`https://api.westerweel.work`** — the facade's
+  primary, branded hostname (a Cloudflare Tunnel in front of the
+  facade's K8s Service), hand this out by default. The Funnel hostname
+  (`https://netnl.<tailnet>.ts.net` — fill in your actual tailnet name)
+  keeps working in parallel as a fallback if the primary name is ever
+  unreachable; both currently front the same facade.
+- `INTERNETNL_ENDPOINT` must be the **bare base URL** (e.g.
+  `https://api.westerweel.work`, no trailing path) — the facade serves
+  the batch-v2 routes (`/requests`, `/requests/{id}`,
+  `/requests/{id}/results`, `/metadata/report`, `/health`) directly on
+  the root, with no `/api/batch/v2` prefix. Any path the facade doesn't
+  proxy replies `501 not-implemented` by design; that is not a
+  misconfiguration to chase down.
 - Their own `INTERNETNL_USERNAME` / `INTERNETNL_PASSWORD` pair from
   `user add` above.
 - A pointer to the `internetnl` CLI quickstart in the top-level

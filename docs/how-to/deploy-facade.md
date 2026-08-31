@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-08-23
+last_reviewed: 2026-08-31
 ---
 
 # Deploying the netnl facade
@@ -21,10 +21,12 @@ topologies") pins two ways to run the facade:
    The batch instance runs on a VPS with a fixed public IPv4+IPv6, reached
    over a Tailscale tailnet — see
    [Deploying the upstream instance on a VPS, reached over a tailnet](deploy-instance-vps.md).
-   The facade runs in Kubernetes, exposed publicly via Tailscale Funnel
-   (no Caddy edge needed there); the K8s manifests for that deployment
-   live in a separate homelab repo — a link will replace this note once
-   they are public.
+   The facade runs in Kubernetes, exposed publicly via a Cloudflare
+   Tunnel as the primary path (`https://api.westerweel.work`), with a
+   Tailscale Funnel hostname (`*.ts.net`) kept up in parallel as a
+   fallback — no Caddy edge needed there either way; the K8s manifests
+   for that deployment live in a separate homelab repo — a link will
+   replace this note once they are public.
 2. **Co-located** (the recipe on the rest of this page): facade + instance
    on one host with a public IP, `deploy/compose.yaml` plus Caddy at the
    edge. Simpler, but needs a public-IP host that also runs the full
