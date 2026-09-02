@@ -1,7 +1,9 @@
 """FastAPI app: batch API v2 subset, provenance headers, error discipline.
 
 Every reply — success and error — carries `X-Netnl-Instance` and
-`X-Netnl-Notice`. Every error reply is v2-shaped:
+`X-Netnl-Notice`, plus a fixed set of security headers (`Content-Security-
+Policy`, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`; see
+`security_headers` below). Every error reply is v2-shaped:
 `{"api_version", "error": {"label", "msg"}}`. Unmapped paths/methods answer
 501 `not-implemented` rather than a framework-default page.
 """
@@ -12,12 +14,12 @@ import copy
 import secrets
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Literal
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -28,6 +30,32 @@ from netnl import auth, limits, store, upstream
 from netnl.errors import NetnlHTTPError
 from netnl.replies import API_VERSION, NOTICE, error_body
 from netnl.settings import Settings
+
+# Every reply — success and error — is JSON (or, for security.txt, plain
+# text) and never HTML rendered by a browser, so a strict, locked-down CSP
+# costs nothing and forecloses any script/frame/form-based misuse of a reply
+# a browser is tricked into loading. No `Strict-Transport-Security` here:
+# TLS is terminated in front of this facade (Funnel/Cloudflare/an operator's
+# own edge, per design.md's "Two supported topologies"), and HSTS belongs to
+# whichever hop actually terminates TLS, not to this process, which may
+# itself be spoken to over plain HTTP on an internal hop
+# (`NETNL_ALLOW_HTTP`).
+#
+# Single source of truth used by both `security_headers` (the middleware,
+# for every ordinary reply) and `handle_unexpected` (the generic `Exception`
+# handler, which sits outside the middleware stack — see the comment
+# there) so the two can never drift apart.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    # Belt-and-braces alongside `frame-ancestors` above for the rare legacy
+    # user agent that still honours the older header instead of (or as well
+    # as) CSP.
+    "X-Frame-Options": "DENY",
+}
 
 
 class SubmitRequest(BaseModel):
@@ -192,6 +220,15 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
         response.headers["X-Netnl-Notice"] = NOTICE
         return response
 
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        # See the `SECURITY_HEADERS` module constant above for what these
+        # are and why.
+        response = await call_next(request)
+        for name, value in SECURITY_HEADERS.items():
+            response.headers[name] = value
+        return response
+
     @app.exception_handler(NetnlHTTPError)
     async def handle_netnl_http_error(request: Request, exc: NetnlHTTPError) -> JSONResponse:
         headers = {"WWW-Authenticate": 'Basic realm="netnl"'} if exc.status == 401 else None
@@ -220,13 +257,18 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     async def handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
         # Round-1 fix (M4): this handler is Starlette's `ServerErrorMiddleware`
         # handler (registered for the `Exception` class), which sits *outside*
-        # the `@app.middleware("http")` stack above — `provenance_headers`
-        # never runs on this path, so the headers are added here directly,
-        # ensuring every error path carries them.
+        # the `@app.middleware("http")` stack above — neither `provenance_
+        # headers` nor `security_headers` ever runs on this path, so both
+        # sets of headers are added here directly, ensuring every error path
+        # carries them.
         return JSONResponse(
             error_body("server-error", "an unexpected error occurred"),
             status_code=500,
-            headers={"X-Netnl-Instance": settings.instance, "X-Netnl-Notice": NOTICE},
+            headers={
+                "X-Netnl-Instance": settings.instance,
+                "X-Netnl-Notice": NOTICE,
+                **SECURITY_HEADERS,
+            },
         )
 
     @app.get("/health")
@@ -240,6 +282,35 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
         # and liveness"; spec.md, "Authenticated surface"). It is not part
         # of the v2 measurement subset.
         return {"status": "ok"}
+
+    if settings.security_contact:
+        # Opt-in (`NETNL_SECURITY_CONTACT` unset by default): the route is
+        # only registered when a contact is configured, so an operator who
+        # never set it gets the ordinary 501 `not-implemented` catch-all for
+        # this path — same "acts like it does not exist" stance `/health`
+        # takes for the v2 subset (design.md, "Facade image and liveness"),
+        # just for the opposite reason: `/health` is always anonymous
+        # because it must be; this route is anonymous only when the operator
+        # opted in, and otherwise is not a route at all.
+        #
+        # Anonymous like `/health`, for the same reason: RFC 9116 requires
+        # `security.txt` to be fetchable without a credential, and this
+        # handler touches neither the upstream instance nor the database.
+        #
+        # `methods=["GET", "HEAD"]`: RFC 9110 requires HEAD wherever GET is
+        # supported; FastAPI/Starlette do not add it implicitly for a plain
+        # `@app.get`, so it is listed explicitly (verified: an unlisted
+        # `@app.get` 405s on HEAD).
+        @app.api_route("/.well-known/security.txt", methods=["GET", "HEAD"])
+        def get_security_txt() -> PlainTextResponse:
+            # Normalise to UTC before formatting with a literal "Z" — an
+            # injected `now` that is aware but in a non-UTC zone would
+            # otherwise produce a wall-clock-correct but UTC-mislabelled
+            # (and therefore wrong) Expires timestamp.
+            current = app.state.now().astimezone(timezone.utc)
+            expires = (current + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            body = f"Contact: {settings.security_contact}\nExpires: {expires}\n"
+            return PlainTextResponse(body)
 
     @app.get("/metadata/report")
     def get_metadata_report(credential=Depends(auth.authenticate)) -> dict:

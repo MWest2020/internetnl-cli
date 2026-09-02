@@ -93,6 +93,11 @@ commented-out defaults to start; see `deploy/.env.example` and
 `openspec/changes/add-measurement-api/design.md`'s configuration table for
 what each one does. `deploy/.env` is gitignored — never commit it.
 
+Optionally, uncomment `NETNL_SECURITY_CONTACT` and set it to a `mailto:`
+or `https:` contact value to publish `GET /.well-known/security.txt`
+(RFC 9116); leave it unset and the path answers the ordinary 501
+not-implemented, same as any other unrecognised path.
+
 ## 3. Bring the stack up
 
 ```sh
@@ -100,8 +105,10 @@ docker compose -f deploy/compose.yaml up -d
 ```
 
 This starts `netnl` (the facade, no published port) and `edge` (Caddy,
-publishing 80/443 and terminating TLS for `NETNL_PUBLIC_HOST`). The
-facade's SQLite database lives on the named volume `netnl-data`, created
+publishing 80/443 and terminating TLS for `NETNL_PUBLIC_HOST`). Because
+Caddy is the hop that terminates TLS in this topology, `deploy/Caddyfile`
+sets `Strict-Transport-Security` there, not in the facade process behind
+it. The facade's SQLite database lives on the named volume `netnl-data`, created
 with owner-only permissions by the app itself.
 
 ## 4. Issue a tenant credential
