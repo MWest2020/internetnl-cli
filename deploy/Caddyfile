@@ -4,5 +4,10 @@
 # configuration, same rule as the facade's own upstream endpoint.
 
 {$NETNL_PUBLIC_HOST} {
+	# HSTS belongs to whichever hop terminates TLS — that is Caddy in this
+	# topology, not the netnl process behind it (which may itself be
+	# reached over plain HTTP on the internal docker network, and so never
+	# sets this header itself; see src/netnl/api.py's security_headers).
+	header Strict-Transport-Security "max-age=31536000"
 	reverse_proxy netnl:8000
 }

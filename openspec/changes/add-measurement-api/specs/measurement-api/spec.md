@@ -111,7 +111,13 @@ v2 measurement subset, `GET /metadata/report` included; no measurement route
 SHALL be anonymous. A single operational liveness endpoint (`GET /health`) MAY be
 anonymous, but SHALL reveal nothing beyond a static ok status — no API
 version, no upstream host, no credential, and it SHALL NOT contact the
-upstream instance or read tenant data.
+upstream instance or read tenant data. An optional, operator-opted-in
+`GET /.well-known/security.txt` (RFC 9116) MAY also be anonymous, on the
+same terms: it SHALL reveal nothing beyond the operator-configured contact
+value, and it SHALL NOT contact the upstream instance or read tenant data.
+When the operator has not configured a contact value, this path SHALL NOT
+exist as a route at all — it SHALL fall through to the same 501
+not-implemented catch-all as any other unrecognised path.
 
 #### Scenario: Anonymous metadata request
 
@@ -124,6 +130,20 @@ upstream instance or read tenant data.
 - THEN the facade answers 200 with a static status, contacts neither the
   upstream instance nor tenant data, and discloses no API version, upstream
   host or credential
+
+#### Scenario: security.txt served when a contact is configured
+
+- WHEN `GET /.well-known/security.txt` is called without credentials and
+  the operator has configured a contact value
+- THEN the facade answers 200 with a `text/plain` body containing a
+  `Contact:` line carrying exactly that configured value and an `Expires:`
+  line, and contacts neither the upstream instance nor tenant data
+
+#### Scenario: security.txt absent when no contact is configured
+
+- WHEN `GET /.well-known/security.txt` is called and the operator has not
+  configured a contact value
+- THEN the facade answers 501, identically to any other unrecognised path
 
 ### Requirement: Append-only audit trail
 
@@ -159,6 +179,15 @@ Internetstandaarden.
   (equal under canonical JSON serialisation — no key added, removed,
   reordered or rewritten), and the response carries a header naming the
   facade instance
+
+#### Scenario: Security headers are pinned on every reply
+
+- WHEN any request is made to the facade, whether it succeeds or is
+  rejected (validation failure, oversized body, unauthorised, unknown
+  path, or an unexpected server error)
+- THEN the reply carries a fixed `Content-Security-Policy`,
+  `X-Content-Type-Options`, `Referrer-Policy` and `X-Frame-Options` header,
+  identical in value across success and error replies
 
 ### Requirement: Credential lifecycle
 

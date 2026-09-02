@@ -8,6 +8,8 @@ Measured against the live facade (2026-08-31, Internet.nl webtest):
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from conftest import basic_auth_header
 
 
@@ -39,6 +41,42 @@ def test_security_headers_on_an_unauthorised_response(client, fake_opener):
 def test_security_headers_on_a_not_implemented_response(client, fake_opener):
     resp = client.get("/definitely-not-a-route")
     assert resp.status_code == 501
+    _assert_security_headers(resp)
+
+
+def test_security_headers_on_the_oversized_body_400(settings_env, tmp_path):
+    """The `enforce_body_size` middleware short-circuits before `call_next`
+    reaches the route — its `JSONResponse` still has to pass back *through*
+    the `security_headers` middleware registered above it, so this is a
+    distinct code path from the ordinary success/error replies above.
+    """
+    from netnl.api import create_app
+    from netnl.settings import load
+    from starlette.testclient import TestClient
+
+    from conftest import add_test_credential
+
+    env = dict(settings_env)
+    env["NETNL_MAX_BODY_BYTES"] = "1024"
+    env["NETNL_DB"] = str(tmp_path / "oversized-body-headers.sqlite3")
+    local_settings = load(env)
+    app = create_app(local_settings)
+    add_test_credential(app, "tenant", "secret")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    huge_name = "x" * 5000
+    resp = client.post(
+        "/requests",
+        json={"type": "web", "domains": ["example.nl"], "name": huge_name},
+        headers=basic_auth_header("tenant", "secret"),
+    )
+    assert resp.status_code == 400
+    _assert_security_headers(resp)
+
+
+def test_security_headers_on_the_validation_error_400(client, tenant):
+    resp = client.post("/requests", json={"type": "web", "domains": []}, headers=tenant["headers"])
+    assert resp.status_code == 400
     _assert_security_headers(resp)
 
 
@@ -109,6 +147,52 @@ def test_security_txt_needs_no_credential(settings_env, tmp_path):
 
     resp = client.get("/.well-known/security.txt")
     assert resp.status_code == 200
+
+
+def test_security_txt_answers_head(settings_env, tmp_path):
+    """RFC 9110: HEAD is supported wherever GET is — a plain `@app.get`
+    does not get this for free (verified against a bare FastAPI route: it
+    405s), so the route explicitly lists `methods=["GET", "HEAD"]`.
+    """
+    from netnl.api import create_app
+    from netnl.settings import load
+    from starlette.testclient import TestClient
+
+    env = dict(settings_env)
+    env["NETNL_DB"] = str(tmp_path / "securitytxt-head.sqlite3")
+    env["NETNL_SECURITY_CONTACT"] = "mailto:security@example.org"
+    local_settings = load(env)
+    app = create_app(local_settings)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.head("/.well-known/security.txt")
+    assert resp.status_code == 200
+
+
+def test_security_txt_expires_normalises_a_non_utc_clock(settings_env, tmp_path):
+    """A `now()` that is aware but in a non-UTC zone must still produce a
+    correct UTC instant before the literal 'Z' suffix is appended — the
+    naive `.strftime(..., "Z")` used previously would otherwise mislabel
+    the non-UTC wall-clock value as UTC.
+    """
+    from netnl.api import create_app
+    from netnl.settings import load
+    from starlette.testclient import TestClient
+
+    env = dict(settings_env)
+    env["NETNL_DB"] = str(tmp_path / "securitytxt-tz.sqlite3")
+    env["NETNL_SECURITY_CONTACT"] = "mailto:security@example.org"
+    local_settings = load(env)
+
+    # 2026-01-01T05:00:00+05:00 is 2026-01-01T00:00:00Z.
+    plus_five = timezone(timedelta(hours=5))
+    fixed = datetime(2026, 1, 1, 5, 0, 0, tzinfo=plus_five)
+    app = create_app(local_settings, now=lambda: fixed)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.get("/.well-known/security.txt")
+    assert resp.status_code == 200
+    assert "Expires: 2027-01-01T00:00:00Z" in resp.text
 
 
 def test_security_txt_carries_security_headers_too(settings_env, tmp_path):

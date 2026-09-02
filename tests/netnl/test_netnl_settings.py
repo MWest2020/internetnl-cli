@@ -127,6 +127,38 @@ def test_security_contact_empty_string_treated_as_unset(settings_env):
     assert s.security_contact is None
 
 
+def test_security_contact_whitespace_only_treated_as_unset(settings_env):
+    # A whitespace-only value must not slip past a bare `or None` and enable
+    # the route with a blank (RFC 9116-invalid) Contact line.
+    env = dict(settings_env)
+    env["NETNL_SECURITY_CONTACT"] = "   "
+    s = load(env)
+    assert s.security_contact is None
+
+
+def test_security_contact_is_stripped(settings_env):
+    env = dict(settings_env)
+    env["NETNL_SECURITY_CONTACT"] = "  mailto:security@example.org  "
+    s = load(env)
+    assert s.security_contact == "mailto:security@example.org"
+
+
+def test_security_contact_rejects_embedded_newline(settings_env):
+    # The value is written verbatim into the security.txt body as
+    # `Contact: {value}` — a CR/LF in it would inject an extra line.
+    env = dict(settings_env)
+    env["NETNL_SECURITY_CONTACT"] = "mailto:security@example.org\nExpires: 2000-01-01T00:00:00Z"
+    with pytest.raises(SettingsError, match="NETNL_SECURITY_CONTACT"):
+        load(env)
+
+
+def test_security_contact_rejects_embedded_carriage_return(settings_env):
+    env = dict(settings_env)
+    env["NETNL_SECURITY_CONTACT"] = "mailto:security@example.org\r\nX-Injected: 1"
+    with pytest.raises(SettingsError, match="NETNL_SECURITY_CONTACT"):
+        load(env)
+
+
 def test_build_config_does_not_read_home_config(settings_env, tmp_path, monkeypatch):
     # A config file under $HOME must never be consulted for facade settings.
     # Uses a directory distinct from the one the `isolated_home` fixture

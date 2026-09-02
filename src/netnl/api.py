@@ -31,6 +31,32 @@ from netnl.errors import NetnlHTTPError
 from netnl.replies import API_VERSION, NOTICE, error_body
 from netnl.settings import Settings
 
+# Every reply — success and error — is JSON (or, for security.txt, plain
+# text) and never HTML rendered by a browser, so a strict, locked-down CSP
+# costs nothing and forecloses any script/frame/form-based misuse of a reply
+# a browser is tricked into loading. No `Strict-Transport-Security` here:
+# TLS is terminated in front of this facade (Funnel/Cloudflare/an operator's
+# own edge, per design.md's "Two supported topologies"), and HSTS belongs to
+# whichever hop actually terminates TLS, not to this process, which may
+# itself be spoken to over plain HTTP on an internal hop
+# (`NETNL_ALLOW_HTTP`).
+#
+# Single source of truth used by both `security_headers` (the middleware,
+# for every ordinary reply) and `handle_unexpected` (the generic `Exception`
+# handler, which sits outside the middleware stack — see the comment
+# there) so the two can never drift apart.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    # Belt-and-braces alongside `frame-ancestors` above for the rare legacy
+    # user agent that still honours the older header instead of (or as well
+    # as) CSP.
+    "X-Frame-Options": "DENY",
+}
+
 
 class SubmitRequest(BaseModel):
     type: Literal["web", "mail"]
@@ -196,26 +222,11 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        # Every reply — success and error — is JSON (or, for security.txt,
-        # plain text) and never HTML rendered by a browser, so a strict,
-        # locked-down CSP costs nothing and forecloses any script/frame/
-        # form-based misuse of a reply a browser is tricked into loading.
-        # No `Strict-Transport-Security` here: TLS is terminated in front of
-        # this facade (Funnel/Cloudflare/an operator's own edge, per
-        # design.md's "Two supported topologies"), and HSTS belongs to
-        # whichever hop actually terminates TLS, not to this process, which
-        # may itself be spoken to over plain HTTP on an internal hop
-        # (`NETNL_ALLOW_HTTP`).
+        # See the `SECURITY_HEADERS` module constant above for what these
+        # are and why.
         response = await call_next(request)
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
-        )
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        # Belt-and-braces alongside `frame-ancestors` above for the rare
-        # legacy user agent that still honours the older header instead of
-        # (or as well as) CSP.
-        response.headers["X-Frame-Options"] = "DENY"
+        for name, value in SECURITY_HEADERS.items():
+            response.headers[name] = value
         return response
 
     @app.exception_handler(NetnlHTTPError)
@@ -256,12 +267,7 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
             headers={
                 "X-Netnl-Instance": settings.instance,
                 "X-Netnl-Notice": NOTICE,
-                "Content-Security-Policy": (
-                    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
-                ),
-                "X-Content-Type-Options": "nosniff",
-                "Referrer-Policy": "no-referrer",
-                "X-Frame-Options": "DENY",
+                **SECURITY_HEADERS,
             },
         )
 
@@ -290,9 +296,19 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
         # Anonymous like `/health`, for the same reason: RFC 9116 requires
         # `security.txt` to be fetchable without a credential, and this
         # handler touches neither the upstream instance nor the database.
-        @app.get("/.well-known/security.txt")
+        #
+        # `methods=["GET", "HEAD"]`: RFC 9110 requires HEAD wherever GET is
+        # supported; FastAPI/Starlette do not add it implicitly for a plain
+        # `@app.get`, so it is listed explicitly (verified: an unlisted
+        # `@app.get` 405s on HEAD).
+        @app.api_route("/.well-known/security.txt", methods=["GET", "HEAD"])
         def get_security_txt() -> PlainTextResponse:
-            expires = (app.state.now() + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            # Normalise to UTC before formatting with a literal "Z" — an
+            # injected `now` that is aware but in a non-UTC zone would
+            # otherwise produce a wall-clock-correct but UTC-mislabelled
+            # (and therefore wrong) Expires timestamp.
+            current = app.state.now().astimezone(timezone.utc)
+            expires = (current + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
             body = f"Contact: {settings.security_contact}\nExpires: {expires}\n"
             return PlainTextResponse(body)
 

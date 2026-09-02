@@ -107,8 +107,28 @@ def load(env: Mapping[str, str] | None = None) -> Settings:
         db=env["NETNL_DB"],
         instance=instance,
         allow_http=env.get("NETNL_ALLOW_HTTP") == "1",
-        # Opt-in: unset means "no security.txt route" (see api.py), not an
-        # empty/placeholder contact value.
-        security_contact=env.get("NETNL_SECURITY_CONTACT") or None,
+        security_contact=_resolve_security_contact(env),
         **kwargs,
     )
+
+
+def _resolve_security_contact(env: Mapping[str, str]) -> str | None:
+    """Opt-in: unset, empty, or whitespace-only means "no security.txt
+    route" (see api.py), not an empty/placeholder contact value — a
+    whitespace-only value would otherwise slip through `or None` and
+    produce an RFC-invalid `security.txt` with a blank `Contact` line.
+
+    A CR or LF in the value is rejected outright rather than silently
+    stripped: the value is written verbatim into the `security.txt`
+    response body as `Contact: {value}`, so a newline in it could inject
+    an extra line into that body.
+    """
+    raw = (env.get("NETNL_SECURITY_CONTACT") or "").strip()
+    if not raw:
+        return None
+    if "\r" in raw or "\n" in raw:
+        raise SettingsError(
+            "NETNL_SECURITY_CONTACT must not contain CR/LF (it is written "
+            f"into security.txt as a body line): got {raw!r}"
+        )
+    return raw
