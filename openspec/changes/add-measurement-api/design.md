@@ -40,6 +40,7 @@ building now commits to nothing on those.
 | `NETNL_AUDIT_RETENTION_DAYS` | `90` | Days audit records are kept |
 | `NETNL_METADATA_TTL` | `3600` | Seconds the metadata/report passthrough is cached |
 | `NETNL_TIMEOUT` | `30` | Upstream HTTP timeout, seconds |
+| `NETNL_SECURITY_CONTACT` | unset | Opt-in: when set, serves RFC 9116 `security.txt` at `GET /.well-known/security.txt` with `Contact: <value>` (e.g. `mailto:security@example.org`); unset means the path answers the ordinary 501 `not-implemented` catch-all, same as any other unmapped path |
 
 Missing required variable → refuse to start, naming the variable. No
 default endpoint anywhere; upstream must satisfy the CLI config rules
@@ -67,6 +68,20 @@ for the internal hop).
   the user middleware stack, the provenance headers are added by the 500
   handler itself (or an outer wrapper), not only by the middleware, so no
   error path escapes unlabelled.
+- Every reply also carries a fixed, browser-hardening set of security
+  headers: `Content-Security-Policy: default-src 'none'; frame-ancestors
+  'none'; base-uri 'none'; form-action 'none'`, `X-Content-Type-Options:
+  nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` — this
+  facade never serves HTML to a browser, so the policy is maximally strict.
+  No `Strict-Transport-Security`: TLS terminates in front of this process
+  (Funnel/Cloudflare/an operator's own edge), and HSTS is that hop's
+  responsibility, not this one's.
+- `GET /.well-known/security.txt` (RFC 9116) — anonymous, opt-in via
+  `NETNL_SECURITY_CONTACT` (see the configuration table above); unset, the
+  path is not registered and falls through to the ordinary 501
+  `not-implemented` catch-all, the same "acts like it does not exist" stance
+  taken for the v2 subset, though `/health` is unconditionally anonymous
+  while this route is anonymous only once an operator opts in.
 - Any other path or method → v2-shaped error body
   (`{"api_version", "error": {"label", "msg"}}`), labels
   `not-implemented` (501), `unknown-request` (404), `bad-request` (400),

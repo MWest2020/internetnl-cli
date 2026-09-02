@@ -34,6 +34,7 @@ def test_defaults_match_design(settings_env):
     assert s.timeout == 30
     assert s.reserving_grace_seconds == 300
     assert s.allow_http is False
+    assert s.security_contact is None
 
 
 def test_no_default_points_at_a_host(settings_env):
@@ -103,6 +104,27 @@ def test_build_config_reuses_cli_config(settings_env):
     assert cfg.username == settings_env["NETNL_UPSTREAM_USERNAME"]
     assert cfg.password == settings_env["NETNL_UPSTREAM_PASSWORD"]
     assert cfg.timeout == 30
+
+
+def test_security_contact_unset_is_none(settings_env):
+    s = load(settings_env)
+    assert s.security_contact is None
+
+
+def test_security_contact_set_is_carried_through(settings_env):
+    env = dict(settings_env)
+    env["NETNL_SECURITY_CONTACT"] = "mailto:security@example.org"
+    s = load(env)
+    assert s.security_contact == "mailto:security@example.org"
+
+
+def test_security_contact_empty_string_treated_as_unset(settings_env):
+    # Opt-in var: an accidentally-set-but-empty value must not enable the
+    # route with a blank contact.
+    env = dict(settings_env)
+    env["NETNL_SECURITY_CONTACT"] = ""
+    s = load(env)
+    assert s.security_contact is None
 
 
 def test_build_config_does_not_read_home_config(settings_env, tmp_path, monkeypatch):

@@ -16,6 +16,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The `netnl` facade now sends a fixed set of security headers on every
+  reply (success and error alike) — `Content-Security-Policy`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  `X-Frame-Options: DENY` — and, opt-in via the new `NETNL_SECURITY_CONTACT`
+  variable, an RFC 9116 `security.txt` at `GET /.well-known/security.txt`.
+  Prompted by a live Internet.nl webtest against the facade flagging
+  `web_appsecpriv_csp`, `web_appsecpriv_x_content_type_options` and
+  `web_appsecpriv_securitytxt` as "bad".
 - `netnl`, an independent batch API v2 facade (`src/netnl/`, console
   scripts `netnl-serve`/`netnl-admin`) fronting a private batch instance:
   tenant credentials with immediate revocation, per-credential rate/size/

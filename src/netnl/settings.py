@@ -63,6 +63,7 @@ class Settings:
     max_body_bytes: int
     reserving_grace_seconds: int
     allow_http: bool
+    security_contact: str | None
 
 
 def _resolve_numeric(env: Mapping[str, str], var: str, default: int) -> int:
@@ -106,5 +107,8 @@ def load(env: Mapping[str, str] | None = None) -> Settings:
         db=env["NETNL_DB"],
         instance=instance,
         allow_http=env.get("NETNL_ALLOW_HTTP") == "1",
+        # Opt-in: unset means "no security.txt route" (see api.py), not an
+        # empty/placeholder contact value.
+        security_contact=env.get("NETNL_SECURITY_CONTACT") or None,
         **kwargs,
     )
