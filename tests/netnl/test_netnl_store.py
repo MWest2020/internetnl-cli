@@ -25,7 +25,7 @@ def test_migrate_is_idempotent(conn):
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     }
-    assert {"credentials", "requests", "audit"} <= tables
+    assert {"credentials", "requests", "audit", "supporter_issuance"} <= tables
 
 
 def test_journal_mode_is_wal(conn):
@@ -370,3 +370,201 @@ def test_ensure_audit_detail_column_reraises_a_genuine_failure(tmp_path):
             _ensure_audit_detail_column(_AlwaysFailingConnection(conn))
     finally:
         conn.close()
+
+
+# --- supporter issuance (openspec/changes/add-supporter-issuance, T3) ------
+
+
+def test_find_issuance_missing_returns_none(conn):
+    assert store.find_issuance(conn, "txn-unknown") is None
+
+
+def test_insert_and_find_issuance(conn):
+    store.insert_issuance(
+        conn,
+        txn_id="txn-1",
+        username="supporter-aaaa1111",
+        state="pending",
+        attempts=0,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    row = store.find_issuance(conn, "txn-1")
+    assert row is not None
+    assert row["username"] == "supporter-aaaa1111"
+    assert row["state"] == "pending"
+    assert row["attempts"] == 0
+
+
+def test_txn_id_is_unique(conn):
+    store.insert_issuance(
+        conn,
+        txn_id="txn-dup",
+        username="a",
+        state="pending",
+        attempts=0,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.insert_issuance(
+            conn,
+            txn_id="txn-dup",
+            username="b",
+            state="pending",
+            attempts=0,
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+
+
+def test_update_issuance_changes_state_username_and_attempts_but_not_created_at(conn):
+    store.insert_issuance(
+        conn,
+        txn_id="txn-2",
+        username="supporter-old",
+        state="failed",
+        attempts=1,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    store.update_issuance(
+        conn,
+        "txn-2",
+        username="supporter-new",
+        state="pending",
+        attempts=1,
+        updated_at="2026-01-01T00:05:00+00:00",
+    )
+    row = store.find_issuance(conn, "txn-2")
+    assert row["username"] == "supporter-new"
+    assert row["state"] == "pending"
+    assert row["created_at"] == "2026-01-01T00:00:00+00:00"
+    assert row["updated_at"] == "2026-01-01T00:05:00+00:00"
+
+
+def test_count_issuances_since_counts_by_created_at_only(conn):
+    store.insert_issuance(
+        conn,
+        txn_id="txn-old",
+        username="a",
+        state="delivered",
+        attempts=0,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    store.insert_issuance(
+        conn,
+        txn_id="txn-new",
+        username="b",
+        state="pending",
+        attempts=0,
+        created_at="2026-01-01T00:30:00+00:00",
+        updated_at="2026-01-01T00:30:00+00:00",
+    )
+    # A retry of the new row must not double-count it: created_at is
+    # untouched by `update_issuance`.
+    store.update_issuance(
+        conn, "txn-new", username="c", state="failed", attempts=1,
+        updated_at="2026-01-01T00:31:00+00:00",
+    )
+
+    count = store.count_issuances_since(conn, "2026-01-01T00:15:00+00:00")
+    assert count == 1
+
+
+def test_supporter_issuance_rows_are_updatable_unlike_audit(conn):
+    """Unlike `audit`, `supporter_issuance` carries no append-only trigger
+    — it must be a plain, updatable table."""
+    store.insert_issuance(
+        conn,
+        txn_id="txn-3",
+        username="a",
+        state="pending",
+        attempts=0,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    store.update_issuance(
+        conn, "txn-3", username="a", state="delivered", attempts=0,
+        updated_at="2026-01-01T00:01:00+00:00",
+    )
+    assert store.find_issuance(conn, "txn-3")["state"] == "delivered"
+
+
+def test_update_issuance_returns_true_on_success(conn):
+    store.insert_issuance(
+        conn, txn_id="txn-4", username="a", state="pending", attempts=0,
+        created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+    )
+    updated = store.update_issuance(
+        conn, "txn-4", username="a", state="delivered", attempts=0,
+        updated_at="2026-01-01T00:01:00+00:00",
+    )
+    assert updated is True
+
+
+def test_update_issuance_returns_false_for_a_missing_row(conn):
+    updated = store.update_issuance(
+        conn, "txn-missing", username="a", state="delivered", attempts=0,
+        updated_at="2026-01-01T00:01:00+00:00",
+    )
+    assert updated is False
+
+
+def test_update_issuance_expected_username_matches_current_owner(conn):
+    """Security review fix (B1(b)): the conditional compare-and-swap write
+    `netnl.supporter._record_delivery_outcome` uses to avoid blindly
+    overwriting a row a concurrent takeover has already moved on."""
+    store.insert_issuance(
+        conn, txn_id="txn-5", username="original", state="pending", attempts=1,
+        created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+    )
+    updated = store.update_issuance(
+        conn, "txn-5", username="original", state="delivered", attempts=1,
+        updated_at="2026-01-01T00:01:00+00:00", expected_username="original",
+    )
+    assert updated is True
+    assert store.find_issuance(conn, "txn-5")["state"] == "delivered"
+
+
+def test_update_issuance_expected_username_mismatch_is_a_no_op(conn):
+    store.insert_issuance(
+        conn, txn_id="txn-6", username="taken-over", state="pending", attempts=2,
+        created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+    )
+    # A stale write, as if minted for a *previous* owner of this row that a
+    # takeover has since replaced.
+    updated = store.update_issuance(
+        conn, "txn-6", username="stale-owner", state="delivered", attempts=1,
+        updated_at="2026-01-01T00:01:00+00:00", expected_username="stale-owner",
+    )
+    assert updated is False
+    # The row is untouched — still owned by the takeover, not overwritten.
+    row = store.find_issuance(conn, "txn-6")
+    assert row["username"] == "taken-over"
+    assert row["state"] == "pending"
+    assert row["attempts"] == 2
+
+
+# --- shared credential minting (netnl/issue.py) -----------------------------
+
+
+def test_issue_credential_returns_plaintext_and_persists_only_the_hash(conn):
+    from netnl import auth, issue
+
+    password = issue.issue_credential(conn, username="alice", created_at="2026-01-01T00:00:00+00:00")
+    assert isinstance(password, str) and len(password) > 0
+
+    row = store.find_credential(conn, "alice")
+    assert row is not None
+    assert row["password_hash"] != password  # never stored in plaintext
+    assert auth.verify(row["password_hash"], bytes.fromhex(row["salt"]), password) is True
+
+
+def test_issue_credential_raises_integrity_error_on_duplicate_username(conn):
+    from netnl import issue
+
+    issue.issue_credential(conn, username="bob", created_at="2026-01-01T00:00:00+00:00")
+    with pytest.raises(sqlite3.IntegrityError):
+        issue.issue_credential(conn, username="bob", created_at="2026-01-01T00:00:00+00:00")

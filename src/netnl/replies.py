@@ -28,6 +28,11 @@ LABEL_STATUS = {
     # round and is deliberately not duplicated for the demo path.
     "demo-unavailable": 503,
     "forbidden-origin": 403,
+    # openspec/changes/add-supporter-issuance: the webhook bridge's own
+    # label — a qualifying delivery that could not complete issuance
+    # (mail failed, the hourly cap was hit, or the transaction already
+    # exhausted its retry budget) so the sender (BMC) should retry later.
+    "delivery-failed": 503,
 }
 
 

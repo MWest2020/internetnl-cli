@@ -97,6 +97,17 @@ def test_negative_numeric_rejected(settings_env):
         load(env)
 
 
+@pytest.mark.parametrize("bad_value", ["nan", "inf", "-inf", "1e400"])
+def test_non_finite_numeric_rejected(settings_env, bad_value):
+    # Security review fix (N3): `float()` parses all four without raising;
+    # `int()` on the result is what used to raise a raw `ValueError`/
+    # `OverflowError` instead of a clean `SettingsError`.
+    env = dict(settings_env)
+    env["NETNL_RATE_LIMIT"] = bad_value
+    with pytest.raises(SettingsError, match="NETNL_RATE_LIMIT"):
+        load(env)
+
+
 def test_build_config_reuses_cli_config(settings_env):
     s = load(settings_env)
     cfg = build_config(s)

@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from typing import IO, Mapping
 
-from netnl import auth, retention, store
+from netnl import auth, issue, retention, store
 from netnl.errors import SettingsError
 from netnl.settings import load
 
@@ -78,16 +78,10 @@ def _user_add(conn, name: str, now: datetime, stdout: IO[str], stderr: IO[str]) 
     if store.find_credential(conn, name) is not None:
         print(f"error: user '{name}' already exists", file=stderr)
         return 1
-    password = auth.new_password()
-    salt = auth.new_salt()
     created_at = store.utcnow_iso(lambda: now)
-    store.add_credential(
-        conn,
-        username=name,
-        password_hash=auth.hash_password(password, salt),
-        salt=salt.hex(),
-        created_at=created_at,
-    )
+    # Shared with the supporter webhook bridge (openspec/changes/
+    # add-supporter-issuance) — see `netnl/issue.py`.
+    password = issue.issue_credential(conn, username=name, created_at=created_at)
     store.record_audit(conn, at=created_at, credential=name, event="user-add")
     # The generated password is shown exactly once, here, and stored nowhere.
     print(password, file=stdout)
@@ -171,6 +165,13 @@ def _prune(conn, settings, now: datetime, stdout: IO[str]) -> int:
     # byte-identical to before this change.
     if settings.demo is not None:
         print(f"demo requests pruned: {counts['demo_deleted']}", file=stdout)
+    # openspec/changes/add-supporter-issuance: printed only when the
+    # bridge is configured — an operator who never opted in sees output
+    # byte-identical to before this change, mirroring the demo line above
+    # (even though, unlike the demo delete, this counter is computed
+    # unconditionally in retention.py — see that module's comment).
+    if settings.supporter is not None:
+        print(f"supporter issuance records pruned: {counts['issuance_deleted']}", file=stdout)
     return 0
 
 

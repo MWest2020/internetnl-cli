@@ -11,6 +11,7 @@ Policy`, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`; see
 from __future__ import annotations
 
 import copy
+import logging
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -21,14 +22,17 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import ClientDisconnect
 
 from internetnl_cli.client import Opener, urllib_opener
 from internetnl_cli.errors import ApiError, TransportError
 
-from netnl import auth, demo, limits, store, upstream
+from netnl import auth, demo, limits, mail, store, supporter, upstream
 from netnl.errors import NetnlHTTPError
 from netnl.replies import API_VERSION, NOTICE, error_body
 from netnl.settings import Settings
+
+_logger = logging.getLogger("netnl.api")
 
 # Every reply — success and error — is JSON (or, for security.txt, plain
 # text) and never HTML rendered by a browser, so a strict, locked-down CSP
@@ -143,7 +147,13 @@ def call_upstream(client, fn: Callable, *args, **kwargs):
         raise NetnlHTTPError(502, "upstream-unreachable", str(exc)) from exc
 
 
-def create_app(settings: Settings, *, opener: Opener | None = None, now: Callable[[], datetime] | None = None) -> FastAPI:
+def create_app(
+    settings: Settings,
+    *,
+    opener: Opener | None = None,
+    now: Callable[[], datetime] | None = None,
+    sender: mail.Sender | None = None,
+) -> FastAPI:
     # No docs/openapi/redoc routes: those would leak framework-specific
     # paths outside the v2 shape this facade otherwise guarantees.
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -168,6 +178,21 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     app.state.client = client
     app.state.now = clock
     app.state.metadata_cache = None  # {"payload": dict, "at": datetime} | None
+    # openspec/changes/add-supporter-issuance: the `Sender` used by the
+    # webhook bridge (`netnl.supporter`), injectable for tests exactly like
+    # `opener` above is for the upstream client. Built from `settings.
+    # supporter` only when that opt-in is configured — unused (never even
+    # constructed) otherwise.
+    if settings.supporter is not None:
+        app.state.sender = sender or mail.smtp_sender(
+            host=settings.supporter.smtp_host,
+            port=settings.supporter.smtp_port,
+            username=settings.supporter.smtp_username,
+            password=settings.supporter.smtp_password,
+            from_addr=settings.supporter.smtp_from,
+            mode=settings.supporter.smtp_mode,
+            timeout=settings.supporter.smtp_timeout,
+        )
 
     @app.middleware("http")
     async def enforce_body_size(request: Request, call_next):
@@ -283,6 +308,33 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
         )
         msg = f"invalid request body: {', '.join(fields)}" if fields else "invalid request body"
         return JSONResponse(error_body("bad-request", msg), status_code=400)
+
+    @app.exception_handler(ClientDisconnect)
+    async def handle_client_disconnect(request: Request, exc: ClientDisconnect) -> JSONResponse:
+        # Security review fix (minor): `ClientDisconnect` (raised by
+        # `Request.stream()` if the client goes away mid-upload — the
+        # supporter webhook bridge's `_read_bounded_body` is the one place
+        # in this facade that reads a body incrementally rather than via
+        # FastAPI's own automatic parsing) is not an application error.
+        # Without this dedicated handler it falls into `handle_unexpected`
+        # below, logged and reported as a 500 "unexpected error" for what
+        # is simply a client that stopped sending — registered here,
+        # ahead of that generic handler, purely so this ordinary case does
+        # not produce that noise. There is no client left to deliver a
+        # response to either way.
+        #
+        # Security review fix (N6): logs `auth._route_path(request)` (the
+        # matched route's fixed *template*, e.g. `/webhooks/bmc`), never
+        # `request.url.path` directly — uvicorn percent-decodes the raw
+        # path before this handler ever sees it, so a crafted `%0A` in an
+        # attacker-chosen path segment would otherwise land as a literal
+        # newline in this log line (log injection). `_route_path` already
+        # exists for exactly this reason (see `auth.py`'s own use of it
+        # ahead of every authenticated route) and falls back to a
+        # printable-only, length-capped sanitizer on the rare path where
+        # routing metadata is unavailable, rather than the raw path.
+        _logger.debug("client disconnected mid-request: %s", auth._route_path(request))
+        return JSONResponse(error_body("bad-request", "client disconnected"), status_code=400)
 
     @app.exception_handler(Exception)
     async def handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
@@ -461,5 +513,18 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     # routes simply do not exist and every `/demo/*` path falls through to
     # the ordinary 501 not-implemented catch-all above.
     demo.register_routes(app, settings, client, call_upstream)
+
+    if settings.supporter is not None:
+        # Opt-in `POST /webhooks/bmc` bridge (openspec/changes/
+        # add-supporter-issuance) — only registered when
+        # `NETNL_BMC_WEBHOOK_SECRET` is set (D2); otherwise this path does
+        # not exist as a route at all, on the same "acts like it does not
+        # exist" terms as `/health`'s optional neighbours and `/demo/*`
+        # above. Only POST is registered: any other method on this path
+        # falls through to the ordinary 501 not-implemented catch-all, not
+        # a 405.
+        @app.post("/webhooks/bmc")
+        async def webhook_bmc(request: Request) -> dict:
+            return await supporter.handle_webhook(request, settings)
 
     return app

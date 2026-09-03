@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import socket
 import threading
@@ -50,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 import uvicorn
 
-from conftest import DEMO_ORIGIN, DEMO_TENANT, Clock, add_test_credential
+from conftest import DEMO_ORIGIN, DEMO_TENANT, SUPPORTER_SECRET, Clock, add_test_credential, bmc_payload
 from fakes import METADATA_REPLY, REGISTER_REPLY
 from internetnl_cli.client import HttpResponse
 
@@ -372,3 +374,116 @@ def test_real_server_demo_cooldown_holds_under_concurrent_submits(settings_env, 
     # `<= 1`, so a vacuous 0-accepted pass cannot hide a broken claim
     # (round-4 builder-review fix, N6).
     assert accepted == 1, statuses
+
+
+# --- security review round (post-147903c), B1/M2: the supporter webhook ----
+# --- bridge's idempotency holds under genuine concurrency -------------------
+#
+# Measured before the B1 fix (`netnl.supporter._persist_and_mint`'s pending-
+# lease check and `_record_delivery_outcome`'s conditional write — see that
+# module's docstrings): 5 concurrent, identically-signed deliveries for the
+# *same* BMC transaction id minted 5 credentials, each one's own takeover
+# immediately revoking the previous call's still-in-flight credential, and
+# whichever call's mail happened to finish last stamped the row with its own
+# username — leaving at least one active credential no `supporter_issuance`
+# row referenced (an orphan). `BEGIN IMMEDIATE` alone does not prevent this:
+# mail is sent *outside* that transaction (D3), so the write lock is
+# released between the persist-commit and the mail-outcome write, and a
+# concurrent call landing in exactly that window is the race. Only a real
+# uvicorn server's own threadpool scheduling reproduces this reliably (see
+# the module docstring's "why this has to be a real uvicorn server" note);
+# this test's `_SlowRecordingSender` deliberately widens that window (a
+# short, real `time.sleep`) so the race is exercised on every run, not just
+# when thread scheduling happens to land on it by chance.
+
+
+class _SlowRecordingSender:
+    """A thread-safe `netnl.mail.Sender` that records every `Mail` it is
+    asked to send, after a short, real sleep — deliberately widening the
+    window between `_persist_and_mint`'s commit and `_record_delivery_
+    outcome`'s write (both quick otherwise) so a genuinely concurrent
+    request reliably lands inside it, on a real server, every run.
+    """
+
+    def __init__(self, delay: float = 0.05) -> None:
+        self._lock = threading.Lock()
+        self._delay = delay
+        self.sent: list = []
+
+    def __call__(self, mail_obj) -> None:
+        time.sleep(self._delay)
+        with self._lock:
+            self.sent.append(mail_obj)
+
+
+def _post_webhook(port: int, payload: dict, secret: str = SUPPORTER_SECRET) -> int:
+    body = json.dumps(payload).encode()
+    signature = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/webhooks/bmc",
+        data=body,
+        headers={"Content-Type": "application/json", "X-Signature-Sha256": signature},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
+def test_real_server_same_txn_concurrent_deliveries_mint_one_credential(
+    settings_env, tmp_path
+):
+    env = dict(settings_env)
+    env["NETNL_DB"] = str(tmp_path / "real-server-supporter.sqlite3")
+    env["NETNL_BMC_WEBHOOK_SECRET"] = SUPPORTER_SECRET
+    env["NETNL_PUBLIC_ENDPOINT"] = "https://facade.example.org"
+    env["NETNL_SMTP_HOST"] = "smtp.example.org"
+    env["NETNL_SMTP_FROM"] = "netnl@example.org"
+    # High enough that only the concurrency/idempotency fix under test can
+    # reject anything — the hourly cap must not be what limits this test.
+    env["NETNL_SUPPORTER_MAX_PER_HOUR"] = "1000"
+    settings = load(env)
+
+    sender = _SlowRecordingSender()
+    app = create_app(settings, sender=sender)
+
+    n_requests = 8
+    payload = bmc_payload(data={"transaction_id": "real-server-race-txn"})
+
+    with _RealServer(app) as running:
+        with ThreadPoolExecutor(max_workers=n_requests) as pool:
+            futures = [
+                pool.submit(_post_webhook, running.port, payload) for _ in range(n_requests)
+            ]
+            statuses = [f.result(timeout=15) for f in futures]
+
+    # Every response is either the (single) successful issuance/duplicate
+    # (200) or the concurrency guard's own 503 — never a 500, never a 429.
+    assert set(statuses) <= {200, 503}, statuses
+    assert statuses.count(500) == 0, statuses
+
+    # The load-bearing invariant, independent of exactly how the 200/503
+    # split landed: exactly one mail was ever sent, and exactly one active
+    # credential exists for this transaction, and it is the one the
+    # issuance row itself references — never more (a duplicate mint) and
+    # never an orphan (an active credential the row does not name).
+    assert len(sender.sent) == 1, [m.to for m in sender.sent]
+
+    conn = store.connect(settings.db)
+    try:
+        row = store.find_issuance(conn, "real-server-race-txn")
+        assert row is not None
+        assert row["state"] == "delivered"
+
+        active = conn.execute(
+            "SELECT username FROM credentials WHERE username LIKE 'supporter-%' "
+            "AND revoked_at IS NULL"
+        ).fetchall()
+        assert [r["username"] for r in active] == [row["username"]], (
+            "expected exactly one active supporter credential, referenced by "
+            "the issuance row — any other active row is an orphan"
+        )
+    finally:
+        conn.close()

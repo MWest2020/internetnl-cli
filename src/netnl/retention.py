@@ -139,13 +139,33 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
         audit_deleted = cur.rowcount if cur.rowcount >= 0 else 0
         conn.execute(_RECREATE_AUDIT_NO_DELETE)
 
+        # openspec/changes/add-supporter-issuance: pruned unconditionally
+        # (not gated on `settings.supporter`, unlike the demo-scoped delete
+        # above) — the table is self-contained (keyed on a BMC transaction
+        # id, not a credential row) and always exists once `migrate` has
+        # run, so there is nothing operator-specific to check first. Reuses
+        # the existing audit-retention cutoff rather than introducing a new
+        # retention variable — an issuance row carries no more sensitivity
+        # than an audit row and is not a request result subject to the
+        # (usually much shorter) result-retention window.
+        cur = conn.execute(
+            "DELETE FROM supporter_issuance WHERE created_at < ?", (audit_cutoff,)
+        )
+        issuance_deleted = cur.rowcount if cur.rowcount >= 0 else 0
+
         store.record_audit(
             conn,
             at=store.utcnow_iso(lambda: now),
             credential=None,
             event="prune",
             facade_id=None,
-            domain_count=requests_deleted + reserving_deleted + audit_deleted + demo_deleted,
+            domain_count=(
+                requests_deleted
+                + reserving_deleted
+                + audit_deleted
+                + demo_deleted
+                + issuance_deleted
+            ),
         )
         conn.execute("COMMIT")
     except Exception:
@@ -164,4 +184,7 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
         # demo is not configured) — counted separately from the tenant
         # retention counters above, never folded into them.
         "demo_deleted": demo_deleted,
+        # openspec/changes/add-supporter-issuance: always present (0 if the
+        # bridge was never used, or nothing has aged out yet).
+        "issuance_deleted": issuance_deleted,
     }
