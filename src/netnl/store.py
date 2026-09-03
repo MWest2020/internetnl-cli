@@ -16,6 +16,10 @@ from typing import Callable
 
 from fastapi import Request
 
+from internetnl_cli.client import is_valid_request_id
+
+from netnl.errors import NetnlHTTPError
+
 _TERMINAL_STATUSES = {"done", "error", "cancelled"}
 
 # A row reserved inside the atomic reserve-then-submit transaction (see
@@ -323,6 +327,27 @@ def get_request_for_credential(
         "SELECT * FROM requests WHERE facade_id = ? AND credential_id = ?",
         (facade_id, credential_id),
     ).fetchone()
+
+
+def owned_request_or_404(
+    conn: sqlite3.Connection, facade_id: str, credential_id: int
+) -> sqlite3.Row:
+    """A foreign or malformed id is indistinguishable from an unknown one —
+    both are the same 404, so credential B can never tell credential A's
+    request exists (design.md, "Tenant isolation").
+
+    Shared by every owner-scoped route: the authenticated v2 subset
+    (`GET /requests/{id}`, `GET /requests/{id}/results`) and the anonymous
+    demo family (`GET /demo/requests/{id}`, `GET
+    /demo/requests/{id}/results`, scoped to the demo credential) both call
+    this — lifted here, unchanged in behaviour, from what was previously a
+    private helper in `api.py`.
+    """
+    if is_valid_request_id(facade_id):
+        row = get_request_for_credential(conn, facade_id, credential_id)
+        if row is not None:
+            return row
+    raise NetnlHTTPError(404, "unknown-request", "this request_id does not exist for the user")
 
 
 def update_status(

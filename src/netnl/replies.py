@@ -23,6 +23,11 @@ LABEL_STATUS = {
     "upstream-error": 502,
     "server-error": 500,
     "overloaded": 503,
+    # openspec/changes/add-demo-run, D13: the anonymous demo family's own
+    # labels. "overloaded" above already exists from the facade-hardening
+    # round and is deliberately not duplicated for the demo path.
+    "demo-unavailable": 503,
+    "forbidden-origin": 403,
 }
 
 
