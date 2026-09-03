@@ -88,16 +88,54 @@ def utcnow_iso(now: Callable[[], datetime] | None = None) -> str:
     return moment.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
-def connect(path: str | pathlib.Path) -> sqlite3.Connection:
+def connect(path: str | pathlib.Path, *, allow_cross_thread: bool = False) -> sqlite3.Connection:
     """Open one connection to the database file.
 
     Round-1 fix (B1): callers MUST open one of these per request and close
     it when done (see `get_conn` below) — never share a connection across
-    threads. `check_same_thread` is left at its safe default (`True`): a
-    shared `check_same_thread=False` connection let CPython's per-connection
-    statement cache and cursor state interleave rows between concurrent
-    requests, leaking one tenant's row (and `upstream_id`) to another. WAL
-    mode makes many short-lived connections cheap.
+    *requests*. That rule is about sharing a connection between independent
+    requests/tenants and is unaffected by `allow_cross_thread` below — see
+    that parameter's docstring for the distinct, narrower thing it relaxes.
+
+    `allow_cross_thread` (round-4 fix, N1) defaults to `False`, i.e.
+    sqlite3's own safe default `check_same_thread=True`. Every caller
+    *except* `get_conn` (admin.py, the schema-migration connection in
+    api.py's `create_app`, retention/prune, and every test that opens its
+    own inspection connection) opens a connection and uses it entirely from
+    the one thread that opened it — no threadpool involved — so the
+    strict default is exactly right for them and must stay that way: this
+    parameter exists to be passed `True` from exactly one call site
+    (`get_conn`), never from a connection any of these other callers hand
+    out or share.
+
+    Why `get_conn` needs it: FastAPI resolves a sync generator dependency
+    (`get_conn` is one) by running its body up to `yield` inside one
+    `run_in_threadpool` call; the sync route handler and any other sync
+    `Depends` that receive the yielded connection (e.g.
+    `auth.authenticate`) run inside a *separate* `run_in_threadpool` call;
+    the generator's cleanup after the response runs inside a third. Each of
+    those three can land on a different real OS worker thread from
+    anyio's threadpool — `TestClient` does not reproduce this (its portal
+    serialises the dispatch), but a real uvicorn server does. With
+    `check_same_thread=True` (the default `connect()` still uses
+    everywhere else), using the connection from a worker thread other than
+    the one that opened it raises sqlite3's `ProgrammingError`, surfaced to
+    the caller as a generic 500 — measured on a real uvicorn server: 0
+    failures at 2 concurrent requests, 14/24 at 4, 85/96 at 16 (see
+    `tests/netnl/test_netnl_real_server.py`).
+
+    This is safe to relax *only* for this one connection, and only because
+    of what "cross-thread" means here: the connection is still never used
+    by two threads *at the same time* — FastAPI always finishes one
+    `run_in_threadpool` call (and, with it, whatever use it made of the
+    connection) before starting the next one for the *same* request, so
+    uses are sequential, just not thread-affine. That is a fundamentally
+    different shape from the case the round-1 comment above forbids — one
+    connection genuinely *shared and used concurrently across multiple
+    requests* — which is what reintroduced the statement-cache/cursor-
+    interleaving cross-tenant leak that fix closed. `allow_cross_thread`
+    must never be set on a connection more than one request could ever
+    touch.
     """
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,7 +145,9 @@ def connect(path: str | pathlib.Path) -> sqlite3.Connection:
     # created; opening an existing file leaves its mode untouched.
     fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
     os.close(fd)
-    conn = sqlite3.connect(str(path), isolation_level=None)
+    conn = sqlite3.connect(
+        str(path), isolation_level=None, check_same_thread=not allow_cross_thread
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -126,10 +166,19 @@ def get_conn(request: Request):
     request is done. Multiple `Depends(get_conn)` in the same request
     (directly, or via `auth.authenticate`) resolve to the very same
     connection — FastAPI caches dependencies per request — so this is still
-    exactly one connection, never a connection shared across requests or
-    threads (design.md, "Concurrency and storage").
+    exactly one connection, never a connection shared across requests
+    (design.md, "Concurrency and storage").
+
+    Round-4 fix (N1): opened with `allow_cross_thread=True` — the
+    dependency's `yield`, the route handler that uses the connection, and
+    this generator's own cleanup can each run on a different real worker
+    thread (see `connect`'s docstring for exactly why that is safe here,
+    and only here). Without this, a real (non-`TestClient`) uvicorn server
+    under concurrent load intermittently raised sqlite3's
+    `ProgrammingError` as a generic 500 the instant two of those three
+    steps landed on different threads.
     """
-    conn = connect(request.app.state.settings.db)
+    conn = connect(request.app.state.settings.db, allow_cross_thread=True)
     try:
         yield conn
     finally:

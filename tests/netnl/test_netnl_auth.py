@@ -160,6 +160,9 @@ def test_scrypt_semaphore_caps_concurrency_and_503s_when_saturated(
     overloaded = next(r for r in responses if r.status_code == 503)
     assert overloaded.json()["error"]["label"] == "overloaded"
     assert overloaded.headers["X-Netnl-Instance"] == settings.instance
+    # Round-4 fix (N5): the `Retry-After` hint set in `netnl.auth._overloaded`
+    # survives `handle_netnl_http_error`'s N4 allowlist filtering intact.
+    assert overloaded.headers["Retry-After"] == "1"
 
 
 def test_failed_auth_is_audited_aggregated_per_minute(client, conn, tenant, clock):

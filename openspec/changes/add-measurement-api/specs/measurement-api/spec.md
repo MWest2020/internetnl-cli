@@ -206,7 +206,15 @@ distinct pairs an attacker can generate nor the volume of failed attempts
 can grow the audit store without bound; the password SHALL NOT appear in
 any audit record under any circumstance. A credential value recorded on a
 failed-authentication record is attacker-supplied and SHALL NOT be treated
-by an operator as verified tenant attribution.
+by an operator as verified tenant attribution. Accepted residual risk
+(round-4, N2, Low, see design.md): once the per-window cap on distinct
+username-and-route pairs is reached, further distinct usernames — including
+one an attacker deliberately aims at a real tenant's username to hide a
+targeted brute-force inside the shared overflow record — collapse into that
+same overflow record; total failure volume per route per window remains
+correct and auditable, but a targeted burst folded into the overflow record
+is no longer individually attributable to the username it targeted. This is
+documented, not built around, in this change.
 
 #### Scenario: Submission is audited
 

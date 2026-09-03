@@ -56,6 +56,12 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
 }
 
+# Round-4 fix (N4, Info): the allowlist `handle_netnl_http_error` filters
+# `NetnlHTTPError.headers` through before merging it into a reply — see the
+# comment at that call site for why this exists even though every current
+# raise site's value is already static and safe.
+_ALLOWED_EXTRA_HEADERS = {"Retry-After"}
+
 
 class SubmitRequest(BaseModel):
     type: Literal["web", "mail"]
@@ -218,11 +224,27 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
         # `overloaded` — see `netnl.auth._overloaded`) is merged in on top
         # of the fixed 401 `WWW-Authenticate` header, so a raising site's
         # own headers are never silently dropped.
+        #
+        # Round-4 fix (N4, Info): filtered through `_ALLOWED_EXTRA_HEADERS`
+        # rather than merged verbatim. Every `NetnlHTTPError(..., headers=…)`
+        # raise site today (only `netnl.auth._overloaded`) already supplies
+        # nothing but a static, hardcoded `Retry-After` value — never
+        # attacker- or upstream-influenced input — so this allowlist changes
+        # no current behaviour. It exists so that stays true: a *future*
+        # raise site must not be able to smuggle an arbitrary or
+        # attacker-influenced header (header/response-splitting-adjacent
+        # risk, or simply an accidental override of a security header) onto
+        # a reply just by passing it through `headers=`; extending the
+        # allowlist is a deliberate, reviewable one-line change here, not an
+        # implicit side effect of adding a `headers={...}` argument
+        # somewhere else in the codebase.
         headers: dict[str, str] = {}
         if exc.status == 401:
             headers["WWW-Authenticate"] = 'Basic realm="netnl"'
         if exc.headers:
-            headers.update(exc.headers)
+            headers.update(
+                {k: v for k, v in exc.headers.items() if k in _ALLOWED_EXTRA_HEADERS}
+            )
         return JSONResponse(
             error_body(exc.label, exc.msg), status_code=exc.status, headers=headers or None
         )

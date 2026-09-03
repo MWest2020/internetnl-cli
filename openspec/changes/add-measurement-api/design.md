@@ -102,14 +102,42 @@ The facade is multi-threaded (FastAPI runs sync handlers in a threadpool) and
 public, so storage must be correct under concurrent requests, not only
 sequentially.
 
-- **One SQLite connection per request, never shared across threads.** A
-  FastAPI dependency opens a connection at request start and closes it at
-  request end; `check_same_thread` stays at its safe default. A shared
-  connection with `check_same_thread=False` is forbidden — CPython's
+- **One SQLite connection per request, never shared across requests.** A
+  FastAPI dependency (`store.get_conn`) opens a connection at request start
+  and closes it at request end. A connection *shared and used concurrently
+  across requests* with `check_same_thread=False` is forbidden — CPython's
   per-connection statement cache and cursor state interleave rows between
-  concurrent threads, which leaked one tenant's row (and `upstream_id`) to
+  concurrent requests, which leaked one tenant's row (and `upstream_id`) to
   another. WAL mode makes many short-lived connections cheap and is the
   intended pattern.
+  - **Round-4 fix (N1, pre-existing, HIGH): the per-request connection
+    itself needs `check_same_thread=False`.** `check_same_thread=True`
+    (sqlite3's default) is about a single connection object being touched
+    from more than one *thread*, not from more than one *request* — a
+    distinct axis from the bullet above. FastAPI resolves `get_conn` (a
+    sync generator dependency) by running its body up to `yield` inside
+    one `run_in_threadpool` call; the sync route handler that receives the
+    yielded connection (and any other sync `Depends`, e.g.
+    `auth.authenticate`) runs inside a *separate* `run_in_threadpool` call;
+    the generator's post-response cleanup runs inside a third. Each can
+    land on a different real OS worker thread from anyio's threadpool.
+    With the strict default this raised sqlite3's `ProgrammingError` —
+    surfaced as a generic 500 — the instant two of those three steps
+    landed on different threads: measured on a real uvicorn server (not
+    `TestClient`, whose portal serialises this away and so never showed
+    it), 0 failures at 2 concurrent requests, 14/24 at 4, 85/96 at 16, and
+    only 3 of 16 concurrent auth failures reaching the audit trail.
+    `store.connect` now takes `allow_cross_thread` (default `False`,
+    i.e. unchanged for every other caller — `admin.py`, the schema
+    migration, `prune`, tests); `get_conn` is the one caller that passes
+    `True`. This is safe *specifically* because the connection, though
+    used from different threads, is never used *concurrently* by two of
+    them within one request — FastAPI always finishes one
+    `run_in_threadpool` call before starting the next for the same
+    request — which is a different shape from the forbidden
+    shared-across-requests case above. See `store.connect`'s docstring for
+    the full reasoning and `tests/netnl/test_netnl_real_server.py` for the
+    real-uvicorn regression test (`TestClient` cannot exercise this).
 - **Limit enforcement is atomic — reserve, then call upstream.** Rate,
   size and concurrency are check-then-act and must not race. Inside a single
   `BEGIN IMMEDIATE` transaction the handler: (1) counts submits in the window
@@ -337,6 +365,43 @@ from one credential cannot each read a stale count.
     every authenticated request (success or failure), so its size is also
     capped at "distinct keys seen in the current minute", now doubly
     bounded by the cap above.
+    - **Accepted residual risk (round-4, N2, Low): the overflow bucket is
+      itself an evasion route for a *targeted* attacker, distinct from the
+      volumetric flood it was built to bound.** Once the 512-bucket cap is
+      reached for a minute, every *further* distinct username collapses
+      into the shared per-route `"<other>"` bucket — including one an
+      attacker deliberately aims at a specific real tenant's username. A
+      caller who first burns through 512 disposable, never-reused usernames
+      against a route in the same minute (well under a minute of traffic at
+      any realistic rate) can then brute-force that one real tenant's
+      credential on the same route; every one of those targeted attempts is
+      still audited, but only as an indistinguishable count inside
+      `"<other>"`, not attributed back to the targeted username the way an
+      attack that stayed under the cap would be. Total *volume* per route
+      per minute is still visible and correct (that is what the cap
+      protects) — what is lost is *which* username a targeted burst of
+      failures, once folded into the overflow bucket, was actually aimed
+      at. Accepted for this build: the cap's job is bounding the
+      aggregator's own memory/write cost against an unbounded flood of
+      distinct usernames, not attributing every failure to its real target
+      under adversarial conditions; an operator relying on `auth-failure`
+      rows to attribute a targeted brute-force to a specific username
+      should not treat `"<other>"` as "nothing of note happened" — see the
+      attribution caveat above, which already says an `auth-failure` row's
+      `credential` (`"<other>"` included) is never trustworthy tenant
+      attribution.
+      - **Noted follow-up, not built here:** a per-route *sub-quota*
+        inside the overflow bucket — e.g. reserving a handful of the 512
+        slots per route for usernames that have *already* accrued failures
+        this minute (so a target being actively brute-forced keeps its own
+        bucket even after the cap is otherwise reached), or keying the
+        overflow itself on a coarser signal (e.g. source IP) instead of
+        collapsing every over-cap username into one shared bucket — is
+        worth a future round if targeted-evasion detection becomes a real
+        requirement. Not built now: it adds real complexity (a second
+        eviction policy layered on the first) for a Low-severity residual
+        risk against a facade with no operational history yet of being
+        targeted this way.
   - **The flush is one transaction, never held under the aggregator's own
     lock, and never fails a request (round-3, security-H1b/H1d):** the
     round-2 version ran one fsync'd, autocommit `INSERT` per stale bucket
