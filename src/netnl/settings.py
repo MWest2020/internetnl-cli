@@ -23,6 +23,26 @@ _REQUIRED = (
     "NETNL_DB",
 )
 
+# A bare `https://host[:port]` origin — the shape `Origin` headers and
+# `NETNL_DEMO_ALLOWED_ORIGIN` take (RFC 6454): scheme, host, optional port,
+# nothing else (no path, no trailing slash, no credentials).
+_ORIGIN_RE = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
+
+# Carve-out for local development only, mirroring `NETNL_ALLOW_HTTP`'s
+# existing role for the upstream endpoint: a plain-http `localhost` origin
+# is otherwise indistinguishable from any other insecure origin, so it is
+# accepted only under the same explicit opt-in.
+_LOCALHOST_HTTP_ORIGIN_RE = re.compile(r"^http://localhost(:[0-9]{1,5})?$")
+
+# var -> (attribute, default)
+_DEMO_NUMERIC_DEFAULTS = {
+    "NETNL_DEMO_MAX_PER_HOUR": ("max_per_hour", 6),
+    "NETNL_DEMO_MAX_CONCURRENT": ("max_concurrent", 2),
+    "NETNL_DEMO_PER_IP_PER_HOUR": ("per_ip_per_hour", 2),
+    "NETNL_DEMO_DOMAIN_COOLDOWN_SECONDS": ("domain_cooldown_seconds", 900),
+    "NETNL_DEMO_RETENTION_HOURS": ("retention_hours", 24),
+}
+
 # var -> (attribute, default)
 _NUMERIC_DEFAULTS = {
     "NETNL_RATE_LIMIT": ("rate_limit", 10),
@@ -46,6 +66,26 @@ _NUMERIC_DEFAULTS = {
 
 
 @dataclass(frozen=True)
+class DemoSettings:
+    """Configuration for the opt-in, anonymous `/demo/*` route family (see
+    `openspec/changes/add-demo-run/design.md`, pinned decisions D1-D15).
+    `None` on `Settings.demo` means the family does not exist as far as any
+    client can tell (`NETNL_DEMO_ENABLED` unset) — this dataclass is only
+    ever constructed once that opt-in is on and its two required variables
+    are present.
+    """
+
+    allowed_origin: str
+    tenant: str
+    max_per_hour: int
+    max_concurrent: int
+    per_ip_per_hour: int
+    client_ip_header: str
+    domain_cooldown_seconds: int
+    retention_hours: int
+
+
+@dataclass(frozen=True)
 class Settings:
     upstream_endpoint: str
     upstream_username: str
@@ -64,6 +104,7 @@ class Settings:
     reserving_grace_seconds: int
     allow_http: bool
     security_contact: str | None
+    demo: DemoSettings | None
 
 
 def _resolve_numeric(env: Mapping[str, str], var: str, default: int) -> int:
@@ -100,15 +141,70 @@ def load(env: Mapping[str, str] | None = None) -> Settings:
     for var, (attr, default) in _NUMERIC_DEFAULTS.items():
         kwargs[attr] = _resolve_numeric(env, var, default)
 
+    allow_http = env.get("NETNL_ALLOW_HTTP") == "1"
+
     return Settings(
         upstream_endpoint=env["NETNL_UPSTREAM_ENDPOINT"],
         upstream_username=env["NETNL_UPSTREAM_USERNAME"],
         upstream_password=env["NETNL_UPSTREAM_PASSWORD"],
         db=env["NETNL_DB"],
         instance=instance,
-        allow_http=env.get("NETNL_ALLOW_HTTP") == "1",
+        allow_http=allow_http,
         security_contact=_resolve_security_contact(env),
+        demo=_load_demo(env, allow_http=allow_http),
         **kwargs,
+    )
+
+
+def _validate_demo_origin(origin: str, allow_http: bool) -> None:
+    """`origin` (D6) must be a bare `https://host[:port]` — the shape an
+    `Origin` header itself takes, and the exact value the facade will send
+    back verbatim as `Access-Control-Allow-Origin`, so it must already be
+    in that wire form, not merely "a URL". `NETNL_ALLOW_HTTP=1` (the same
+    escape hatch `NETNL_UPSTREAM_ENDPOINT` already uses) additionally
+    permits a bare `http://localhost[:port]` origin, for local development
+    against a facade run without TLS in front of it.
+    """
+    if _ORIGIN_RE.fullmatch(origin):
+        return
+    if allow_http and _LOCALHOST_HTTP_ORIGIN_RE.fullmatch(origin):
+        return
+    raise SettingsError(
+        "NETNL_DEMO_ALLOWED_ORIGIN must be a bare https://host[:port] origin "
+        "(or, under NETNL_ALLOW_HTTP=1, http://localhost[:port]): got "
+        f"{origin!r}"
+    )
+
+
+def _load_demo(env: Mapping[str, str], *, allow_http: bool) -> DemoSettings | None:
+    """`None` unless `NETNL_DEMO_ENABLED=1` — every other `NETNL_DEMO_*`
+    variable is ignored (not even read) when the family is off, so an
+    operator who never opts in gets exactly the pre-existing behaviour
+    regardless of what else happens to be set in the environment.
+    """
+    if env.get("NETNL_DEMO_ENABLED") != "1":
+        return None
+
+    allowed_origin = env.get("NETNL_DEMO_ALLOWED_ORIGIN")
+    if not allowed_origin:
+        raise SettingsError(
+            "missing required environment variable: NETNL_DEMO_ALLOWED_ORIGIN"
+        )
+    _validate_demo_origin(allowed_origin, allow_http)
+
+    tenant = env.get("NETNL_DEMO_TENANT")
+    if not tenant:
+        raise SettingsError("missing required environment variable: NETNL_DEMO_TENANT")
+
+    demo_kwargs: dict = {}
+    for var, (attr, default) in _DEMO_NUMERIC_DEFAULTS.items():
+        demo_kwargs[attr] = _resolve_numeric(env, var, default)
+
+    return DemoSettings(
+        allowed_origin=allowed_origin,
+        tenant=tenant,
+        client_ip_header=env.get("NETNL_DEMO_CLIENT_IP_HEADER", "CF-Connecting-IP"),
+        **demo_kwargs,
     )
 
 
