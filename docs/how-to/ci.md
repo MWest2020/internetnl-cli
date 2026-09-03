@@ -59,7 +59,7 @@ kept:
 
 ```yaml
 - uses: actions/upload-artifact@v4
-  if: always()
+  if: always() && steps.<step-id>.outputs.results-path != ''
   with:
     name: internetnl-results
     path: ${{ steps.<step-id>.outputs.results-path }}
@@ -68,20 +68,35 @@ kept:
 Give the action step an `id:` to reference its outputs, and use
 `if: always()` on the upload step so a result still gets uploaded when
 the gate trips the job (that is the point of the gate: it is supposed
-to fail the job, not hide the evidence).
+to fail the job, not hide the evidence). The `&&
+steps.<step-id>.outputs.results-path != ''` guard is explained below —
+it is not optional decoration.
 
-Two things to know about that artifact recipe: `results-path` can
-point at a **0-byte file** on exit codes 1, 2, or 4 — the CLI redirects
-its own stdout straight to that path, so a run that fails before
-producing JSON (a config error, a transport/API error, or the poll
-timeout) still creates the file, just empty; do not assume a present
-file means usable JSON. And the `path:` given to `upload-artifact`
-above is workspace-relative like everything else `actions/upload-artifact`
-handles — `${{ steps.<step-id>.outputs.results-path }}` itself resolves
-to an absolute path under `$RUNNER_TEMP` (set by the action, not the
-workspace), so this works regardless of whether `actions/checkout` ran;
-the `allowlist` input above is the one that specifically needs
-`actions/checkout` first, because it points into the workspace.
+Three things to know about that artifact recipe.
+
+`results-path` can point at a **0-byte file** on exit codes 1, 2, or 4
+— the CLI redirects its own stdout straight to that path, so a run
+that fails before producing JSON (a config error, a transport/API
+error, or the poll timeout) still creates the file, just empty; do not
+assume a present file means usable JSON.
+
+The `path:` given to `upload-artifact` above is workspace-relative
+like everything else `actions/upload-artifact` handles — `${{
+steps.<step-id>.outputs.results-path }}` itself resolves to an
+absolute path under `$RUNNER_TEMP` (set by the action, not the
+workspace), so this works regardless of whether `actions/checkout`
+ran. `actions/checkout` is still required, though: the `allowlist` and
+`file` inputs above are both workspace-relative paths, so either one
+needs the workspace populated by `actions/checkout` first to resolve.
+
+And `results-path` is only ever set by the action's "Run internetnl
+submit" step, so it stays **unset** (empty string) if an earlier step
+— "Validate inputs" (e.g. a `hosts`/`file` conflict or an invalid
+`fail-on-scored`) or "Install uv"/the install step — fails first. A
+bare `if: always()` upload step given that empty `path:` errors ("no
+files were found"/invalid path) instead of silently skipping, which is
+why the recipe above guards on `steps.<step-id>.outputs.results-path
+!= ''` as well.
 
 ## b) Any other CI (plain CLI)
 

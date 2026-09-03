@@ -178,12 +178,13 @@ handover package complete enough to run without the original operators
 (task 5.3). This page is deliberately narrower — a short-lived runbook
 for a handful of known users, not the public-facing story.
 
-One candidate for task 5.2's self-serve runbook is documented ahead of
-time in [Supporter keys](supporter-key.md): a lifetime tenant
-credential issued after a small donation, still subject to the same
-per-tenant rate limits described above as its fair-use mechanism. It
-is explicitly a **draft plan**, not a live process — see that page's
-"Open TODO" for what is still missing before it can open.
+Task 5.2's self-serve runbook is [Supporter keys](supporter-key.md): a
+lifetime tenant credential issued after a small donation, still
+subject to the same per-tenant rate limits described above as its
+fair-use mechanism. The donation link is live, but issuance itself
+remains a manual, out-of-band process, the same as onboarding a beta
+user — see that page's "Getting a supporter key" for how to donate and
+what happens (and does not yet happen automatically) after.
 
 ## Not an SLA
 

@@ -24,7 +24,10 @@ All notable changes to this project are documented here. The format follows
 - `.github/workflows/action-smoke.yml`: a smoke workflow exercising the
   action's own input-validation failure paths (no `hosts`/`file`, an
   invalid `fail-on-scored` value) without any real internet.nl-compatible
-  API measurement.
+  API measurement. Each job asserts both that the step failed and that
+  `internetnl` never made it onto `PATH`, i.e. that the run never
+  reached "Install uv"/the install step — evidence that the failure is
+  in input validation, not a later network/transport path.
 - `.github/FUNDING.yml`: a Buy Me a Coffee sponsor button.
 - [`docs/how-to/supporter-key.md`](docs/how-to/supporter-key.md): the
   issuance model for a lifetime `netnl` tenant credential after a small
