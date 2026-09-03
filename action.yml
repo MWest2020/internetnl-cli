@@ -110,17 +110,34 @@ runs:
           echo "::error::internetnl-cli action: set 'credential', or both 'username' and 'password'." >&2
           exit 1
         fi
+        # Shape-check 'credential' before the install step ever runs:
+        # config.py rejects a colon-less INTERNETNL_CREDENTIAL too, but
+        # only after `uv tool install` has already paid for the install —
+        # failing here is cheaper and gives the same error earlier.
+        if [ -n "$CREDENTIAL_INPUT" ]; then
+          case "$CREDENTIAL_INPUT" in
+            *:*) ;;
+            *)
+              echo "::error::internetnl-cli action: 'credential' must be 'username:password' (a literal ':' separating the two)." >&2
+              exit 1
+              ;;
+          esac
+        fi
 
     - name: Install uv
       uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       with:
         # This action never checks anything out (no actions/checkout step
-        # runs here), so there is no lockfile/project directory to look
-        # for; without this, setup-uv warns on every run. Caching is
-        # similarly pointless here: nothing this step installs is reused
-        # across runs of a one-shot `uv tool install`, and the measured
-        # cache footprint is ~1MB — not worth the warning or the cache
-        # I/O.
+        # runs here), so there is no lockfile/project directory for
+        # setup-uv to find; without this flag it prints an "empty workdir"
+        # warning on every single run. Caching (`enable-cache`, on by
+        # default) is for speeding up repeated dependency resolution
+        # against a lockfile/pyproject.toml across a workflow's steps —
+        # this step does exactly one `uv tool install` from a git ref, has
+        # no lockfile to key a cache on, and runs once per job, so there is
+        # nothing here for that cache to ever hit; disabling it removes the
+        # cache-restore/save overhead for a mechanism that would otherwise
+        # sit unused.
         ignore-empty-workdir: true
         enable-cache: false
 
@@ -165,9 +182,21 @@ runs:
         # INTERNETNL_CREDENTIAL even in username/password mode, tripping
         # its own format check. The "Validate inputs" step already proved
         # exactly one form was given, so branching here is safe.
+        #
+        # The explicit `unset` of the *other* form's names matters too: a
+        # calling job/workflow can set INTERNETNL_USERNAME/
+        # INTERNETNL_PASSWORD (or INTERNETNL_CREDENTIAL) at job level, e.g.
+        # for its own unrelated steps, or via $GITHUB_ENV from an earlier
+        # step. That inherited value is not a name this step's own `env:`
+        # block lists, so it is not overridden by GitHub Actions merging
+        # its `env:` into the inherited environment — it would otherwise
+        # reach `internetnl` alongside (or instead of) the input actually
+        # given here.
         if [ -n "$CREDENTIAL_INPUT" ]; then
+          unset INTERNETNL_USERNAME INTERNETNL_PASSWORD
           export INTERNETNL_CREDENTIAL="$CREDENTIAL_INPUT"
         else
+          unset INTERNETNL_CREDENTIAL
           export INTERNETNL_USERNAME="$USERNAME_INPUT"
           export INTERNETNL_PASSWORD="$PASSWORD_INPUT"
         fi

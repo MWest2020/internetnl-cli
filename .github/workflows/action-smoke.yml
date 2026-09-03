@@ -107,6 +107,33 @@ jobs:
             exit 1
           fi
 
+  credential-without-colon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Run action with a colon-less credential
+        id: run
+        continue-on-error: true
+        uses: ./
+        with:
+          hosts: example.org
+          endpoint: https://example.invalid
+          credential: not-a-valid-credential-format
+
+      - name: Assert the credential shape validation failed
+        if: steps.run.outcome != 'failure'
+        run: |
+          echo "::error::expected the action to fail (credential has no ':'), but it did not"
+          exit 1
+
+      - name: Assert the failure happened before install (validation, not a network path)
+        run: |
+          if command -v internetnl >/dev/null 2>&1; then
+            echo "::error::internetnl is on PATH — the run got past 'Install uv'/install, so the failing step was not (only) input validation"
+            exit 1
+          fi
+
   invalid-fail-on-scored:
     runs-on: ubuntu-latest
     steps:

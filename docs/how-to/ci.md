@@ -25,10 +25,15 @@ action. Minimal use:
 ```
 
 `credential` is a single `username:password` string, split on the
-*first* colon (a password may contain one; the username charset never
-does). It is the preferred way to pass a credential to the action: one
-secret instead of two. `username`/`password` still work as separate
-inputs if you already have the credential split that way:
+*first* colon: a password may contain one, but per RFC 7617 a Basic
+userid never can — a username containing a colon could never
+authenticate over HTTP Basic in the first place (a compliant server,
+the `netnl` facade included, parses everything from the first colon
+onward as the password), so this split is unambiguous for every
+credential that could ever actually work. It is the preferred way to
+pass a credential to the action: one secret instead of two.
+`username`/`password` still work as separate inputs if you already
+have the credential split that way:
 
 ```yaml
 - uses: MWest2020/internetnl-cli@main
@@ -159,6 +164,11 @@ it) CI/CD variables, the same way you would for any other credential.
 | 2 | Usage error, transport failure, or an API error |
 | 3 | `--fail-on-scored` gate tripped |
 | 4 | `INTERNETNL_POLL_MAX` exceeded while the run was still unfinished |
+
+Exit code 2's message includes the endpoint's own error body verbatim
+in the CI log, so against a third-party batch API you do not control
+(unlike the `netnl` facade, which is built not to do this) that body
+could itself echo your username unmasked.
 
 Exit code 4 is the one most likely to bite a large run: the default
 `INTERNETNL_POLL_MAX` is 3600 seconds (one hour), and a batch of many

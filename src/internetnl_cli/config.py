@@ -15,6 +15,15 @@ from typing import Mapping
 
 from internetnl_cli.errors import ConfigError
 
+# Rejected if present in the config *file* — credentials are environment-
+# only. Important limitation, not a general scanner: the file (and this
+# check) is only ever consulted at all when INTERNETNL_ENDPOINT is absent
+# from the environment (see `resolve` below) — an operator who sets
+# INTERNETNL_ENDPOINT in the environment and *also* has one of these keys
+# sitting in an old config file will never have it flagged, because the
+# file is never opened in that case. This mirrors the CLI's own
+# env-beats-file precedence for `endpoint`; it is not a credential-leak
+# scanner that runs unconditionally.
 _FORBIDDEN_KEYS = {"username", "password", "passwd", "token", "secret", "credential"}
 
 _NUMERIC_DEFAULTS = {
@@ -123,8 +132,12 @@ def _resolve_credential(env: Mapping[str, str]) -> tuple[str, str]:
     or the pair of legacy env vars — never both.
 
     `INTERNETNL_CREDENTIAL` is `username:password`, split on the *first*
-    colon: passwords may contain one, the existing username charset never
-    does, so this split is unambiguous. When set, `INTERNETNL_USERNAME`/
+    colon: a password may contain one, but per RFC 7617 a Basic userid
+    never can — any username containing a colon could never authenticate
+    via HTTP Basic in the first place (a compliant server, this repo's own
+    facade included, would parse everything from the first colon onward as
+    the password), so this split is unambiguous for every credential that
+    could ever actually work. When set, `INTERNETNL_USERNAME`/
     `INTERNETNL_PASSWORD` must not also be set — silently preferring one
     over the other would mask a misconfiguration instead of surfacing it.
     """
@@ -144,6 +157,16 @@ def _resolve_credential(env: Mapping[str, str]) -> tuple[str, str]:
                 "(split on the first ':')"
             )
         username, password = credential.split(":", 1)
+        if not username or not password:
+            # A degenerate split (":secret", "user:", or just ":") must not
+            # silently produce an empty username: an empty username makes
+            # `client.py` skip the Authorization header entirely, turning a
+            # config typo into a silent, unauthenticated request instead of
+            # a loud failure.
+            raise ConfigError(
+                "INTERNETNL_CREDENTIAL must be 'username:password' with a "
+                "non-empty username and password"
+            )
         return username, password
 
     return env.get("INTERNETNL_USERNAME", ""), env.get("INTERNETNL_PASSWORD", "")
