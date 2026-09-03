@@ -7,7 +7,7 @@ import pytest
 
 from fakes import REGISTER_REPLY
 
-from conftest import queue_json
+from conftest import DEMO_ORIGIN, DEMO_TENANT, queue_json
 from netnl import retention, store
 
 
@@ -306,3 +306,109 @@ def test_trigger_restored_after_prune(app, settings, conn):
     )
     with pytest.raises(sqlite3.IntegrityError, match="audit is append-only"):
         conn.execute("DELETE FROM audit")
+
+
+# --- demo retention (openspec/changes/add-demo-run, T7, D11) ----------------
+
+
+def test_demo_row_older_than_retention_is_pruned(demo_app, demo_settings):
+    conn = store.connect(demo_settings.db)
+    try:
+        demo_cred = store.find_credential(conn, DEMO_TENANT)
+        now = datetime.now(timezone.utc)
+        stale = store.utcnow_iso(
+            lambda: now - timedelta(hours=demo_settings.demo.retention_hours + 1)
+        )
+        store.insert_request(
+            conn,
+            facade_id="d" * 32,
+            upstream_id="upstream-1",
+            credential_id=demo_cred["id"],
+            request_type="web",
+            domain_count=1,
+            submitted_at=stale,
+            last_status="done",
+        )
+
+        counts = retention.prune(conn, demo_settings, now)
+
+        assert counts["demo_deleted"] == 1
+        assert store.get_request(conn, "d" * 32) is None
+    finally:
+        conn.close()
+
+
+def test_demo_row_within_retention_is_kept(demo_app, demo_settings):
+    conn = store.connect(demo_settings.db)
+    try:
+        demo_cred = store.find_credential(conn, DEMO_TENANT)
+        now = datetime.now(timezone.utc)
+        fresh = store.utcnow_iso(
+            lambda: now - timedelta(hours=max(demo_settings.demo.retention_hours - 1, 0))
+        )
+        store.insert_request(
+            conn,
+            facade_id="e" * 32,
+            upstream_id="upstream-2",
+            credential_id=demo_cred["id"],
+            request_type="web",
+            domain_count=1,
+            submitted_at=fresh,
+            last_status="done",
+        )
+
+        counts = retention.prune(conn, demo_settings, now)
+
+        assert counts["demo_deleted"] == 0
+        assert store.get_request(conn, "e" * 32) is not None
+    finally:
+        conn.close()
+
+
+def test_tenant_row_is_unaffected_by_the_demo_scoped_delete(demo_app, demo_settings):
+    """A tenant row 3 days old outlives the demo's 24-hour window by a wide
+    margin, but the demo-scoped delete is credential-scoped — it must
+    never touch anyone else's rows."""
+    from conftest import add_test_credential
+
+    add_test_credential(demo_app, "tenant", "tenant-secret")
+    conn = store.connect(demo_settings.db)
+    try:
+        tenant_cred = store.find_credential(conn, "tenant")
+        now = datetime.now(timezone.utc)
+        three_days_old = store.utcnow_iso(lambda: now - timedelta(days=3))
+        store.insert_request(
+            conn,
+            facade_id="f" * 32,
+            upstream_id="upstream-3",
+            credential_id=tenant_cred["id"],
+            request_type="web",
+            domain_count=1,
+            submitted_at=three_days_old,
+            last_status="done",
+        )
+
+        counts = retention.prune(conn, demo_settings, now)
+
+        assert counts["demo_deleted"] == 0
+        assert counts["requests_deleted"] == 0  # well within NETNL_RESULT_RETENTION_DAYS too
+        assert store.get_request(conn, "f" * 32) is not None
+    finally:
+        conn.close()
+
+
+def test_prune_without_demo_config_has_a_zero_demo_deleted_and_no_other_change(
+    app, settings, conn
+):
+    """`settings.demo is None` (the default) must produce output
+    byte-identical to before this change: `demo_deleted` is always present
+    in the return value but is 0, and never affects the other counters or
+    the `prune` audit record's total.
+    """
+    counts = retention.prune(conn, settings, datetime.now(timezone.utc))
+    assert counts["demo_deleted"] == 0
+
+    row = conn.execute("SELECT * FROM audit WHERE event = 'prune'").fetchone()
+    assert row["domain_count"] == (
+        counts["requests_deleted"] + counts["reserving_deleted"] + counts["audit_deleted"]
+    )

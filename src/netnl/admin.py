@@ -79,6 +79,11 @@ def _prune(conn, settings, now: datetime, stdout: IO[str]) -> int:
     counts = retention.prune(conn, settings, now)
     print(f"requests pruned: {counts['requests_deleted']}", file=stdout)
     print(f"audit records pruned: {counts['audit_deleted']}", file=stdout)
+    # openspec/changes/add-demo-run, D11: printed only when the demo family
+    # is configured — an operator who never opted in sees output
+    # byte-identical to before this change.
+    if settings.demo is not None:
+        print(f"demo requests pruned: {counts['demo_deleted']}", file=stdout)
     return 0
 
 

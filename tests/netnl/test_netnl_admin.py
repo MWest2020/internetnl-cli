@@ -6,7 +6,7 @@ from starlette.testclient import TestClient
 
 from fakes import REGISTER_REPLY, FakeOpener
 
-from conftest import basic_auth_header, queue_json
+from conftest import DEMO_ORIGIN, DEMO_TENANT, basic_auth_header, queue_json
 from netnl import admin, store
 from netnl.api import create_app
 from netnl.settings import load
@@ -114,3 +114,30 @@ def test_audit_contains_user_add_and_user_revoke(settings_env):
     ]
     assert "user-add" in events
     assert "user-revoke" in events
+
+
+# --- prune output, with and without the demo family (T7, D11) ---------------
+
+
+def test_prune_output_without_demo_config_has_no_demo_line(settings_env):
+    code, out, err = _run_admin(["prune"], settings_env)
+    assert code == 0
+    assert err == ""
+    assert "demo" not in out.lower()
+    lines = out.splitlines()
+    assert len(lines) == 2  # byte-identical shape to before this change
+    assert lines[0].startswith("requests pruned: ")
+    assert lines[1].startswith("audit records pruned: ")
+
+
+def test_prune_output_with_demo_config_adds_a_demo_line(settings_env):
+    env = dict(settings_env)
+    env["NETNL_DEMO_ENABLED"] = "1"
+    env["NETNL_DEMO_ALLOWED_ORIGIN"] = DEMO_ORIGIN
+    env["NETNL_DEMO_TENANT"] = DEMO_TENANT
+
+    code, out, err = _run_admin(["prune"], env)
+    assert code == 0
+    lines = out.splitlines()
+    assert len(lines) == 3
+    assert lines[2] == "demo requests pruned: 0"
