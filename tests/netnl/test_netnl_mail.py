@@ -235,3 +235,46 @@ def test_plaintext_mode_skips_starttls(fake_smtp):
     conn = fake_smtp.instances[0]
     names = [c[0] for c in conn.calls]
     assert "starttls" not in names
+
+
+# --- security review round: root-fix, `except Exception`, not a narrow list
+
+
+def test_unicode_encode_error_from_login_becomes_delivery_error(monkeypatch):
+    """Security review finding: `smtplib.SMTP.login` raises a bare
+    `UnicodeEncodeError` (not `SMTPException`/`OSError`/`ssl.SSLError`) when
+    the configured username/password contains a non-ASCII character — this
+    used to escape `smtp_sender` entirely as an unhandled exception. Proves
+    the `except Exception` root-fix actually catches it, wraps it in
+    `DeliveryError`, and never leaks the exception's own text.
+    """
+
+    class _NonAsciiLoginSMTP(_FakeSMTP):
+        def login(self, username, password):
+            raise UnicodeEncodeError(
+                "ascii", "wächter", 0, 1, "ordinal not in range(128)"
+            )
+
+    monkeypatch.setattr(smtplib, "SMTP", _NonAsciiLoginSMTP)
+    send = _sender(fake_smtp=_NonAsciiLoginSMTP, username="wächter", password="hunter2")
+    with pytest.raises(mail.DeliveryError) as exc_info:
+        send(mail.Mail(to="donor@example.org", subject="s", body="b"))
+    assert "wächter" not in str(exc_info.value)
+    assert "ordinal not in range" not in str(exc_info.value)
+
+
+def test_value_error_from_email_formatting_becomes_delivery_error(monkeypatch):
+    """The same root-fix also covers a `ValueError` from `EmailMessage`
+    formatting (e.g. a header value `stdlib`'s own `email` package
+    refuses) — any exception type, not just the three previously listed.
+    """
+
+    class _RaisingSMTP(_FakeSMTP):
+        def sendmail(self, from_addr, to_addrs, msg):
+            raise ValueError("header value contains newline")
+
+    monkeypatch.setattr(smtplib, "SMTP", _RaisingSMTP)
+    send = _sender(fake_smtp=_RaisingSMTP)
+    with pytest.raises(mail.DeliveryError) as exc_info:
+        send(mail.Mail(to="donor@example.org", subject="s", body="b"))
+    assert "header value contains newline" not in str(exc_info.value)

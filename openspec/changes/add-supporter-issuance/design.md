@@ -53,7 +53,7 @@ mirroring `DemoSettings`' own "opt-in, not read at all" shape.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `NETNL_BMC_WEBHOOK_SECRET` | — (required, master switch) | Shared secret configured on the BMC dashboard; never logged. |
+| `NETNL_BMC_WEBHOOK_SECRET` | — (required, master switch) | Shared secret configured on the BMC dashboard; never logged. Security review fix: rejected at startup if shorter than 32 characters — a floor against an obviously-too-short accidental value, not a strength target; `openssl rand -hex 32` (the documented generation command) is 64 characters. |
 | `NETNL_BMC_SIGNATURE_HEADER` | `X-Signature-Sha256` | Header carrying the HMAC. BMC's dashboard names the header it actually sends; set this to match if it differs. |
 | `NETNL_BMC_MAX_BODY_BYTES` | `65536` | Size cap on the raw webhook body, enforced by reading at most this many bytes — see "Body size" below. |
 | `NETNL_BMC_ACCEPT_TEST_MODE` | unset (`"1"` to accept) | Only for the integration test against a real BMC test delivery; leave unset in production. |
@@ -166,15 +166,32 @@ Ordering, each step short-circuiting the next:
        on the wire to a fresh issuance — this never reveals which).
      - `undeliverable` → 200 `{"status": "ignored"}`.
      - `attempts >= NETNL_SUPPORTER_MAX_ATTEMPTS` → 503
-       `delivery-failed`, no further mint attempted.
-     - Otherwise (no row yet, or a `failed` row under the attempt cap):
-       continue.
+       `delivery-failed` ("parked"), no further mint attempted.
+     - `pending` and younger than the pending lease (`NETNL_SMTP_TIMEOUT +
+       30` seconds — see "B1: idempotency under concurrency" below) → 503
+       `delivery-failed` ("already in progress"); this call did not take
+       the row over.
+     - Otherwise (no row yet, a `failed` row under the attempt cap, or a
+       `pending` row past its lease): continue — this call proceeds to
+       mint, whether that is a brand new transaction or a takeover.
+   - **The hourly cap (`NETNL_SUPPORTER_MAX_PER_HOUR`) is checked once,
+     here, before branching into either path below** — it therefore
+     bounds a takeover mint and a newly-recorded `undeliverable` outcome
+     exactly as it bounds a brand new issuance (security review fix,
+     "undeliverable-asymmetry": previously an undeliverable delivery wrote
+     an uncapped row regardless of volume). Exceeded → 503
+     `delivery-failed`.
    - `UNDELIVERABLE_NO_EMAIL` decision (or a present-but-invalid address,
      per `bmc.valid_recipient`): write the row as `undeliverable` (no
      credential ever minted), commit, 200 `{"status": "ignored"}`.
-   - Hourly cap (`NETNL_SUPPORTER_MAX_PER_HOUR`) exceeded: 503
-     `rate-limited`.
-   - If retrying, revoke the previous username in place.
+   - If retrying (a takeover of a `failed` or lease-expired `pending`
+     row), revoke the previous username in place and increment `attempts`
+     *now*, at mint time — not only when a delivery attempt later fails
+     (security review fix, B2(b): a process that crashes between minting
+     and ever recording an outcome previously left `attempts` at its
+     stale value, so a crash-loop retried unboundedly; incrementing at
+     mint time means `NETNL_SUPPORTER_MAX_ATTEMPTS` bounds the number of
+     credentials *ever minted* for one transaction, full stop).
    - Mint a fresh username (`<prefix><8 hex>`, regenerated on a
      `sqlite3.IntegrityError` collision, up to 5 attempts) and issue a
      credential via `netnl.issue.issue_credential` (shared with
@@ -182,16 +199,100 @@ Ordering, each step short-circuiting the next:
    - Upsert the `supporter_issuance` row, state `pending`.
    - Commit.
 7. **Mail, outside the transaction.** Success → update the row to
-   `delivered`, audit `supporter-deliver`, and — if `NETNL_SUPPORTER_NOTIFY`
-   is set — best-effort the operator notification.
+   `delivered` (conditionally — see "B1" below), audit
+   `supporter-deliver`, and — if `NETNL_SUPPORTER_NOTIFY` is set —
+   best-effort the operator notification (any exception from that send is
+   logged and never turns a successful delivery into a failure).
 8. **`DeliveryError`** → revoke the just-minted credential, update the row
-   to `failed` with `attempts + 1`, audit `supporter-deliver-failed`
-   (host-free), answer 503 `delivery-failed` (`Retry-After` not required —
-   BMC's own retry schedule applies).
+   to `failed` (attempts already incremented in step 6), audit
+   `supporter-deliver-failed` (host-free), answer 503 `delivery-failed`
+   (`Retry-After` not required — BMC's own retry schedule applies).
+   `netnl.mail.smtp_sender`'s own `except Exception` (not a narrower list)
+   guarantees every production `Sender` call raises only `DeliveryError`
+   here — see "B2: a Sender must never raise anything else" below.
 
 Every reply from this route also carries the same provenance/security
 headers every other reply does; `X-Netnl-Notice`/`X-Netnl-Instance` are
 harmless here (BMC ignores them).
+
+**Every 503 this route ever answers uses the single label
+`delivery-failed`** — including the hourly cap. (An earlier draft of this
+document proposed splitting the hourly-cap case out under a
+`rate-limited` label; the shipped implementation does not do this — one
+label for "try again later, nothing further happened" is simpler and the
+distinction bought nothing a caller could act on differently.)
+
+## B1: idempotency under concurrency
+
+`BEGIN IMMEDIATE` serialises concurrent writers *on step 6's own
+transaction*, but mail (step 7) is sent *outside* it, by design (D3) — the
+write lock is released between the persist-commit and the later
+mail-outcome write. A `pending` row committed in step 6 is visible, in that
+window, to any concurrent call for the *same* transaction id that acquires
+the write lock next. Measured before the fix below: 5 concurrent,
+identically-signed deliveries for one transaction minted 5 credentials —
+each call's own takeover step revoked the *previous* call's still-in-flight
+credential, and because the outcome write in step 7/8 used to be an
+unconditional `UPDATE ... WHERE txn_id = ?`, whichever call's mail happened
+to finish *last* stamped the row with its own username, leaving at least
+one other call's credential active and referenced by no row at all (an
+orphan) — a direct violation of "at most one active credential per
+transaction" and "no credential that could not be delivered stays usable"
+(D3).
+
+Two independent layers close this:
+
+- **B1(a), a pending lease.** A `pending` row is only eligible for takeover
+  once it is older than `NETNL_SMTP_TIMEOUT + 30` seconds — derived from
+  the SMTP timeout (the only thing that can legitimately keep a row
+  `pending`) plus a fixed safety margin, rather than a bare constant, so a
+  slow-but-genuine mail send is never mistaken for an abandoned one. A
+  concurrent call landing inside the lease gets 503 `delivery-failed`
+  ("already in progress") instead of taking the row over.
+- **B1(b), a conditional outcome write.** The step 7/8 write is
+  `UPDATE supporter_issuance SET ... WHERE txn_id = ? AND username = ?`
+  (`netnl.store.update_issuance`'s `expected_username`) — if some other
+  call has already taken the row over by the time this one finishes
+  mailing, the write matches zero rows, and this call revokes its *own*
+  credential instead of blindly overwriting the row with a stale username.
+  With B1(a) in place this should be effectively unreachable in ordinary
+  operation; it exists as a second, independent layer for a lease-boundary
+  or clock-skew edge case.
+
+Proven both directly (`tests/netnl/test_netnl_supporter.py`'s
+`test_pending_row_within_lease_refuses_takeover`,
+`test_pending_row_past_lease_allows_takeover`, and
+`test_b1_invariant_holds_when_a_stale_outcome_write_arrives_after_takeover`,
+which calls the two functions directly to deterministically reproduce the
+exact interleaving) and under genuine concurrency on a real server
+(`tests/netnl/test_netnl_real_server.py`'s
+`test_real_server_same_txn_concurrent_deliveries_mint_one_credential` —
+see that module's own docstring for why a real uvicorn server, not
+`TestClient`, is required to exercise this at all).
+
+## B2: a `Sender` must never raise anything else
+
+`netnl.mail.smtp_sender`'s internal `_send` used to catch only
+`(smtplib.SMTPException, OSError, ssl.SSLError)`. Measured: `smtplib.SMTP.
+login()` raises a bare `UnicodeEncodeError` (none of those three types) when
+the configured SMTP username/password contains a non-ASCII character it
+tries to `.encode("ascii")` before base64-encoding it — this reached
+`netnl.supporter._process` as an unhandled exception, meaning the
+just-minted credential was never revoked and the `pending` row was never
+recorded as failed: an active, undeliverable credential, silently left
+behind. Fixed by catching bare `Exception` in `_send` — the one place a
+`Sender`'s contract ("never raises anything but `DeliveryError`") can
+actually be guaranteed, so every caller of a `Sender` may rely on it. See
+`tests/netnl/test_netnl_mail.py`'s
+`test_unicode_encode_error_from_login_becomes_delivery_error` and
+`test_value_error_from_email_formatting_becomes_delivery_error`.
+
+The one caller that does *not* rely on this guarantee is the operator
+notification send in step 7 (`NETNL_SUPPORTER_NOTIFY`): it catches bare
+`Exception`, not `DeliveryError`, because the injectable `Sender` seam
+tests use directly can raise anything a test chooses — that call site's
+own "never fatal" promise must not depend on which `Sender` implementation
+is in play.
 
 ## Storage
 
@@ -240,6 +341,32 @@ and timestamps — the transaction id and username are sanitised
 (printable-only, length-capped, mirroring `netnl.auth`'s own
 `_sanitize_username`) before being written into `audit.detail`, since the
 transaction id is itself BMC-supplied input.
+
+## Post-prune replay (security-L3, accepted, documented)
+
+Idempotency is entirely a function of the `supporter_issuance` row for a
+transaction id existing. Once that row is pruned (the existing
+`NETNL_AUDIT_RETENTION_DAYS` cutoff — see "Storage" above), a captured,
+validly-signed delivery for that same transaction id — replayed after the
+prune, whether by BMC's own delayed retry or by anyone who recorded the
+raw request — is indistinguishable from a brand-new transaction: it mints
+a *second* credential, and the original one (if never separately revoked)
+remains active. This is a real, accepted residual risk, not a gap this
+build closes silently.
+
+A tombstone table recording every transaction id ever seen, kept
+indefinitely (or on its own, separate, much longer retention window) to
+close this was considered and rejected: it reintroduces exactly the
+unbounded-growth-of-external-identifiers problem `NETNL_AUDIT_RETENTION_DAYS`
+exists to bound in the first place, for a threat that already requires
+possession of the webhook secret (to produce a valid signature) or a
+captured signed request — at which point an attacker can simply mint an
+unlimited number of *fresh* donations directly; a replayed *old* one buys
+them nothing a live forgery does not already. The mitigation is
+operational, not architectural: documented in
+`docs/how-to/supporter-webhook.md`'s security notes, with manual
+`netnl-admin user revoke` as the remedy for a specific credential an
+operator learns was double-issued this way.
 
 ## Testing constraints
 

@@ -108,10 +108,25 @@ def smtp_sender(
       username/password pair (see `netnl.settings._load_supporter`).
     - Sends to exactly `[mail.to]` — no cc/bcc, no additional envelope
       recipient ever added.
-    - Every `smtplib`/`ssl`/`OSError` becomes `DeliveryError` with a fixed,
-      static message; only `type(exc).__name__` is logged — the exception's
-      own text (which can carry the host, a raw server response, or other
-      transport detail) never propagates further.
+    - **Every** exception raised while connecting, authenticating, or
+      sending becomes `DeliveryError` with a fixed, static message; only
+      `type(exc).__name__` is logged — the exception's own text (which can
+      carry the host, a raw server response, or other transport detail)
+      never propagates further. Security review fix: a bare
+      `except (smtplib.SMTPException, OSError, ssl.SSLError)` here used to
+      let anything else through unwrapped — measured: `smtplib.SMTP.
+      login()` raises a bare `UnicodeEncodeError` (not one of those three
+      types) when the configured username/password contains a non-ASCII
+      character it tries to `.encode("ascii")` before base64-encoding it,
+      which reached `netnl.supporter._process` as an unhandled exception —
+      the just-minted credential was never revoked and the `pending` row
+      was never recorded as failed, both violating the "never an
+      undeliverable-but-working key" invariant (design.md, D3). A `Sender`
+      contract that permits *any* exception type on failure cannot be
+      relied on by a caller matching one specific except clause; catching
+      bare `Exception` here is the one place that guarantee can actually be
+      made, so every caller of a `Sender` may assume it never raises
+      anything but `DeliveryError`.
     """
     if mode not in _SMTP_MODES:
         raise ValueError(f"unknown SMTP mode: {mode!r}")
@@ -136,7 +151,7 @@ def smtp_sender(
                 message["To"] = mail.to
                 message.set_content(mail.body)
                 conn.sendmail(from_addr, [mail.to], message.as_string())
-        except (smtplib.SMTPException, OSError, ssl.SSLError) as exc:
+        except Exception as exc:
             _logger.warning("supporter mail delivery failed: %s", type(exc).__name__)
             raise DeliveryError("failed to deliver supporter credential mail") from exc
 

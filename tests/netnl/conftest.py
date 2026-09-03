@@ -197,7 +197,7 @@ def demo_client(demo_app):
 
 # --- supporter webhook bridge (openspec/changes/add-supporter-issuance) ----
 
-SUPPORTER_SECRET = "test-webhook-secret"
+SUPPORTER_SECRET = "test-webhook-secret-32-chars-long!!"
 
 
 class RecordingSender:

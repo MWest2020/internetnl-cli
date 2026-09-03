@@ -505,18 +505,38 @@ def update_issuance(
     state: str,
     attempts: int,
     updated_at: str,
-) -> None:
-    """Updates an existing row in place — used both for a retry (fresh
+    expected_username: str | None = None,
+) -> bool:
+    """Updates an existing row in place — used both for a takeover (fresh
     `username`, `state` reset to `pending`) and for recording a mail
-    outcome (`state`/`attempts` change, `username` unchanged). `created_at`
-    is never touched: it always reflects when this transaction id was first
-    seen.
+    outcome (`state`/`attempts` change, `username` normally unchanged).
+    `created_at` is never touched: it always reflects when this transaction
+    id was first seen. Returns whether a row was actually updated
+    (`cur.rowcount > 0`).
+
+    `expected_username` (security review fix, B1(b)): when given, the
+    `WHERE` clause also requires the row's *current* `username` to still
+    match it — a conditional compare-and-swap, not a blind overwrite. Used
+    by `netnl.supporter._record_delivery_outcome` to record a mail
+    attempt's outcome only if nothing has taken this transaction's row over
+    in the meantime (its `username` would then differ); if the update
+    matches zero rows, the caller can tell its own write lost that race
+    and must not have blindly overwritten a newer takeover's state. See
+    that function's docstring for the concurrency bug this closes.
     """
-    conn.execute(
-        "UPDATE supporter_issuance SET username = ?, state = ?, attempts = ?, "
-        "updated_at = ? WHERE txn_id = ?",
-        (username, state, attempts, updated_at, txn_id),
-    )
+    if expected_username is not None:
+        cur = conn.execute(
+            "UPDATE supporter_issuance SET username = ?, state = ?, attempts = ?, "
+            "updated_at = ? WHERE txn_id = ? AND username = ?",
+            (username, state, attempts, updated_at, txn_id, expected_username),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE supporter_issuance SET username = ?, state = ?, attempts = ?, "
+            "updated_at = ? WHERE txn_id = ?",
+            (username, state, attempts, updated_at, txn_id),
+        )
+    return cur.rowcount > 0
 
 
 def count_issuances_since(conn: sqlite3.Connection, cutoff_iso: str) -> int:

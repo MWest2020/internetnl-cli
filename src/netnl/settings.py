@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Mapping
 
+from netnl import bmc
 from netnl.errors import SettingsError
 
 # Header-safe: ASCII, no CR/LF, bounded length (used as X-Netnl-Instance).
@@ -188,6 +189,14 @@ def _resolve_decimal(env: Mapping[str, str], var: str, default: Decimal) -> Deci
         value = Decimal(raw)
     except InvalidOperation as exc:
         raise SettingsError(f"{var} must be a decimal number: got '{raw}'") from exc
+    # Security review fix: `Decimal("NaN")`/`Decimal("Infinity")` parse
+    # without raising `InvalidOperation` above, and comparing a NaN/sNaN
+    # `Decimal` with `<` itself raises `InvalidOperation` (not "quietly
+    # False") in the default context — checked *before* the comparison
+    # below so that never escapes as anything other than a clean,
+    # variable-naming `SettingsError`.
+    if not value.is_finite():
+        raise SettingsError(f"{var} must be a finite decimal number: got '{raw}'")
     if value < 0:
         raise SettingsError(f"{var} must not be negative: got '{raw}'")
     return value
@@ -322,6 +331,19 @@ def _load_supporter(env: Mapping[str, str]) -> SupporterSettings | None:
     secret = env.get("NETNL_BMC_WEBHOOK_SECRET")
     if not secret:
         return None
+    # Security review fix: the shared secret is the *entire* gate on this
+    # route (see docs/how-to/supporter-webhook.md, "Security notes") — a
+    # short value is brute-forceable against the HMAC comparison in a way
+    # a `openssl rand -hex 32` (256 bits) value, the documented generation
+    # command, never is. 32 characters is a floor, not a strength target;
+    # it exists to catch an obviously-too-short accidental value (a typo,
+    # a placeholder left in place) at startup rather than silently running
+    # with one.
+    if len(secret) < 32:
+        raise SettingsError(
+            f"NETNL_BMC_WEBHOOK_SECRET must be at least 32 characters (got {len(secret)}); "
+            "generate one with: openssl rand -hex 32"
+        )
 
     signature_header = env.get("NETNL_BMC_SIGNATURE_HEADER", "X-Signature-Sha256")
     accept_test_mode = env.get("NETNL_BMC_ACCEPT_TEST_MODE") == "1"
@@ -353,12 +375,30 @@ def _load_supporter(env: Mapping[str, str]) -> SupporterSettings | None:
         raise SettingsError(
             "NETNL_SMTP_MODE=plaintext requires NETNL_SMTP_ALLOW_PLAINTEXT=1 "
             "(the same explicit opt-in NETNL_ALLOW_HTTP already uses for an "
-            "insecure upstream hop)"
+            "insecure upstream hop) — in plaintext mode, the SMTP relay "
+            "password (NETNL_SMTP_PASSWORD, if set) travels the connection "
+            "unencrypted, same as the credential mail body itself"
         )
 
     smtp_username = env.get("NETNL_SMTP_USERNAME") or None
     smtp_password = env.get("NETNL_SMTP_PASSWORD") or None
-    notify = env.get("NETNL_SUPPORTER_NOTIFY") or None
+
+    # Security review fix (M1): validated the same way `NETNL_SMTP_FROM`
+    # already is (CR/LF rejected — this address is placed in a mail
+    # header, `netnl.mail.build_notify_mail`'s `To:`) plus `bmc.
+    # valid_recipient`'s own conservative address shape — the same guard
+    # used for the untrusted, donor-supplied address, applied here to an
+    # operator-configured one so a malformed value fails at startup, not
+    # silently on the first successful delivery.
+    raw_notify = env.get("NETNL_SUPPORTER_NOTIFY") or None
+    notify: str | None = None
+    if raw_notify is not None:
+        _reject_crlf("NETNL_SUPPORTER_NOTIFY", raw_notify)
+        if not bmc.valid_recipient(raw_notify):
+            raise SettingsError(
+                f"NETNL_SUPPORTER_NOTIFY is not a usable mail address: got {raw_notify!r}"
+            )
+        notify = raw_notify
 
     supporter_kwargs: dict = {}
     for var, (attr, default) in _SUPPORTER_NUMERIC_DEFAULTS.items():

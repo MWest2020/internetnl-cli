@@ -152,6 +152,10 @@ def test_parse_delivery_amount_uses_decimal_not_float():
         ("amount", lambda p: p["data"].pop("amount")),
         ("amount", lambda p: p["data"].__setitem__("amount", "not-a-number")),
         ("amount", lambda p: p["data"].__setitem__("amount", -5)),
+        ("amount", lambda p: p["data"].__setitem__("amount", "NaN")),
+        ("amount", lambda p: p["data"].__setitem__("amount", "sNaN")),
+        ("amount", lambda p: p["data"].__setitem__("amount", "Infinity")),
+        ("amount", lambda p: p["data"].__setitem__("amount", "-Infinity")),
         ("currency", lambda p: p["data"].pop("currency")),
     ],
 )
@@ -163,6 +167,40 @@ def test_parse_delivery_raises_malformed_delivery_naming_only_the_field(field, m
     assert exc_info.value.field == field
     # Nothing about the payload itself leaks into the exception's own text.
     assert "supporter@example.org" not in str(exc_info.value)
+
+
+def test_parse_delivery_rejects_json_bare_infinity_literal():
+    # `json.loads` accepts the bare (unquoted) `Infinity`/`NaN` tokens as a
+    # Python extension to the JSON grammar — a delivery whose raw body
+    # actually contains one of these (not a quoted string) must still be
+    # rejected, not silently parsed into a non-finite `Decimal`.
+    payload = _payload()
+    body = _body(payload).replace(b'"5.00"', b"Infinity")
+    parsed = json.loads(body)
+    with pytest.raises(bmc.MalformedDelivery, match="amount"):
+        bmc.parse_delivery(parsed)
+
+
+def test_parse_delivery_rejects_amount_that_overflows_float_to_infinity():
+    # A bare (unquoted) JSON numeric literal too large for a float
+    # silently becomes `inf` during `json.loads` itself, before this
+    # module ever sees it — `parse_delivery` must still catch the
+    # resulting non-finite `Decimal`.
+    payload = _payload()
+    body = _body(payload).replace(b'"5.00"', b"1e10000")
+    parsed = json.loads(body)
+    assert parsed["data"]["amount"] == float("inf")
+    with pytest.raises(bmc.MalformedDelivery, match="amount"):
+        bmc.parse_delivery(parsed)
+
+
+def test_parse_delivery_accepts_a_quoted_large_but_finite_amount():
+    # A *quoted* huge decimal string never goes through float at all, so
+    # it never overflows to infinity — only genuinely non-finite values
+    # are rejected.
+    payload = _payload(data={"amount": "1e10000"})
+    delivery = bmc.parse_delivery(payload)
+    assert delivery.amount.is_finite()
 
 
 def test_parse_delivery_missing_email_is_none_not_an_error():

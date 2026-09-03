@@ -76,7 +76,7 @@ def test_upstream_transport_failure_never_leaks_credential(settings_env, tmp_pat
 
 # --- supporter webhook bridge (openspec/changes/add-supporter-issuance) ----
 
-_WEBHOOK_SECRET = "webhook-super-secret"
+_WEBHOOK_SECRET = "webhook-super-secret-32-characters!"
 _SMTP_PASSWORD = "smtp-super-secret"
 _SUPPORTER_EMAIL = "donor-private@example.org"
 

@@ -124,7 +124,7 @@ action. Every donation on the account qualifies by default
 |---|---|---|
 | Every delivery gets 401 | Header name or secret mismatch | Re-check the exact signature header name in the BMC dashboard against `NETNL_BMC_SIGNATURE_HEADER`; re-confirm both sides have the same secret |
 | Facade refuses to start after setting the secret | A required mail/endpoint variable is missing | The `SettingsError` names the missing variable — see "Prerequisites" above |
-| A real donation produced no mail and no error visible to the donor | Check facade logs for `event=delivery-failed txn_id=...`; the transaction is retried by BMC's own retry schedule, or `netnl-admin` can inspect `supporter_issuance` directly against the database file | Confirm SMTP credentials/relay are reachable from the facade; a transaction stuck past `NETNL_SUPPORTER_MAX_ATTEMPTS` is parked — a operator-issued key via the manual fallback ([supporter-key.md](supporter-key.md#manual-issuance-fallback)) unblocks that donor immediately |
+| A real donation produced no mail and no error visible to the donor | Check facade logs for `event=delivery-failed txn_id=...` (`logging.getLogger("netnl.supporter")`); if that's inconclusive, inspect the `supporter_issuance` table directly with `sqlite3 <db-path> "SELECT * FROM supporter_issuance WHERE txn_id = '<id>'"` (there is no `netnl-admin` subcommand for this — it is a plain read-only query against the facade's own SQLite file) | Confirm SMTP credentials/relay are reachable from the facade; a transaction stuck past `NETNL_SUPPORTER_MAX_ATTEMPTS` is parked — an operator-issued key via the manual fallback ([supporter-key.md](supporter-key.md#manual-issuance-fallback)) unblocks that donor immediately |
 | A donation with no email on file never issues | Working as intended (`UNDELIVERABLE_NO_EMAIL`) | There is no credential to reissue automatically — use the manual fallback if the donor can be reached another way |
 | A donation from a test/sandbox delivery unexpectedly minted a key | `NETNL_BMC_ACCEPT_TEST_MODE=1` was left set | Unset it and redeploy; revoke the resulting credential |
 
@@ -133,7 +133,15 @@ action. Every donation on the account qualifies by default
 - **The shared secret is the only gate.** There is no IP allowlist, no
   mTLS — anything that can produce a valid HMAC-SHA256 signature under the
   configured secret can trigger issuance. Treat it with the same care as
-  the upstream credential.
+  the upstream credential. The facade refuses to start with a secret
+  shorter than 32 characters (a floor against an obviously-too-short
+  accidental value, not a strength target); `openssl rand -hex 32` (step
+  1) is 64.
+- **`NETNL_SMTP_MODE=plaintext` also puts the SMTP relay password on the
+  wire unencrypted**, exactly like the credential mail body itself — it
+  requires the explicit `NETNL_SMTP_ALLOW_PLAINTEXT=1` opt-in for that
+  reason, same as `NETNL_ALLOW_HTTP` for the upstream hop. Prefer
+  `starttls` or `ssl` unless the relay is genuinely local/trusted.
 - **Rotation** is a plain redeploy with a new secret value, updated on both
   sides at the same time (see step 1). There is no overlap window where two
   secrets are simultaneously valid — a delivery signed under the old secret
@@ -150,14 +158,22 @@ action. Every donation on the account qualifies by default
   exist only in memory for the duration of sending the mail. The database
   keeps only the transaction id, the generated username, delivery state,
   an attempt counter, and timestamps.
-- **Retention.** `supporter_issuance` rows are pruned on the same
+- **Retention, and post-prune replay (accepted residual risk).**
+  `supporter_issuance` rows are pruned on the same
   `NETNL_AUDIT_RETENTION_DAYS` cutoff the audit trail uses (no separate
   retention variable) — an operator lengthening or shortening
   `NETNL_AUDIT_RETENTION_DAYS` moves this window too. Once a row is pruned,
-  a resent delivery for that transaction id is treated as brand new (a
-  fresh credential is minted) rather than recognised as a duplicate — in
-  practice this only matters for a delivery BMC retries long after the
-  retention window, which is not the ordinary case.
+  a resent, validly-signed delivery for that transaction id is
+  indistinguishable from a brand-new one: it mints a *second* credential,
+  and the original stays active unless separately revoked. This is
+  accepted, not closed by a tombstone table — see
+  `openspec/changes/add-supporter-issuance/design.md`, "Post-prune
+  replay", for why (in short: closing it that way reintroduces the
+  unbounded-growth problem retention exists to bound, against a threat
+  that already requires the webhook secret or a captured signed request —
+  at which point a live forgery is no harder than a replay). If you spot a
+  donor with two active credentials from one donation, revoke the extra
+  one by hand.
 - **`NETNL_SUPPORTER_NOTIFY` (optional).** Set this to an operator address
   to get a short mail ("supporter key issued: `<username>`, txn `<id>`")
   after every successful delivery — no password, no supporter PII beyond

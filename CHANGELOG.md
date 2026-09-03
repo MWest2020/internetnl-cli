@@ -115,6 +115,62 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `netnl`'s supporter webhook bridge (`POST /webhooks/bmc`), post-build
+  security review round:
+  - **Idempotency under concurrency (B1):** measured, 5 concurrent
+    identically-signed deliveries for the same BMC transaction minted 5
+    credentials and left an active orphan no `supporter_issuance` row
+    referenced — mail is sent outside the `BEGIN IMMEDIATE` transaction
+    (by design), and a `pending` row committed just before it was
+    previously treated as safe to take over by any concurrent call for
+    the same transaction. Closed two ways: a `pending` row is only
+    eligible for takeover once older than a lease
+    (`NETNL_SMTP_TIMEOUT + 30`s, derived from the only thing that can
+    legitimately keep it pending) — a younger one answers 503 instead;
+    and the mail-outcome write is now a conditional
+    `UPDATE ... WHERE txn_id = ? AND username = ?`
+    (`store.update_issuance`'s `expected_username`), so a call whose row
+    was already taken over revokes its own credential instead of
+    overwriting a newer takeover's state. Proven both by direct
+    reproduction (`tests/netnl/test_netnl_supporter.py`) and under real
+    concurrency on a genuine uvicorn server
+    (`tests/netnl/test_netnl_real_server.py`).
+  - **A `Sender` must never raise anything else (B2):** `smtplib.SMTP.
+    login()` raises a bare `UnicodeEncodeError` (not
+    `SMTPException`/`OSError`/`ssl.SSLError`) for a non-ASCII SMTP
+    username/password, which previously escaped unwrapped, leaving an
+    active, undelivered credential behind. `netnl.mail.smtp_sender` now
+    catches bare `Exception`. `attempts` is now incremented at mint/
+    takeover time, not only on a confirmed delivery failure, so a
+    crash between minting and recording an outcome still counts toward
+    `NETNL_SUPPORTER_MAX_ATTEMPTS` instead of retrying unboundedly; the
+    hourly cap now also bounds a takeover mint and a newly-recorded
+    undeliverable outcome, not only a brand-new qualifying delivery.
+  - `NETNL_SUPPORTER_NOTIFY` is now validated at startup (address shape,
+    CR/LF) instead of only at send time, and its own mail failure is
+    caught as bare `Exception`, not just `DeliveryError`.
+  - Non-finite amounts (`NaN`, `sNaN`, `Infinity`, and a bare JSON numeric
+    literal that overflows to `inf`) are now rejected as malformed rather
+    than reaching a `Decimal` comparison that itself raises
+    `InvalidOperation` unhandled — both in the webhook payload
+    (`netnl.bmc.parse_delivery`) and in `NETNL_SUPPORTER_MIN_AMOUNT`.
+  - `NETNL_BMC_WEBHOOK_SECRET` must now be at least 32 characters.
+  - A qualifying-but-unmailable (no usable recipient) delivery now counts
+    toward the hourly issuance cap too, closing a previously-uncapped
+    write path.
+  - The full (up to 128-character) transaction id is now written into
+    `audit.detail`, matching `bmc.parse_delivery`'s own field cap (was
+    silently truncated to 64).
+  - `Request.stream()` disconnecting mid-body-read
+    (`starlette.requests.ClientDisconnect`) now answers a clean 400
+    instead of falling into the generic 500 "unexpected error" handler.
+  - Docs updated to match: the design's 503 label table now says
+    `delivery-failed` throughout (not `rate-limited` for the hourly cap,
+    which the implementation never actually used); a nonexistent
+    `netnl-admin` inspect subcommand reference in the troubleshooting
+    table was replaced with a plain `sqlite3` query; the accepted
+    post-prune-replay risk (and why a tombstone table was rejected) and
+    the plaintext-SMTP relay-password caveat are now documented.
 - The CLI now sends a `User-Agent: internetnl-cli/<version>` header on every
   request instead of letting `urllib` fall back to its default
   `Python-urllib/x.y` string — Cloudflare's bot protection in front of the

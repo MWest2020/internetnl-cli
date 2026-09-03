@@ -15,7 +15,7 @@ from netnl.settings import load
 
 def _supporter_env(settings_env, **overrides) -> dict:
     env = dict(settings_env)
-    env["NETNL_BMC_WEBHOOK_SECRET"] = "test-secret"
+    env["NETNL_BMC_WEBHOOK_SECRET"] = "test-secret-that-is-32-chars-long!!"
     env["NETNL_PUBLIC_ENDPOINT"] = "https://facade.example.org"
     env["NETNL_SMTP_HOST"] = "smtp.example.org"
     env["NETNL_SMTP_FROM"] = "noreply@example.org"
@@ -63,7 +63,7 @@ def test_defaults_match_design(settings_env):
     s = load(_supporter_env(settings_env))
     assert s.supporter is not None
     cfg = s.supporter
-    assert cfg.webhook_secret == "test-secret"
+    assert cfg.webhook_secret == "test-secret-that-is-32-chars-long!!"
     assert cfg.signature_header == "X-Signature-Sha256"
     assert cfg.max_body_bytes == 65536
     assert cfg.accept_test_mode is False
@@ -253,3 +253,59 @@ def test_notify_carried_through(settings_env):
     env = _supporter_env(settings_env, NETNL_SUPPORTER_NOTIFY="operator@example.org")
     s = load(env)
     assert s.supporter.notify == "operator@example.org"
+
+
+# --- security review round: secret floor, notify validation, non-finite ---
+# --- amounts (openspec/changes/add-supporter-issuance) --------------------
+
+
+def test_webhook_secret_below_32_chars_is_rejected(settings_env):
+    env = _supporter_env(settings_env, NETNL_BMC_WEBHOOK_SECRET="short-secret")
+    with pytest.raises(SettingsError, match="NETNL_BMC_WEBHOOK_SECRET"):
+        load(env)
+
+
+def test_webhook_secret_exactly_32_chars_is_accepted(settings_env):
+    env = _supporter_env(settings_env, NETNL_BMC_WEBHOOK_SECRET="a" * 32)
+    s = load(env)
+    assert s.supporter.webhook_secret == "a" * 32
+
+
+def test_notify_rejects_embedded_carriage_return(settings_env):
+    env = _supporter_env(
+        settings_env, NETNL_SUPPORTER_NOTIFY="operator@example.org\r\nBcc: x@evil.example"
+    )
+    with pytest.raises(SettingsError, match="NETNL_SUPPORTER_NOTIFY"):
+        load(env)
+
+
+@pytest.mark.parametrize(
+    "bad_notify",
+    ["not-an-email", "a b@example.org", "a@example.org, b@evil.example", "<a@example.org>"],
+)
+def test_notify_rejects_unusable_address_shapes(settings_env, bad_notify):
+    env = _supporter_env(settings_env, NETNL_SUPPORTER_NOTIFY=bad_notify)
+    with pytest.raises(SettingsError, match="NETNL_SUPPORTER_NOTIFY"):
+        load(env)
+
+
+@pytest.mark.parametrize("bad_amount", ["NaN", "nan", "sNaN", "Infinity", "-Infinity", "inf"])
+def test_min_amount_rejects_non_finite_values(settings_env, bad_amount):
+    env = _supporter_env(settings_env, NETNL_SUPPORTER_MIN_AMOUNT=bad_amount)
+    with pytest.raises(SettingsError, match="NETNL_SUPPORTER_MIN_AMOUNT"):
+        load(env)
+
+
+def test_min_amount_accepts_a_very_large_but_finite_value(settings_env):
+    # A huge but syntactically finite decimal (unlike a float, `Decimal`
+    # does not overflow this to infinity) is not itself a security
+    # problem — only genuinely non-finite values are rejected above.
+    env = _supporter_env(settings_env, NETNL_SUPPORTER_MIN_AMOUNT="1e10000")
+    s = load(env)
+    assert s.supporter.min_amount.is_finite()
+
+
+def test_plaintext_mode_error_mentions_the_relay_password(settings_env):
+    env = _supporter_env(settings_env, NETNL_SMTP_MODE="plaintext")
+    with pytest.raises(SettingsError, match="password"):
+        load(env)

@@ -11,6 +11,7 @@ Policy`, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`; see
 from __future__ import annotations
 
 import copy
+import logging
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import ClientDisconnect
 
 from internetnl_cli.client import Opener, urllib_opener
 from internetnl_cli.errors import ApiError, TransportError
@@ -29,6 +31,8 @@ from netnl import auth, demo, limits, mail, store, supporter, upstream
 from netnl.errors import NetnlHTTPError
 from netnl.replies import API_VERSION, NOTICE, error_body
 from netnl.settings import Settings
+
+_logger = logging.getLogger("netnl.api")
 
 # Every reply — success and error — is JSON (or, for security.txt, plain
 # text) and never HTML rendered by a browser, so a strict, locked-down CSP
@@ -304,6 +308,22 @@ def create_app(
         )
         msg = f"invalid request body: {', '.join(fields)}" if fields else "invalid request body"
         return JSONResponse(error_body("bad-request", msg), status_code=400)
+
+    @app.exception_handler(ClientDisconnect)
+    async def handle_client_disconnect(request: Request, exc: ClientDisconnect) -> JSONResponse:
+        # Security review fix (minor): `ClientDisconnect` (raised by
+        # `Request.stream()` if the client goes away mid-upload — the
+        # supporter webhook bridge's `_read_bounded_body` is the one place
+        # in this facade that reads a body incrementally rather than via
+        # FastAPI's own automatic parsing) is not an application error.
+        # Without this dedicated handler it falls into `handle_unexpected`
+        # below, logged and reported as a 500 "unexpected error" for what
+        # is simply a client that stopped sending — registered here,
+        # ahead of that generic handler, purely so this ordinary case does
+        # not produce that noise. There is no client left to deliver a
+        # response to either way.
+        _logger.debug("client disconnected mid-request: %s", request.url.path)
+        return JSONResponse(error_body("bad-request", "client disconnected"), status_code=400)
 
     @app.exception_handler(Exception)
     async def handle_unexpected(request: Request, exc: Exception) -> JSONResponse:

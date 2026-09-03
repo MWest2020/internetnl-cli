@@ -4,6 +4,11 @@ qualifying donation into a `netnl` tenant credential, mailed to the donor.
 See `openspec/changes/add-supporter-issuance/design.md` for the pinned
 decisions (D1-D5) this module implements. Registered from `api.py` only
 when `settings.supporter` is not `None` — see that module's `create_app`.
+
+Security review round (post-147903c): a concurrency bug (B1) and a
+crash-loop/accounting bug (B2) in the idempotency/mint step below — see
+`_persist_and_mint` and `_record_delivery_outcome`'s docstrings for the
+measured races and the fixes.
 """
 
 from __future__ import annotations
@@ -32,9 +37,11 @@ _MAX_USERNAME_ATTEMPTS = 5
 
 # Printable-only, length-capped — mirrors `netnl.auth._sanitize_username`'s
 # own treatment of attacker-controlled input before it is written into
-# `audit.detail`. A BMC transaction id is external input, even though it
-# arrived over a signed channel.
-_MAX_SANITIZED_LEN = 64
+# `audit.detail`. Security review fix: raised from 64 to 128 to match
+# `bmc.parse_delivery`'s own cap on `transaction_id` (`max_len=128`) — a
+# shorter cap here silently truncated the id an operator would otherwise
+# use to correlate an audit row with its `supporter_issuance` row.
+_MAX_SANITIZED_LEN = 128
 
 
 def _sanitize(value: str) -> str:
@@ -50,6 +57,13 @@ async def _read_bounded_body(request: Request, max_bytes: int) -> bytes:
     still reading (rather than buffering an unbounded body and only
     checking its length afterwards) also bounds how much of an oversized
     body this process ever holds in memory at once.
+
+    `starlette.requests.ClientDisconnect` (raised by `request.stream()`
+    itself if the client goes away mid-upload) is deliberately let through
+    unchanged rather than wrapped into a `NetnlHTTPError` — there is no
+    client left to answer, and `api.py` registers a dedicated, quiet
+    handler for it precisely so this ordinary case does not fall into the
+    generic "unexpected error" handler and get logged as one.
     """
     body = bytearray()
     async for chunk in request.stream():
@@ -63,6 +77,37 @@ async def _read_bounded_body(request: Request, max_bytes: int) -> bytes:
 
 def _delivery_failed(msg: str) -> NetnlHTTPError:
     return NetnlHTTPError(503, "delivery-failed", msg)
+
+
+def _pending_lease_seconds(cfg: SupporterSettings) -> int:
+    """How long a `pending` row is treated as "another delivery attempt is
+    still genuinely in flight" before a later call for the same
+    transaction is allowed to take it over (security review fix, B1(a)).
+
+    Derived from `cfg.smtp_timeout` plus a fixed 30s safety margin rather
+    than a bare constant: the only thing that can legitimately keep a row
+    `pending` is the mail send itself, which is bounded by that timeout —
+    a lease shorter than it could take over (and revoke) a credential
+    whose mail send is still genuinely running. Measured without this
+    fix: 5 concurrent, identically-signed deliveries for the same
+    transaction minted 5 credentials and left an active orphan no
+    `supporter_issuance` row referenced — see `_persist_and_mint`'s
+    docstring.
+    """
+    return cfg.smtp_timeout + 30
+
+
+def _eligible_for_takeover(existing_row: sqlite3.Row, lease_cutoff_iso: str) -> bool:
+    """A `failed` row is always eligible (its delivery attempt already
+    concluded). A `pending` row is eligible only once it is older than the
+    lease — see `_pending_lease_seconds`. `delivered`/`undeliverable` are
+    handled by their own early returns before this is ever called.
+    """
+    if existing_row["state"] == store.SUPPORTER_FAILED:
+        return True
+    if existing_row["state"] == store.SUPPORTER_PENDING:
+        return existing_row["updated_at"] <= lease_cutoff_iso
+    return False
 
 
 def _mint_username(
@@ -93,8 +138,30 @@ def _persist_and_mint(
     either a 200-shaped outcome string (`"duplicate"`, `"ignored"`) or a
     `(username, password, txn_id, attempts)` tuple for the caller to mail.
     Raises `NetnlHTTPError` for every 503 outcome (attempts exhausted,
-    hourly cap, username allocation failure) — the transaction is rolled
-    back before it propagates.
+    hourly cap, lease-in-progress, username allocation failure) — the
+    transaction is rolled back before it propagates.
+
+    Security review fix (B1): `BEGIN IMMEDIATE` serialises concurrent
+    writers on *this* transaction, but mail is sent *outside* it (D3) — a
+    row committed here as `pending` is visible, and was previously treated
+    as "abandoned, safe to take over", to any concurrent call for the same
+    transaction that acquires the write lock next, even though the first
+    call's own mail-send is still genuinely running. Measured without the
+    lease check below: 5 concurrent, identically-signed deliveries for one
+    transaction minted 5 credentials, each one's `_persist_and_mint`
+    immediately revoking the previous call's still-in-flight credential —
+    and because `_record_delivery_outcome` used to overwrite the row
+    unconditionally, whichever call's mail happened to finish *last*
+    stamped the row with its own username, leaving every other call's
+    (already revoked, or in one case never-revoked-because-it-finished-
+    after-being-overwritten) credential an active orphan no row
+    referenced. B1(a) (`_eligible_for_takeover`/lease check below) closes
+    the race at the write-lock boundary: a `pending` row younger than the
+    lease refuses the takeover outright (503, so BMC retries once the
+    in-flight attempt has resolved). B1(b) (`_record_delivery_outcome`'s
+    conditional `expected_username` write) is the second, independent
+    layer for the residual edge case a lease boundary/clock skew could
+    still allow.
     """
     now_iso = store.utcnow_iso(lambda: now)
     txn_id = delivery.transaction_id
@@ -119,6 +186,38 @@ def _persist_and_mint(
                 # would otherwise attempt on this same connection.
                 raise _delivery_failed(
                     "this transaction has exhausted its delivery attempts"
+                )
+            lease_cutoff = store.utcnow_iso(
+                lambda: now - timedelta(seconds=_pending_lease_seconds(cfg))
+            )
+            if not _eligible_for_takeover(existing, lease_cutoff):
+                # B1(a): another call for this exact transaction is still
+                # within its lease window — its own mail-send has not yet
+                # concluded one way or the other. 503 so BMC retries
+                # later, rather than racing that call's own eventual
+                # `_record_delivery_outcome`.
+                raise _delivery_failed(
+                    "this transaction's issuance is already in progress; try again shortly"
+                )
+
+        # Security review fix (undeliverable-asymmetry): the hourly cap
+        # gates *every* mint attempt *and* every newly-recorded
+        # undeliverable outcome — checked once, before branching into
+        # either path below. Previously an undeliverable delivery wrote an
+        # uncapped `supporter_issuance` row regardless of volume; folding
+        # it in here means a flood of no-usable-email deliveries is now
+        # bounded exactly like a flood of qualifying ones is, at the
+        # (deliberately conservative) cost of a legitimate donation
+        # occasionally answering 503 sooner because unmailable events
+        # already consumed the hour's budget. A takeover (an existing,
+        # stale/failed row) is included too (B2(c)) — a crash-loop of
+        # retries must not be able to mint past the hourly cap just
+        # because each retry targets an *existing* transaction id.
+        if existing is None or existing["state"] != store.SUPPORTER_UNDELIVERABLE:
+            cutoff = store.utcnow_iso(lambda: now - timedelta(hours=1))
+            if store.count_issuances_since(conn, cutoff) >= cfg.max_per_hour:
+                raise _delivery_failed(
+                    "the hourly supporter-issuance limit has been reached"
                 )
 
         if decision == bmc.Decision.UNDELIVERABLE_NO_EMAIL:
@@ -151,18 +250,24 @@ def _persist_and_mint(
             conn.execute("COMMIT")
             return "ignored"
 
-        # The hourly cap only gates a *new* transaction id — retrying an
-        # existing one never counted twice in `count_issuances_since`
-        # (its `created_at` never changes), so it must not be blocked by
-        # a cap meant to bound *new* issuance volume.
-        if existing is None:
-            cutoff = store.utcnow_iso(lambda: now - timedelta(hours=1))
-            if store.count_issuances_since(conn, cutoff) >= cfg.max_per_hour:
-                raise _delivery_failed(
-                    "the hourly supporter-issuance limit has been reached"
-                )
-
-        attempts = existing["attempts"] if existing is not None else 0
+        # Security review fix (B2(b)): `attempts` counts credentials
+        # *minted* for this transaction so far, incremented here — at
+        # mint/takeover time — rather than only when a delivery attempt is
+        # later confirmed to have failed. A process that crashes between
+        # minting and ever reaching `_record_delivery_outcome` (measured:
+        # an unhandled `UnicodeEncodeError` from `smtplib.login` on a
+        # non-ASCII SMTP credential, before `mail.py`'s `except Exception`
+        # root-fix) previously left `attempts` at its stale value forever,
+        # so a crash-loop retried without bound. Counting *this* mint
+        # immediately means `NETNL_SUPPORTER_MAX_ATTEMPTS` bounds the
+        # number of credentials ever minted for one transaction,
+        # regardless of whether a given attempt fails cleanly, is
+        # abandoned past its lease, or crashes outright: a brand new
+        # transaction's first mint is attempt 1; the row is only ever
+        # taken over again while `existing["attempts"] < max_attempts`
+        # (checked above), so at most `max_attempts` credentials are ever
+        # minted in total.
+        attempts = existing["attempts"] + 1 if existing is not None else 1
         if existing is not None:
             # D3: never leave the previous, undelivered credential active
             # once a fresh one is about to be minted for the same
@@ -177,7 +282,7 @@ def _persist_and_mint(
                 txn_id=txn_id,
                 username=username,
                 state=store.SUPPORTER_PENDING,
-                attempts=0,
+                attempts=attempts,
                 created_at=now_iso,
                 updated_at=now_iso,
             )
@@ -218,13 +323,35 @@ def _record_delivery_outcome(
     """Mail happens outside the `BEGIN IMMEDIATE` transaction (D3) — this
     records its outcome in its own short write, never holding the write
     lock for the duration of a network call.
+
+    Security review fix (B1(b)): the write is conditional on `username`
+    still being the one this call itself minted (`store.update_issuance`'s
+    `expected_username`) — a plain, unconditional `WHERE txn_id = ?` update
+    would blindly overwrite a newer takeover's row with this (possibly
+    stale) attempt's outcome, which is exactly how the B1 race left an
+    active orphaned credential (see `_persist_and_mint`'s docstring). With
+    B1(a) in place this should be effectively unreachable in practice, but
+    is kept as an independent second layer for a lease-boundary/clock-skew
+    edge case: if this call's write loses that race, its own credential
+    (even one that *did* successfully deliver) is revoked instead of being
+    left active-but-unreferenced by any row.
     """
     at = store.utcnow_iso(lambda: now)
     if delivered:
-        store.update_issuance(
+        updated = store.update_issuance(
             conn, txn_id, username=username, state=store.SUPPORTER_DELIVERED,
-            attempts=attempts, updated_at=at,
+            attempts=attempts, updated_at=at, expected_username=username,
         )
+        if not updated:
+            store.revoke_credential(conn, username, at)
+            store.record_audit(
+                conn, at=at, credential=username, event="supporter-deliver-orphaned",
+                detail=f"txn={sanitized_txn}",
+            )
+            _logger.warning(
+                "event=deliver-orphaned txn_id=%s username=%s", sanitized_txn, username
+            )
+            return
         store.record_audit(
             conn, at=at, credential=username, event="supporter-deliver",
             detail=f"txn={sanitized_txn}",
@@ -233,8 +360,13 @@ def _record_delivery_outcome(
         store.revoke_credential(conn, username, at)
         store.update_issuance(
             conn, txn_id, username=username, state=store.SUPPORTER_FAILED,
-            attempts=attempts + 1, updated_at=at,
+            attempts=attempts, updated_at=at, expected_username=username,
         )
+        # Whether or not the row write above actually matched (a takeover
+        # may already have moved this row on): the credential this attempt
+        # minted is unconditionally revoked either way, so there is
+        # nothing further to reconcile — this attempt's own failure is
+        # still worth an audit entry regardless.
         store.record_audit(
             conn, at=at, credential=username, event="supporter-deliver-failed",
             detail=f"txn={sanitized_txn}",
@@ -300,13 +432,20 @@ def _process(settings: Settings, delivery: bmc.Delivery, decision: "bmc.Decision
             )
             try:
                 sender(notify_mail)
-            except mail.DeliveryError:
+            except Exception:
                 # Best-effort, non-fatal (T5): a failed operator
                 # notification must never turn a successful delivery into
                 # a failure the donor would see reflected as a 503/retry.
+                # Security review fix (M1): broadened from `mail.
+                # DeliveryError` to `Exception` — `sender` here is the
+                # same injectable seam tests use directly (not always
+                # routed through `mail.smtp_sender`, whose own `except
+                # Exception` root-fix guarantees only `DeliveryError` for
+                # the *production* sender), so this call site does not
+                # rely on that guarantee to keep its own "never fatal"
+                # promise.
                 _logger.warning(
-                    "supporter notify mail failed for txn=%s username=%s",
-                    sanitized_txn, username,
+                    "event=notify-failed txn_id=%s username=%s", sanitized_txn, username
                 )
 
         return "issued"

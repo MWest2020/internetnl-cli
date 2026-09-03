@@ -214,6 +214,17 @@ def parse_delivery(payload: dict) -> Delivery:
         amount = Decimal(str(amount_raw))
     except InvalidOperation as exc:
         raise MalformedDelivery("amount") from exc
+    # Security review fix: `json.loads` accepts bare `Infinity`/`-Infinity`/
+    # `NaN` tokens (a Python extension to the JSON grammar) and silently
+    # overflows an out-of-range float literal (e.g. `1e10000`) to `inf` —
+    # either becomes a non-finite `Decimal` here. `is_finite()` is checked
+    # *before* any comparison: comparing a NaN/sNaN `Decimal` with `<` does
+    # not quietly return `False`, it raises `decimal.InvalidOperation` in
+    # the default context (confirmed: `Decimal("NaN") < 0` raises) — an
+    # unhandled exception type this function must not let escape as
+    # anything other than `MalformedDelivery`.
+    if not amount.is_finite():
+        raise MalformedDelivery("amount")
     if amount < 0:
         raise MalformedDelivery("amount")
 

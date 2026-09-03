@@ -5,12 +5,16 @@ changes/add-supporter-issuance.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import dataclasses
 import json
+import logging
 from decimal import Decimal
 
 import pytest
+from starlette.requests import ClientDisconnect
+from starlette.requests import Request as StarletteRequest
 from starlette.testclient import TestClient
 
 from netnl.api import create_app
@@ -27,7 +31,7 @@ from conftest import (
     sign_body,
 )
 from fakes import REGISTER_REPLY
-from netnl import store
+from netnl import bmc, store, supporter
 
 
 def _counts(conn) -> tuple[int, int, int]:
@@ -456,3 +460,242 @@ def test_security_headers_present_on_every_webhook_reply(supporter_client, make_
     assert resp.headers["X-Frame-Options"] == "DENY"
     assert "Content-Security-Policy" in resp.headers
     assert resp.headers["X-Netnl-Instance"] == "netnl"
+
+
+# --- security review round: B1 (idempotency under concurrency) -------------
+#
+# `_persist_and_mint`/`_record_delivery_outcome` called directly (not
+# through real threads — that is `test_netnl_real_server.py`'s job, see M2
+# there) to deterministically reproduce and prove closed the exact
+# interleaving that, without the B1(a)/(b) fixes, minted 5 credentials for
+# 5 concurrent identical deliveries and left an active orphan no
+# `supporter_issuance` row referenced.
+
+
+def _active_credential_orphans(conn, prefix: str = "supporter-") -> set[str]:
+    """Every active (non-revoked) credential under the supporter prefix
+    that is *not* the current `username` of a `pending`/`delivered`
+    `supporter_issuance` row — the B1 invariant this must always be empty.
+    """
+    active = {
+        row["username"]
+        for row in conn.execute(
+            "SELECT username FROM credentials WHERE username LIKE ? AND revoked_at IS NULL",
+            (f"{prefix}%",),
+        ).fetchall()
+    }
+    referenced = {
+        row["username"]
+        for row in conn.execute(
+            "SELECT username FROM supporter_issuance WHERE state IN ('pending', 'delivered')"
+        ).fetchall()
+    }
+    return active - referenced
+
+
+def _qualify_cfg(cfg):
+    return bmc.QualifyConfig(
+        accept_test_mode=cfg.accept_test_mode, min_amount=cfg.min_amount, currency=cfg.currency
+    )
+
+
+def test_pending_row_within_lease_refuses_takeover(supporter_settings, clock, conn):
+    cfg = supporter_settings.supporter
+    delivery = bmc.parse_delivery(bmc_payload(data={"transaction_id": "txn-lease-1"}))
+    decision = bmc.qualifies(delivery, _qualify_cfg(cfg))
+
+    username1, _password1, _sanitized1, _attempts1 = supporter._persist_and_mint(
+        conn, cfg, delivery, decision, clock()
+    )
+
+    # A second call for the exact same transaction, a moment later — still
+    # well within the lease (B1(a)): the first call's own mail-send has not
+    # been given a chance to conclude.
+    clock.advance(1)
+    with pytest.raises(Exception) as exc_info:
+        supporter._persist_and_mint(conn, cfg, delivery, decision, clock())
+    from netnl.errors import NetnlHTTPError
+
+    assert isinstance(exc_info.value, NetnlHTTPError)
+    assert exc_info.value.status == 503
+
+    # No takeover happened — the first mint's credential is untouched.
+    cred = store.find_credential(conn, username1)
+    assert cred["revoked_at"] is None
+    assert _active_credential_orphans(conn) == set()
+
+
+def test_pending_row_past_lease_allows_takeover(supporter_settings, clock, conn):
+    cfg = supporter_settings.supporter
+    delivery = bmc.parse_delivery(bmc_payload(data={"transaction_id": "txn-lease-2"}))
+    decision = bmc.qualifies(delivery, _qualify_cfg(cfg))
+
+    username1, _password1, _sanitized1, attempts1 = supporter._persist_and_mint(
+        conn, cfg, delivery, decision, clock()
+    )
+
+    clock.advance(supporter._pending_lease_seconds(cfg) + 1)
+    username2, _password2, _sanitized2, attempts2 = supporter._persist_and_mint(
+        conn, cfg, delivery, decision, clock()
+    )
+
+    assert username2 != username1
+    assert attempts2 == attempts1 + 1
+    cred1 = store.find_credential(conn, username1)
+    assert cred1["revoked_at"] is not None
+    cred2 = store.find_credential(conn, username2)
+    assert cred2["revoked_at"] is None
+    assert _active_credential_orphans(conn) == set()
+
+
+def test_b1_invariant_holds_when_a_stale_outcome_write_arrives_after_takeover(
+    supporter_settings, clock, conn
+):
+    """The direct reproduction of the measured bug: call #1 mints and
+    persists (`pending`); its mail-send is slow enough that call #2 (the
+    same transaction, once the lease has expired) takes the row over,
+    revoking call #1's credential and minting its own. Call #1's mail-send
+    then "finally" succeeds and tries to record that outcome — using its
+    own, now-stale username. Without B1(b)'s conditional write, this would
+    blindly overwrite call #2's row with call #1's already-revoked
+    username, marking it `delivered` and leaving call #2's actually-active
+    credential referenced by nothing.
+    """
+    cfg = supporter_settings.supporter
+    delivery = bmc.parse_delivery(bmc_payload(data={"transaction_id": "txn-race-1"}))
+    decision = bmc.Decision.ISSUE
+
+    username1, _password1, sanitized1, attempts1 = supporter._persist_and_mint(
+        conn, cfg, delivery, decision, clock()
+    )
+
+    clock.advance(supporter._pending_lease_seconds(cfg) + 1)
+    username2, _password2, _sanitized2, _attempts2 = supporter._persist_and_mint(
+        conn, cfg, delivery, decision, clock()
+    )
+    assert username2 != username1
+
+    # Call #1's stale outcome write arrives after the takeover.
+    supporter._record_delivery_outcome(
+        conn, txn_id=delivery.transaction_id, username=username1,
+        sanitized_txn=sanitized1, attempts=attempts1, now=clock(), delivered=True,
+    )
+
+    row = store.find_issuance(conn, "txn-race-1")
+    assert row["username"] == username2  # untouched by call #1's stale write
+    cred1 = store.find_credential(conn, username1)
+    assert cred1["revoked_at"] is not None  # never left active
+    cred2 = store.find_credential(conn, username2)
+    assert cred2["revoked_at"] is None  # the sole active credential
+    assert _active_credential_orphans(conn) == set()
+
+
+# --- security review round: undeliverable deliveries count toward the ------
+# --- hourly cap too (conservative fix) --------------------------------------
+
+
+def test_hourly_cap_also_bounds_undeliverable_deliveries(
+    supporter_env, fake_opener, clock, recording_sender
+):
+    env = dict(supporter_env)
+    env["NETNL_SUPPORTER_MAX_PER_HOUR"] = "1"
+    settings = load(env)
+    app = create_app(settings, opener=fake_opener, now=clock, sender=recording_sender)
+    client = TestClient(app, raise_server_exceptions=False)
+    conn = store.connect(settings.db)
+    try:
+        payload1 = bmc_payload(data={"transaction_id": "txn-undeliverable-1"})
+        del payload1["data"]["email"]
+        resp1 = post_webhook(client, payload1)
+        assert resp1.status_code == 200
+        assert resp1.json() == {"status": "ignored"}
+
+        payload2 = bmc_payload(data={"transaction_id": "txn-undeliverable-2"})
+        del payload2["data"]["email"]
+        resp2 = post_webhook(client, payload2)
+        assert resp2.status_code == 503
+        assert resp2.json()["error"]["label"] == "delivery-failed"
+    finally:
+        conn.close()
+
+
+# --- security review round: direct SHALL-evidence ---------------------------
+
+
+def test_bad_signature_never_opens_a_database_connection(supporter_client, monkeypatch):
+    from netnl import store as store_module
+
+    def _boom(*args, **kwargs):
+        raise AssertionError(
+            "store.connect must not be called for a request with an invalid signature"
+        )
+
+    monkeypatch.setattr(store_module, "connect", _boom)
+    resp = supporter_client.post(
+        "/webhooks/bmc",
+        content=json.dumps(bmc_payload()).encode(),
+        headers={"Content-Type": "application/json", "X-Signature-Sha256": "0" * 64},
+    )
+    assert resp.status_code == 401
+
+
+def test_oversized_chunked_body_without_content_length_is_rejected(
+    supporter_settings, fake_opener, clock, recording_sender
+):
+    small_cap_settings = dataclasses.replace(
+        supporter_settings,
+        supporter=dataclasses.replace(supporter_settings.supporter, max_body_bytes=16),
+    )
+    app = create_app(small_cap_settings, opener=fake_opener, now=clock, sender=recording_sender)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    payload = bmc_payload()
+    body = json.dumps(payload).encode()
+    assert len(body) > 16
+
+    def chunks():
+        for i in range(0, len(body), 4):
+            yield body[i : i + 4]
+
+    resp = client.post(
+        "/webhooks/bmc",
+        content=chunks(),
+        headers={"Content-Type": "application/json", "X-Signature-Sha256": sign_body(body)},
+    )
+    # `content=<generator>` sends no Content-Length at all (verified below)
+    # — the shape a real chunked-encoded request takes, which api.py's own
+    # `enforce_body_size` middleware (keyed on that header) cannot see.
+    assert "content-length" not in {k.lower() for k in resp.request.headers.keys()}
+    assert resp.status_code == 400
+
+
+# --- security review round: ClientDisconnect handled cleanly ---------------
+
+
+def test_read_bounded_body_lets_client_disconnect_propagate_unwrapped():
+    class _FakeStreamRequest:
+        async def stream(self):
+            yield b'{"type": "dono'
+            raise ClientDisconnect()
+
+    with pytest.raises(ClientDisconnect):
+        asyncio.run(supporter._read_bounded_body(_FakeStreamRequest(), max_bytes=10_000))
+
+
+def test_client_disconnect_mid_body_read_answers_400_not_500(supporter_client, monkeypatch, caplog):
+    async def _disconnecting_stream(self):
+        yield b'{"type": "dona'
+        raise ClientDisconnect()
+
+    monkeypatch.setattr(StarletteRequest, "stream", _disconnecting_stream)
+    caplog.set_level(logging.WARNING, logger="netnl")
+
+    resp = supporter_client.post(
+        "/webhooks/bmc",
+        content=b'{"type": "donation.created"}',
+        headers={"Content-Type": "application/json", "X-Signature-Sha256": "0" * 64},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["label"] == "bad-request"
+    # Never the generic 500 path.
+    assert "an unexpected error occurred" not in resp.text

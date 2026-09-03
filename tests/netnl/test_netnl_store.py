@@ -492,6 +492,61 @@ def test_supporter_issuance_rows_are_updatable_unlike_audit(conn):
     assert store.find_issuance(conn, "txn-3")["state"] == "delivered"
 
 
+def test_update_issuance_returns_true_on_success(conn):
+    store.insert_issuance(
+        conn, txn_id="txn-4", username="a", state="pending", attempts=0,
+        created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+    )
+    updated = store.update_issuance(
+        conn, "txn-4", username="a", state="delivered", attempts=0,
+        updated_at="2026-01-01T00:01:00+00:00",
+    )
+    assert updated is True
+
+
+def test_update_issuance_returns_false_for_a_missing_row(conn):
+    updated = store.update_issuance(
+        conn, "txn-missing", username="a", state="delivered", attempts=0,
+        updated_at="2026-01-01T00:01:00+00:00",
+    )
+    assert updated is False
+
+
+def test_update_issuance_expected_username_matches_current_owner(conn):
+    """Security review fix (B1(b)): the conditional compare-and-swap write
+    `netnl.supporter._record_delivery_outcome` uses to avoid blindly
+    overwriting a row a concurrent takeover has already moved on."""
+    store.insert_issuance(
+        conn, txn_id="txn-5", username="original", state="pending", attempts=1,
+        created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+    )
+    updated = store.update_issuance(
+        conn, "txn-5", username="original", state="delivered", attempts=1,
+        updated_at="2026-01-01T00:01:00+00:00", expected_username="original",
+    )
+    assert updated is True
+    assert store.find_issuance(conn, "txn-5")["state"] == "delivered"
+
+
+def test_update_issuance_expected_username_mismatch_is_a_no_op(conn):
+    store.insert_issuance(
+        conn, txn_id="txn-6", username="taken-over", state="pending", attempts=2,
+        created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+    )
+    # A stale write, as if minted for a *previous* owner of this row that a
+    # takeover has since replaced.
+    updated = store.update_issuance(
+        conn, "txn-6", username="stale-owner", state="delivered", attempts=1,
+        updated_at="2026-01-01T00:01:00+00:00", expected_username="stale-owner",
+    )
+    assert updated is False
+    # The row is untouched — still owned by the takeover, not overwritten.
+    row = store.find_issuance(conn, "txn-6")
+    assert row["username"] == "taken-over"
+    assert row["state"] == "pending"
+    assert row["attempts"] == 2
+
+
 # --- shared credential minting (netnl/issue.py) -----------------------------
 
 
