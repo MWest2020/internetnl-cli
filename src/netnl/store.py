@@ -55,7 +55,13 @@ CREATE TABLE IF NOT EXISTS audit (
     credential TEXT,
     event TEXT NOT NULL,
     facade_id TEXT,
-    domain_count INTEGER
+    domain_count INTEGER,
+    -- Round-2 fix (findings 2 and 5): free-form, event-specific context —
+    -- the HTTP route for an `auth-failure` event, or the original
+    -- `submitted_at` for a `reserving-pruned` event — that does not need
+    -- its own column per event type. Never holds a password or any other
+    -- credential secret.
+    detail TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_credential_event_at
@@ -133,7 +139,19 @@ def get_conn(request: Request):
 def migrate(conn: sqlite3.Connection) -> None:
     """Idempotent: safe to call on every startup."""
     conn.executescript(_SCHEMA)
+    _ensure_audit_detail_column(conn)
     conn.executescript(_CREATE_TRIGGERS)
+
+
+def _ensure_audit_detail_column(conn: sqlite3.Connection) -> None:
+    """`CREATE TABLE IF NOT EXISTS` above is a no-op against a database
+    created before the `detail` column existed — this adds it to an
+    existing `audit` table, once, so an operator upgrading in place does
+    not need a manual migration step.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit)")}
+    if "detail" not in columns:
+        conn.execute("ALTER TABLE audit ADD COLUMN detail TEXT")
 
 
 # --- audit -------------------------------------------------------------
@@ -146,6 +164,7 @@ def record_audit(
     event: str,
     facade_id: str | None = None,
     domain_count: int | None = None,
+    detail: str | None = None,
 ) -> None:
     """The only place in this package that writes to `audit`.
 
@@ -153,9 +172,9 @@ def record_audit(
     trigger-suspending transaction — see design.md's audit section.)
     """
     conn.execute(
-        "INSERT INTO audit (at, credential, event, facade_id, domain_count) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (at, credential, event, facade_id, domain_count),
+        "INSERT INTO audit (at, credential, event, facade_id, domain_count, detail) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (at, credential, event, facade_id, domain_count, detail),
     )
 
 

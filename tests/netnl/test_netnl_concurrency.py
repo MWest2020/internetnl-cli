@@ -27,6 +27,26 @@ from netnl.settings import load
 _UPSTREAM_ID_RE = re.compile(r"/requests/([0-9a-f]{32})")
 
 
+def _post_retrying_on_overload(client, path, json_body, headers, max_attempts=20):
+    """Round-2 fix (finding 1b) changed what these B1/B2 races are racing
+    against: `netnl.auth` now bounds concurrent scrypt verifications to a
+    small, fixed cap (8) and answers 503 `overloaded` — not a queue — the
+    moment that cap is saturated. These tests deliberately fire more than 8
+    truly concurrent authenticated requests (that is the point of a real
+    concurrency test), so hitting the auth-capacity cap here is expected,
+    not a bug in the rate/concurrency logic these tests actually assert on.
+    A well-behaved client retries a 503 shortly; scrypt itself only takes
+    tens of milliseconds, so the cap clears almost immediately.
+    """
+    resp = None
+    for _ in range(max_attempts):
+        resp = client.post(path, json=json_body, headers=headers)
+        if resp.status_code != 503:
+            return resp
+        time.sleep(0.02)
+    return resp
+
+
 class TaggingOpener:
     """A thread-safe fake upstream.
 
@@ -175,10 +195,11 @@ def test_isolation_holds_under_concurrent_submits(settings_env, tmp_path):
     def worker(i: int) -> None:
         thread_client = TestClient(app, raise_server_exceptions=False)
         tag = f"submit-tenant-{i}.example"
-        resp = thread_client.post(
+        resp = _post_retrying_on_overload(
+            thread_client,
             "/requests",
-            json={"type": "web", "domains": [tag]},
-            headers=basic_auth_header(*creds[i]),
+            {"type": "web", "domains": [tag]},
+            basic_auth_header(*creds[i]),
         )
         with results_lock:
             results[i] = (resp.status_code, resp.json())
@@ -242,8 +263,8 @@ def test_concurrent_submits_cannot_exceed_rate_limit(settings_env, tmp_path):
 
     def worker(i: int) -> None:
         thread_client = TestClient(app, raise_server_exceptions=False)
-        resp = thread_client.post(
-            "/requests", json={"type": "web", "domains": [f"race-{i}.example"]}, headers=headers
+        resp = _post_retrying_on_overload(
+            thread_client, "/requests", {"type": "web", "domains": [f"race-{i}.example"]}, headers
         )
         with lock:
             status_codes.append(resp.status_code)
@@ -296,8 +317,8 @@ def test_concurrent_submits_cannot_exceed_concurrency_limit(settings_env, tmp_pa
 
     def worker(i: int) -> None:
         thread_client = TestClient(app, raise_server_exceptions=False)
-        resp = thread_client.post(
-            "/requests", json={"type": "web", "domains": [f"conc-{i}.example"]}, headers=headers
+        resp = _post_retrying_on_overload(
+            thread_client, "/requests", {"type": "web", "domains": [f"conc-{i}.example"]}, headers
         )
         with lock:
             status_codes.append(resp.status_code)

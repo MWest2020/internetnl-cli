@@ -46,6 +46,38 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
         cur = conn.execute("DELETE FROM requests WHERE submitted_at < ?", (result_cutoff,))
         requests_deleted = cur.rowcount if cur.rowcount >= 0 else 0
 
+        # Round-2 fix (finding 5, accepted restrisico — see design.md,
+        # "Concurrency and storage"): a row still `reserving` here does not
+        # prove the upstream submit never happened — it proves only that
+        # this facade never recorded the `upstream_id` (the process could
+        # have crashed *after* upstream accepted the submission but
+        # *before* `finalize_reservation` ran). Once this row is deleted,
+        # that upstream run — if it exists — becomes unreachable through
+        # the facade forever: no `upstream_id` was ever stored, so there is
+        # nothing left to poll or cancel it by. This cannot be fixed here
+        # (the upstream id was never known), so the minimal mitigation is
+        # to make it *reconstructable*: one audit row per pruned row,
+        # naming its facade id, owning credential and domain count, with
+        # its original `submitted_at` in `detail` — enough for an operator
+        # who spots an unexplained run on the upstream instance's own
+        # dashboard to correlate it back to a tenant and a submission time.
+        stranded = conn.execute(
+            "SELECT r.facade_id, r.domain_count, r.submitted_at, c.username "
+            "FROM requests r JOIN credentials c ON c.id = r.credential_id "
+            "WHERE r.upstream_id IS NULL AND r.submitted_at < ?",
+            (reserving_cutoff,),
+        ).fetchall()
+        for row in stranded:
+            store.record_audit(
+                conn,
+                at=store.utcnow_iso(lambda: now),
+                credential=row["username"],
+                event="reserving-pruned",
+                facade_id=row["facade_id"],
+                domain_count=row["domain_count"],
+                detail=row["submitted_at"],
+            )
+
         cur = conn.execute(
             "DELETE FROM requests WHERE upstream_id IS NULL AND submitted_at < ?",
             (reserving_cutoff,),

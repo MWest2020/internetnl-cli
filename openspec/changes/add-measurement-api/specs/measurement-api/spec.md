@@ -145,18 +145,59 @@ not-implemented catch-all as any other unrecognised path.
   configured a contact value
 - THEN the facade answers 501, identically to any other unrecognised path
 
+### Requirement: Authentication cost is bounded
+
+The facade SHALL reject a request whose `Authorization` header is missing or
+does not parse as `Basic base64(username:password)` without performing a
+password-hash computation, since no username is present to protect against
+enumeration in that case. The facade SHALL cap the number of password-hash
+verifications it performs concurrently to a small, fixed limit, and SHALL
+answer a request that cannot obtain a verification slot with a 503
+v2-shaped error rather than queueing it or performing the computation
+regardless of the limit.
+
+#### Scenario: Missing or malformed credentials fail fast
+
+- WHEN a request has no `Authorization` header, or one that is not valid
+  `Basic base64(username:password)` (wrong scheme, invalid base64, or no
+  colon after decoding)
+- THEN the facade answers 401 without computing a password hash
+
+#### Scenario: Concurrent authentication is bounded
+
+- WHEN more authentication attempts arrive concurrently than the facade's
+  fixed verification-concurrency limit
+- THEN attempts beyond the limit receive a 503 v2-shaped error immediately,
+  and at no point does the number of password-hash computations running at
+  once exceed that limit
+
 ### Requirement: Append-only audit trail
 
 The facade SHALL record every submission and credential-lifecycle event in
 an append-only audit store (credential, timestamp, domain count, facade and
 upstream ids) with no update or delete path, and the documentation SHALL
-state the retention period for audit records and result bodies.
+state the retention period for audit records and result bodies. The facade
+SHALL also record failed authentication attempts (a sanitised username or
+its absence, and the route) in the same append-only store, aggregated over
+a bounded time window per distinct username-and-route pair rather than one
+record per attempt, so that a large volume of failed attempts cannot itself
+grow the audit store without bound; the password SHALL NOT appear in any
+audit record under any circumstance.
 
 #### Scenario: Submission is audited
 
 - WHEN a submission is accepted
 - THEN an audit record exists before the reply is sent, and no code path
   can modify or remove it
+
+#### Scenario: Failed authentication is audited without unbounded growth
+
+- WHEN a number of authentication attempts for the same username (or the
+  same absence of one) against the same route fail within the same bounded
+  time window
+- THEN at most one audit record summarising that window's failure count
+  exists for that username-and-route pair, not one record per attempt, and
+  none of those records contains the attempted password
 
 #### Scenario: Reader checks retention
 

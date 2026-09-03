@@ -10,6 +10,7 @@ checked before any database or upstream work, since they need no state.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 import sqlite3
 from datetime import datetime, timedelta
@@ -17,6 +18,8 @@ from datetime import datetime, timedelta
 from netnl import store
 from netnl.errors import NetnlHTTPError
 from netnl.settings import Settings
+
+_logger = logging.getLogger(__name__)
 
 # A conservative "plausible hostname" check (M6): dot-separated labels of
 # letters/digits/hyphens, no leading/trailing hyphen per label, no
@@ -163,6 +166,17 @@ def refresh_stale_non_terminal(
     status call must never hold the write lock that serialises other
     tenants' submits. A row still `reserving` (no `upstream_id` yet) has
     nothing to refresh and is skipped.
+
+    Round-2 fix (finding 3): a single row's upstream status call failing
+    (upstream unreachable, upstream error) must not fail the whole submit
+    with a 502 — this refresh is a best-effort optimisation ("is this old
+    row actually done by now, freeing a slot"), not something the submit
+    path depends on for correctness. A row that cannot be refreshed is
+    simply skipped and stays counted as non-terminal for this check, which
+    is the conservative (fail-safe) direction: it can only make the
+    concurrency count an over-estimate, never an under-estimate that would
+    let a tenant slip past its own limit. The skip is logged so an operator
+    can see when upstream refreshes are failing.
     """
     from netnl.api import call_upstream  # local import: avoids a cycle at module load
 
@@ -170,7 +184,18 @@ def refresh_stale_non_terminal(
     for row in rows[: settings.max_concurrent]:
         if row["upstream_id"] is None:
             continue
-        reply = call_upstream(client, client.status, row["upstream_id"])
+        try:
+            reply = call_upstream(client, client.status, row["upstream_id"])
+        except NetnlHTTPError as exc:
+            _logger.warning(
+                "skipping stale-status refresh for facade_id=%s (credential_id=%s) "
+                "after upstream error: %s %s",
+                row["facade_id"],
+                credential_id,
+                exc.status,
+                exc.msg,
+            )
+            continue
         upstream_request = reply["request"]
         store.update_status(
             conn, row["facade_id"], upstream_request["status"], upstream_request.get("finished_date")

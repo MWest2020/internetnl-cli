@@ -117,6 +117,40 @@ def test_stranded_reservation_older_than_grace_is_pruned_and_frees_slot(settings
         conn.close()
 
 
+def test_pruning_a_stranded_reservation_audits_it_with_facade_id(app, settings, conn, tenant):
+    """Round-2 fix (finding 5): the row being pruned might correspond to an
+    upstream submit that actually succeeded (the facade only ever lost
+    track of its `upstream_id`) — the prune must leave enough behind in
+    `audit` for an operator to reconstruct which tenant and submission that
+    was, even though the run itself becomes unreachable through the facade.
+    """
+    cred = store.find_credential(conn, tenant["username"])
+    now = datetime.now(timezone.utc)
+    stale_submitted_at = store.utcnow_iso(
+        lambda: now - timedelta(seconds=settings.reserving_grace_seconds + 1)
+    )
+    store.insert_reserving_request(
+        conn,
+        facade_id="o" * 32,
+        credential_id=cred["id"],
+        request_type="web",
+        domain_count=3,
+        submitted_at=stale_submitted_at,
+    )
+
+    counts = retention.prune(conn, settings, now)
+    assert counts["reserving_deleted"] == 1
+
+    row = conn.execute(
+        "SELECT * FROM audit WHERE event = 'reserving-pruned'"
+    ).fetchone()
+    assert row is not None
+    assert row["facade_id"] == "o" * 32
+    assert row["credential"] == tenant["username"]
+    assert row["domain_count"] == 3
+    assert row["detail"] == stale_submitted_at
+
+
 def test_reservation_within_grace_is_not_pruned(app, settings, conn, tenant):
     cred = store.find_credential(conn, tenant["username"])
     now = datetime.now(timezone.utc)

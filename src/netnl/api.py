@@ -13,7 +13,6 @@ from __future__ import annotations
 import copy
 import secrets
 import sqlite3
-import threading
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Literal
 
@@ -75,25 +74,6 @@ def _owned_request_or_404(conn, request_id: str, credential) -> sqlite3.Row:
             return row
     raise NetnlHTTPError(404, "unknown-request", "this request_id does not exist for the user")
 
-# Per-thread, reset at the start of every `_upstream()` call. Starlette runs
-# a sync route handler and everything it calls (including the opener) on the
-# *same* worker thread, so this is visible where it is read — inside that
-# same handler, never across a request boundary — without the pitfalls of a
-# contextvar (whose mutations inside `run_in_threadpool` do not propagate
-# back to the coroutine that awaited it) or of a plain shared attribute
-# (which a concurrent request on another thread could clobber).
-_thread_state = threading.local()
-
-
-def _status_tracking_opener(opener: Opener) -> Opener:
-    def _wrapped(method, url, body, headers, timeout):
-        response = opener(method, url, body, headers, timeout)
-        _thread_state.last_status = response.status
-        return response
-
-    return _wrapped
-
-
 # Round-1 fix (M5): known upstream statuses keep their existing label and
 # message. Any other non-2xx status is passed through with its *real*
 # status — not forced to 502 — under the generic "upstream-error" label, so
@@ -107,9 +87,14 @@ _KNOWN_UPSTREAM_LABELS = {
 
 
 def _translate_api_error(exc: ApiError, status: int | None, host: str) -> NetnlHTTPError:
-    """One helper for every upstream call: `ApiError`'s status is not
-    reliably recoverable from the message alone, so the opener wrapper
-    above records the raw HTTP status and this function maps it.
+    """One helper for every upstream call: `status` comes straight from
+    `exc.status` (round-2 fix, finding 4) — `ApiError` now carries the raw
+    HTTP status of the reply that caused it (`internetnl_cli.errors.
+    ApiError`), set in `internetnl_cli.client.BatchClient._call`. This
+    replaced a `threading.local`-based side channel (an opener wrapper that
+    recorded the last HTTP status on the calling thread) that worked but
+    was a thread-local side channel for information the exception itself
+    could simply carry.
 
     Upstream 401/403 are the operator's problem, not the tenant's — they
     map to 502 `upstream-error` so a tenant never mistrusts its own facade
@@ -155,12 +140,10 @@ def call_upstream(client, fn: Callable, *args, **kwargs):
     a generic handler — this is the only path into the upstream instance
     from a route handler.
     """
-    _thread_state.last_status = None
     try:
         return fn(*args, **kwargs)
     except ApiError as exc:
-        status = getattr(_thread_state, "last_status", None)
-        raise _translate_api_error(exc, status, client.endpoint_host) from exc
+        raise _translate_api_error(exc, exc.status, client.endpoint_host) from exc
     except TransportError as exc:
         raise NetnlHTTPError(502, "upstream-unreachable", str(exc)) from exc
 
@@ -171,7 +154,7 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     raw_opener = opener or urllib_opener
-    client = upstream.build_client(settings, opener=_status_tracking_opener(raw_opener))
+    client = upstream.build_client(settings, opener=raw_opener)
 
     # Round-1 fix (B1): schema migration uses its own short-lived
     # connection, closed immediately — it is not kept around as a shared

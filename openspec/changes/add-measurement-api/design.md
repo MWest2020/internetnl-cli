@@ -85,7 +85,10 @@ for the internal hop).
 - Any other path or method → v2-shaped error body
   (`{"api_version", "error": {"label", "msg"}}`), labels
   `not-implemented` (501), `unknown-request` (404), `bad-request` (400),
-  `rate-limited` (429), `unauthorised` (401).
+  `rate-limited` (429), `unauthorised` (401), `overloaded` (503, round-2,
+  finding 1b — the concurrent-scrypt cap is saturated; distinct from
+  `rate-limited`, which is a per-credential quota, because this can hit a
+  caller who has never made a request before).
 - Errors from upstream pass through with their status, **except** upstream
   401/403: those are the operator's problem, not the tenant's, and map to
   502 `upstream-error` so a tenant never mistrusts their own facade
@@ -124,6 +127,25 @@ sequentially.
   and update) stays `reserving`; it counts toward concurrency until pruned,
   and is retrievable only by its owner, showing status `reserving`. `prune`
   clears stale `reserving` rows older than a short fixed grace.
+- **Accepted restrisico (round-2, finding 5): an orphaned upstream run.** A
+  row still `reserving` when `prune` finds it proves only that *this facade*
+  never recorded an `upstream_id` — not that the upstream submit never
+  happened. The crash window is between the upstream instance accepting the
+  request (HTTP 200, a real run now exists upstream) and
+  `finalize_reservation` committing that run's id to the `requests` row. If
+  the process dies in that window, the reservation is stranded exactly as
+  above, `prune` deletes it after the grace, and the run — if it exists —
+  is now unreachable *through the facade* forever: no `upstream_id` was
+  ever stored, so nothing is left to poll it, fetch its results, or cancel
+  it by. It keeps running upstream, invisible to every facade-side view.
+  The minimal fix shipped for this (not a full fix — there is no
+  `upstream_id` to recover after the fact): `prune` audits every stranded
+  row it deletes individually, with its facade id, owning credential,
+  domain count and original `submitted_at` (event `reserving-pruned`, see
+  "Audit" below) — enough for an operator who notices an unexplained run on
+  the upstream instance's own dashboard to correlate it back to a tenant
+  and a submission time and follow up manually. Actually reclaiming or
+  cancelling such a run is out of scope for this build.
 
 ## Tenancy and identity
 
@@ -133,6 +155,28 @@ sequentially.
   `revoked_at`; enforcement is immediate (checked per request). The DB file
   is created with mode `0600` (owner-only) — it holds password hashes, the
   id-map and the audit trail.
+- **Authentication cost is bounded on two axes (round-2, finding 1).**
+  scrypt (`n=2^14, r=8`, ~tens of milliseconds and ~16 MB per call) is
+  deliberately expensive per verification to resist offline brute force,
+  which means it must be paid *only* where it buys something:
+  - **Per request:** an unknown username still costs one scrypt
+    computation, against a fixed dummy salt, so "unknown user" and "wrong
+    password" take the same time (defeats username enumeration via a
+    timing side channel). A request whose `Authorization` header is
+    missing or does not even parse as `Basic base64(user:pass)` carries no
+    username to enumerate against, so it is rejected with **no** scrypt
+    call at all — paying that cost there would only be a free CPU/memory
+    amplifier for an unauthenticated caller, the exact cheap-DoS shape the
+    review flagged.
+  - **Across requests:** `netnl.auth` bounds how many scrypt verifications
+    may run *concurrently* to a small, fixed cap (8), enforced with a
+    non-blocking semaphore — a caller that cannot get a slot immediately
+    gets 503 `overloaded`, not a queue, so an unbounded number of parallel
+    bad-credential requests cannot pin every worker thread in scrypt at
+    once. This is a backstop inside the process; sustained brute-force or
+    volumetric abuse is expected to be absorbed at the edge before it
+    reaches this bound — see `docs/how-to/deploy-facade.md`'s
+    brute-force/rate-limiting note per topology.
 - Table `requests(facade_id UNIQUE, upstream_id NULL, credential_id,
   request_type, domain_count, submitted_at, last_status, finished_at NULL)`.
   `upstream_id` is NULL only while a row is `reserving` (see the atomic-limit
@@ -169,7 +213,17 @@ from one credential cannot each read a stale count.
   using the facade as a pivot to probe the internal network (`10.0.0.0/8`,
   `127.0.0.0/8`, `169.254.169.254`, etc.).
 - Rate: submissions per credential in the past hour, counted from the audit
-  table inside the transaction; at the limit → 429, upstream untouched.
+  table inside the transaction; at the limit → 429, upstream untouched. The
+  audit `submit` row is written at reservation time, **before** upstream is
+  ever called (see "Concurrency and storage" above), so the rate counter
+  includes every reservation attempt regardless of whether its upstream call
+  later succeeds or fails — accepted (round-2 review note): this protects
+  the upstream instance itself (an unreachable/erroring upstream must not
+  turn into an unlimited retry hammer), at the cost that a tenant who
+  submits repeatedly against a dead upstream burns through their own hourly
+  rate limit and is blocked for the remainder of the window — a real but
+  bounded and self-inflicted cost, not one the facade can shift onto anyone
+  else.
 - Concurrency: non-terminal rows (`last_status` not in
   done/error/cancelled, and `reserving` counts as in-progress) for this
   credential; at the limit → 429 with label `rate-limited` and a msg naming
@@ -179,17 +233,44 @@ from one credential cannot each read a stale count.
 ## Audit
 
 - Table `audit(id INTEGER PRIMARY KEY, at, credential, event, facade_id,
-  domain_count)` — events: `submit`, `user-add`, `user-revoke`, `prune`.
+  domain_count, detail)` — events: `submit`, `user-add`, `user-revoke`,
+  `prune`, `auth-failure` (round-2, finding 2), `reserving-pruned`
+  (round-2, finding 5). `detail` is free-form, event-specific context (the
+  HTTP route for `auth-failure`; the original `submitted_at` for
+  `reserving-pruned`) added in round 2 rather than a new column per event
+  type; it never holds a password or any other credential secret. A
+  database created before round 2 gets the column added in place by
+  `store.migrate` (`ALTER TABLE ... ADD COLUMN`), so upgrading needs no
+  manual migration step.
 - Append-only enforced in the schema: `BEFORE UPDATE` and `BEFORE DELETE`
   triggers that `RAISE(ABORT)`; `prune` removes (a) `requests` rows past
   `NETNL_RESULT_RETENTION_DAYS`, (b) **stale `reserving` rows** older than a
   short fixed grace (`NETNL_RESERVING_GRACE_SECONDS`, default 300) — a
   reservation whose upstream submit never completed must not pin a
-  concurrency slot for days — and (c) audit rows older than
+  concurrency slot for days, audited individually per row as
+  `reserving-pruned` before deletion (see "Concurrency and storage", the
+  finding-5 restrisico note) — and (c) audit rows older than
   `NETNL_AUDIT_RETENTION_DAYS`, via a dedicated path that drops and recreates
   the append-only triggers inside one transaction, and writes a `prune` audit
   record stating how many rows went.
 - Domain **lists** are not stored anywhere in the facade; only counts.
+- **Failed authentication is audited (round-2, finding 2).** Every rejected
+  `Authorization` — missing/unparseable header, unknown username, wrong
+  password, or a revoked credential — is a detection signal worth keeping,
+  but writing one row per failed attempt would make `audit` itself an
+  unbounded write sink for the exact kind of flood finding 1 bounds on the
+  CPU/memory side. `netnl.auth` aggregates failures **in memory**, keyed on
+  (sanitised username or `NULL`, route) per wall-clock minute, and writes
+  **one summarising row** (`event = auth-failure`, `domain_count` = the
+  count for that window, `detail` = the route) per key per minute,
+  regardless of how many failures actually occurred in that window. The
+  aggregator itself is bounded the same way: every authenticated request
+  (success or failure) sweeps out and flushes any bucket whose minute has
+  passed, so its size is capped at "distinct keys seen in the current
+  minute", not "distinct usernames ever tried". The username is sanitised
+  (printable characters only, capped length) before it is used as a key or
+  written anywhere — never trusted verbatim from an attacker-controlled
+  header. The password is never recorded, in any form.
 
 ## Deployment (section 4.1)
 

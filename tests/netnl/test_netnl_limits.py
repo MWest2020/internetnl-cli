@@ -145,6 +145,57 @@ def test_max_concurrent_blocks_then_succeeds_after_refresh_marks_done(settings_e
     assert third.status_code == 200
 
 
+def test_submit_succeeds_despite_status_refresh_transport_error(settings_env, tmp_path, caplog):
+    """Round-2 fix (finding 3): the stale-non-terminal refresh that runs
+    ahead of every submit must not couple submit availability to upstream
+    status calls succeeding — a `TransportError` from refreshing one row
+    is swallowed (the row is skipped, conservatively still counted as
+    non-terminal) and the submit itself goes through.
+    """
+    import json
+    import logging
+
+    from starlette.testclient import TestClient
+
+    from conftest import add_test_credential, basic_auth_header
+    from fakes import FakeOpener
+    from internetnl_cli.client import HttpResponse
+    from netnl.api import create_app
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_MAX_CONCURRENT"] = "2"
+    env["NETNL_DB"] = str(tmp_path / "refresh-failure.sqlite3")
+    settings = load(env)
+    fake_opener = FakeOpener()
+    app = create_app(settings, opener=fake_opener)
+    add_test_credential(app, "tenant", "secret")
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = basic_auth_header("tenant", "secret")
+
+    # First submit lands non-terminal ("registering"), so the *next*
+    # submit's pre-flight refresh will try (and, here, fail) to check on it.
+    first = _submit(client, fake_opener, headers, ["a.nl"])
+    assert first.status_code == 200
+
+    def flaky_opener(method, url, body, headers, timeout):
+        if method == "GET":
+            raise TimeoutError("upstream did not answer")
+        return fake_opener(method, url, body, headers, timeout)
+
+    app.state.client._opener = flaky_opener
+
+    fake_opener._responses.append(
+        HttpResponse(status=200, body=json.dumps(_done_register_reply()).encode())
+    )
+    with caplog.at_level(logging.WARNING, logger="netnl.limits"):
+        second = client.post(
+            "/requests", json={"type": "web", "domains": ["b.nl"]}, headers=headers
+        )
+    assert second.status_code == 200, second.text
+    assert any("skipping stale-status refresh" in message for message in caplog.messages)
+
+
 def test_domain_exceeding_max_length_is_400_without_touching_upstream(settings_env, tmp_path):
     """Round-1 fix (M6)."""
     from netnl.api import create_app
