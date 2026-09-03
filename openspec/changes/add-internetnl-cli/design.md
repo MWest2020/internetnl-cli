@@ -14,6 +14,7 @@ names the variable to set. No default endpoint exists anywhere.
 | `INTERNETNL_ENDPOINT` | — (required) | Batch API v2 base URL, e.g. `https://batch.internet.nl/api/batch/v2` |
 | `INTERNETNL_USERNAME` | empty | HTTP Basic auth user (hosted instance requires it) |
 | `INTERNETNL_PASSWORD` | empty | HTTP Basic auth password; environment only, never an argument |
+| `INTERNETNL_CREDENTIAL` | unset | Single `username:password` alternative to the pair above (split on the first `:`); `add-single-credential` amends this table — set either form, never both, and never with an empty username or password |
 | `INTERNETNL_CONFIG` | `$HOME/.config/internetnl/config.ini` | Config file path |
 | `INTERNETNL_TIMEOUT` | `30` | HTTP timeout, seconds |
 | `INTERNETNL_POLL_INTERVAL` | `30` | Seconds between status checks |

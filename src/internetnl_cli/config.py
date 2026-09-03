@@ -15,7 +15,16 @@ from typing import Mapping
 
 from internetnl_cli.errors import ConfigError
 
-_FORBIDDEN_KEYS = {"username", "password", "passwd", "token", "secret"}
+# Rejected if present in the config *file* — credentials are environment-
+# only. Important limitation, not a general scanner: the file (and this
+# check) is only ever consulted at all when INTERNETNL_ENDPOINT is absent
+# from the environment (see `resolve` below) — an operator who sets
+# INTERNETNL_ENDPOINT in the environment and *also* has one of these keys
+# sitting in an old config file will never have it flagged, because the
+# file is never opened in that case. This mirrors the CLI's own
+# env-beats-file precedence for `endpoint`; it is not a credential-leak
+# scanner that runs unconditionally.
+_FORBIDDEN_KEYS = {"username", "password", "passwd", "token", "secret", "credential"}
 
 _NUMERIC_DEFAULTS = {
     "INTERNETNL_TIMEOUT": ("timeout", 30.0),
@@ -118,6 +127,51 @@ def _resolve_numeric(env: Mapping[str, str], var: str, attr: str, default):
     return value
 
 
+def _resolve_credential(env: Mapping[str, str]) -> tuple[str, str]:
+    """Resolve username/password from either the single-credential env var
+    or the pair of legacy env vars — never both.
+
+    `INTERNETNL_CREDENTIAL` is `username:password`, split on the *first*
+    colon: a password may contain one, but per RFC 7617 a Basic userid
+    never can — any username containing a colon could never authenticate
+    via HTTP Basic in the first place (a compliant server, this repo's own
+    facade included, would parse everything from the first colon onward as
+    the password), so this split is unambiguous for every credential that
+    could ever actually work. When set, `INTERNETNL_USERNAME`/
+    `INTERNETNL_PASSWORD` must not also be set — silently preferring one
+    over the other would mask a misconfiguration instead of surfacing it.
+    """
+    credential = env.get("INTERNETNL_CREDENTIAL")
+    username_set = "INTERNETNL_USERNAME" in env
+    password_set = "INTERNETNL_PASSWORD" in env
+
+    if credential is not None:
+        if username_set or password_set:
+            raise ConfigError(
+                "set either INTERNETNL_CREDENTIAL or INTERNETNL_USERNAME/"
+                "INTERNETNL_PASSWORD, not both"
+            )
+        if ":" not in credential:
+            raise ConfigError(
+                "INTERNETNL_CREDENTIAL must be 'username:password' "
+                "(split on the first ':')"
+            )
+        username, password = credential.split(":", 1)
+        if not username or not password:
+            # A degenerate split (":secret", "user:", or just ":") must not
+            # silently produce an empty username: an empty username makes
+            # `client.py` skip the Authorization header entirely, turning a
+            # config typo into a silent, unauthenticated request instead of
+            # a loud failure.
+            raise ConfigError(
+                "INTERNETNL_CREDENTIAL must be 'username:password' with a "
+                "non-empty username and password"
+            )
+        return username, password
+
+    return env.get("INTERNETNL_USERNAME", ""), env.get("INTERNETNL_PASSWORD", "")
+
+
 def resolve(env: Mapping[str, str] | None = None) -> Config:
     if env is None:
         env = os.environ
@@ -139,8 +193,7 @@ def resolve(env: Mapping[str, str] | None = None) -> Config:
 
     endpoint = _validate_endpoint(endpoint, env)
 
-    username = env.get("INTERNETNL_USERNAME", "")
-    password = env.get("INTERNETNL_PASSWORD", "")
+    username, password = _resolve_credential(env)
 
     kwargs = {}
     for var, (attr, default) in _NUMERIC_DEFAULTS.items():

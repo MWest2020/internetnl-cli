@@ -63,6 +63,27 @@ def test_user_add_duplicate_name_fails_without_printing_a_password(settings_env)
     assert "already exists" in err
 
 
+# --- reviewer finding (major-3): a ':' in a username can never authenticate
+# --- (RFC 7617; auth._parse_basic_auth partitions on the first ':'), so
+# --- issuance refuses it up front rather than minting a permanently
+# --- unusable credential.
+
+
+def test_user_add_rejects_a_colon_in_the_name(settings_env):
+    code, out, err = _run_admin(["user", "add", "alice:bob"], settings_env)
+    assert code == 1
+    assert out == ""
+    assert "alice:bob" in err
+    assert store.find_credential(store.connect(settings_env["NETNL_DB"]), "alice:bob") is None
+
+
+def test_user_reissue_rejects_a_colon_in_the_name(settings_env):
+    code, out, err = _run_admin(["user", "reissue", "alice:bob"], settings_env)
+    assert code == 1
+    assert out == ""
+    assert "alice:bob" in err
+
+
 def test_user_revoke_blocks_the_same_client_immediately(settings_env):
     _, out, _ = _run_admin(["user", "add", "alice"], settings_env)
     password = out.strip()

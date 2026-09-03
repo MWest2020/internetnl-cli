@@ -35,7 +35,7 @@ The tool does not enforce this; you do.
 
 ```sh
 export INTERNETNL_ENDPOINT=https://batch.internet.nl/api/batch/v2
-export INTERNETNL_USERNAME=you INTERNETNL_PASSWORD=…   # hosted API needs an account
+export INTERNETNL_CREDENTIAL=you:…                     # hosted API needs an account; user:pass, split on the first ':'
 internetnl submit --file hosts.txt                     # prints request-id, then polls
 internetnl poll <request-id>                           # resume after a closed laptop
 internetnl results <request-id> --json > results.json  # machine-readable
@@ -75,8 +75,11 @@ Everything is environment-tunable; see
 [`openspec/changes/add-internetnl-cli/design.md`](openspec/changes/add-internetnl-cli/design.md)
 for the full table (`INTERNETNL_ENDPOINT`, `INTERNETNL_USERNAME`,
 `INTERNETNL_PASSWORD`, timeouts, poll interval and maximum, batch size,
-config path). Credentials come from the environment only — never from
-command-line arguments, and they never appear in output or logs.
+config path). `INTERNETNL_CREDENTIAL` is a single `username:password`
+alternative to the username/password pair, split on the first `:`; set
+either form, never both. Credentials come from the environment only —
+never from command-line arguments, and they never appear in output or
+logs.
 
 ## Use in CI
 
@@ -90,8 +93,7 @@ stable exit codes (`0` ok, `1` config, `2` transport/API, `3`
   with:
     hosts: example.org
     endpoint: https://api.westerweel.work
-    username: ${{ secrets.INTERNETNL_USERNAME }}
-    password: ${{ secrets.INTERNETNL_PASSWORD }}
+    credential: ${{ secrets.INTERNETNL_CREDENTIAL }}
 ```
 
 See [docs/how-to/ci.md](docs/how-to/ci.md) for the full input

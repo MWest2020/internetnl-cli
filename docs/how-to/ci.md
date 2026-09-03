@@ -21,13 +21,37 @@ action. Minimal use:
   with:
     hosts: example.org example.com
     endpoint: https://api.westerweel.work
+    credential: ${{ secrets.INTERNETNL_CREDENTIAL }}
+```
+
+`credential` is a single `username:password` string, split on the
+*first* colon: a password may contain one, but per RFC 7617 a Basic
+userid never can — a username containing a colon could never
+authenticate over HTTP Basic in the first place (a compliant server,
+the `netnl` facade included, parses everything from the first colon
+onward as the password), so this split is unambiguous for every
+credential that could ever actually work. It is the preferred way to
+pass a credential to the action: one secret instead of two.
+`username`/`password` still work as separate inputs if you already
+have the credential split that way:
+
+```yaml
+- uses: MWest2020/internetnl-cli@main
+  with:
+    hosts: example.org example.com
+    endpoint: https://api.westerweel.work
     username: ${{ secrets.INTERNETNL_USERNAME }}
     password: ${{ secrets.INTERNETNL_PASSWORD }}
 ```
 
+Provide exactly one of the two forms — `credential`, or both `username`
+and `password` — never a mix; the action's "Validate inputs" step fails
+closed otherwise.
+
 Pin `@main` to a tag or commit SHA once one exists, the same way this
 repo pins its own third-party actions (see `.github/workflows/ci.yml`).
-Never put the password directly in the workflow file — always a secret.
+Never put the password (or the combined credential) directly in the
+workflow file — always a secret.
 
 Note the trade-off while there is no tag/SHA to pin yet: the action
 resolves its own install source from `github.action_repository`/
@@ -50,8 +74,9 @@ Inputs:
 | `name` | no | — | free-form label for the request |
 | `allowlist` | no | — | workspace-relative path to an allowlist file (see (c) below); requires `actions/checkout` to have run first |
 | `endpoint` | **yes** | — | `INTERNETNL_ENDPOINT` |
-| `username` | **yes** | — | `INTERNETNL_USERNAME` |
-| `password` | **yes** | — | `INTERNETNL_PASSWORD`, from a secret |
+| `credential` | one of `credential`/(`username`+`password`) | — | `INTERNETNL_CREDENTIAL`, `username:password` (split on the first `:`), from a secret; preferred |
+| `username` | one of `credential`/(`username`+`password`) | — | `INTERNETNL_USERNAME`; alternative to `credential`, pair with `password` |
+| `password` | one of `credential`/(`username`+`password`) | — | `INTERNETNL_PASSWORD`, from a secret; alternative to `credential`, pair with `username` |
 
 Output: `results-path`, the path to the raw `--json` results file
 written during the run — attach it as a build artifact if you want it
@@ -120,10 +145,11 @@ scan:
 ```
 
 Credentials are still environment variables only (`INTERNETNL_ENDPOINT`
-/ `INTERNETNL_USERNAME` / `INTERNETNL_PASSWORD`) — never command-line
-arguments. Mark the username/password as masked (and protected, if your
-CI supports it) CI/CD variables, the same way you would for any other
-credential.
+/ `INTERNETNL_USERNAME` / `INTERNETNL_PASSWORD`, or the single
+`INTERNETNL_CREDENTIAL` in `username:password` form — never both at
+once) — never command-line arguments. Mark the username/password (or
+the combined credential) as masked (and protected, if your CI supports
+it) CI/CD variables, the same way you would for any other credential.
 
 ## c) The gate: exit codes and what "scored" means
 
@@ -138,6 +164,11 @@ credential.
 | 2 | Usage error, transport failure, or an API error |
 | 3 | `--fail-on-scored` gate tripped |
 | 4 | `INTERNETNL_POLL_MAX` exceeded while the run was still unfinished |
+
+Exit code 2's message includes the endpoint's own error body verbatim
+in the CI log, so against a third-party batch API you do not control
+(unlike the `netnl` facade, which is built not to do this) that body
+could itself echo your username unmasked.
 
 Exit code 4 is the one most likely to bite a large run: the default
 `INTERNETNL_POLL_MAX` is 3600 seconds (one hour), and a batch of many
@@ -192,8 +223,10 @@ from untrusted input).
 
 ## e) Getting a credential
 
-Every route needs `INTERNETNL_ENDPOINT` / `INTERNETNL_USERNAME` /
-`INTERNETNL_PASSWORD`. Options, cheapest first:
+Every route needs `INTERNETNL_ENDPOINT` and a credential — either
+`INTERNETNL_USERNAME` / `INTERNETNL_PASSWORD`, or the single
+`INTERNETNL_CREDENTIAL` (`username:password`, split on the first `:`).
+Options, cheapest first:
 
 - An account on the hosted `batch.internet.nl` API (ask upstream).
 - A credential on the `netnl` facade at `https://api.westerweel.work`:

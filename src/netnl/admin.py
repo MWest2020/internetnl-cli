@@ -57,7 +57,24 @@ def _build_parser():
     return parser
 
 
+def _reject_colon_in_username(name: str, stderr: IO[str]) -> bool:
+    """Return True (and print an error) if `name` contains a ':'.
+
+    Per RFC 7617 a Basic userid can never contain a colon; this facade's
+    own `auth._parse_basic_auth` splits `Authorization: Basic` payloads on
+    the *first* colon, so a username minted with one here could never
+    authenticate — it would silently and permanently lock the tenant out,
+    not just be an odd-looking name. Reject it at issuance instead.
+    """
+    if ":" in name:
+        print(f"error: username must not contain ':' (got '{name}')", file=stderr)
+        return True
+    return False
+
+
 def _user_add(conn, name: str, now: datetime, stdout: IO[str], stderr: IO[str]) -> int:
+    if _reject_colon_in_username(name, stderr):
+        return 1
     if store.find_credential(conn, name) is not None:
         print(f"error: user '{name}' already exists", file=stderr)
         return 1
@@ -102,6 +119,8 @@ def _user_reissue(
     which nobody could authenticate as anyway). That now needs `--force`;
     reissuing an already-revoked row does not.
     """
+    if _reject_colon_in_username(name, stderr):
+        return 1
     credential = store.find_credential(conn, name)
     if credential is None:
         print(f"error: no user '{name}' to reissue (use 'user add' for a new name)", file=stderr)

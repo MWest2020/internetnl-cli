@@ -8,6 +8,25 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `INTERNETNL_CREDENTIAL` (`openspec/changes/add-single-credential`), a
+  single `username:password` alternative to
+  `INTERNETNL_USERNAME`/`INTERNETNL_PASSWORD` (split on the first `:`,
+  so a password containing one still works); set either form, never
+  both — a silent precedence would mask a misconfiguration. A split that
+  yields an empty username or password (`:secret`, `alice:`, `:`) is
+  also rejected: an empty username would otherwise make the client skip
+  the `Authorization` header entirely, turning a typo into a silent
+  anonymous request. The composite action gained a matching `credential`
+  input (preferred path; `username`/`password` remain a supported
+  alternative), with the "Validate inputs" step failing closed unless
+  exactly one form is given (including a colon-less `credential`, before
+  the install step runs), and both forms never mixing with an inherited
+  job-level `INTERNETNL_*` env var. `netnl-admin user add`/`user reissue`
+  now refuse a username containing `:` — such a name could never
+  authenticate over HTTP Basic in the first place (RFC 7617). The
+  facade's own HTTP Basic wire protocol is unchanged; only the
+  CLI/action/issuance-facing credential UX collapsed from two secrets to
+  one.
 - An opt-in, anonymous demo route family on the `netnl` facade
   (`openspec/changes/add-demo-run`): `POST /demo/requests` accepts exactly
   `{"domain": "example.nl"}` (pydantic `extra="forbid"` makes a list or a

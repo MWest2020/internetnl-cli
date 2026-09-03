@@ -42,7 +42,10 @@ Both print the generated password **once**, to stdout. It is hashed
 it cannot be recovered later — only rotated (`user revoke` followed by
 a fresh `user add`). Hand the printed username/password pair to the
 beta user out of band (not over the same channel you'd use to discuss
-the beta publicly, and never committed anywhere in this repo).
+the beta publicly, and never committed anywhere in this repo). Handing
+it over as a single `username:password` string works too — the CLI's
+`INTERNETNL_CREDENTIAL` (and the action's `credential` input) accept
+that form directly, split on the first `:`.
 
 Revoke a credential (effective immediately, no grace period — see the
 spec's "Credential lifecycle" requirement):
