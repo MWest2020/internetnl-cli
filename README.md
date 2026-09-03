@@ -19,6 +19,13 @@ for pipelines.
 [**internetnl-cli-demo**](https://github.com/MWest2020/internetnl-cli-demo)
 (quickstart + example hosts + CI-gate example).
 
+**Try it live, no account needed:**
+[**https://mwest2020.github.io/internetnl-cli-demo/**](https://mwest2020.github.io/internetnl-cli-demo/)
+— type a domain, get a real result, one run at a time (strictly
+rate-limited; see [docs/reference/demo-api.md](docs/reference/demo-api.md)
+for the contract that page relies on and
+[docs/how-to/demo-run.md](docs/how-to/demo-run.md) for how it is run).
+
 ## The rule
 
 **Only measure hosts you operate or have explicit permission to test.**

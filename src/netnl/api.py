@@ -22,10 +22,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from internetnl_cli.client import Opener, is_valid_request_id, urllib_opener
+from internetnl_cli.client import Opener, urllib_opener
 from internetnl_cli.errors import ApiError, TransportError
 
-from netnl import auth, limits, store, upstream
+from netnl import auth, demo, limits, store, upstream
 from netnl.errors import NetnlHTTPError
 from netnl.replies import API_VERSION, NOTICE, error_body
 from netnl.settings import Settings
@@ -68,17 +68,6 @@ class SubmitRequest(BaseModel):
     domains: list[str] = Field(min_length=1)
     name: str | None = None
 
-
-def _owned_request_or_404(conn, request_id: str, credential) -> sqlite3.Row:
-    """A foreign or malformed id is indistinguishable from an unknown one —
-    both are the same 404, so credential B can never tell credential A's
-    request exists (design.md, "Tenant isolation").
-    """
-    if is_valid_request_id(request_id):
-        row = store.get_request_for_credential(conn, request_id, credential["id"])
-        if row is not None:
-            return row
-    raise NetnlHTTPError(404, "unknown-request", "this request_id does not exist for the user")
 
 # Round-1 fix (M5): known upstream statuses keep their existing label and
 # message. Any other non-2xx status is passed through with its *real*
@@ -218,6 +207,19 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
             response.headers[name] = value
         return response
 
+    @app.middleware("http")
+    async def demo_headers(request: Request, call_next):
+        # Registered *last*: per Starlette's middleware-stacking order, the
+        # last `@app.middleware("http")` added becomes the outermost layer
+        # (short of `ServerErrorMiddleware` itself), so this wraps even
+        # `enforce_body_size`'s short-circuit response (design.md, D7). See
+        # `netnl.demo.demo_response_headers` for what it adds, and to
+        # which paths.
+        response = await call_next(request)
+        for name, value in demo.demo_response_headers(request, settings).items():
+            response.headers[name] = value
+        return response
+
     @app.exception_handler(NetnlHTTPError)
     async def handle_netnl_http_error(request: Request, exc: NetnlHTTPError) -> JSONResponse:
         # Round-3 fix: `exc.headers` (e.g. `Retry-After` on 503
@@ -262,6 +264,20 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Builder-review fix (S9): on `/demo/*`, pydantic's own error shape
+        # (field names/`loc` paths straight from `exc.errors()`) is never
+        # reflected to an anonymous visitor — it is written for an API
+        # consumer inspecting a request body, not a person reading a demo
+        # page's error text, and reflecting raw field paths back is the
+        # kind of input-echoing a form should not do. Every `/demo/*`
+        # validation failure collapses to the same literal D14 message
+        # `POST /demo/requests`'s own domain-shape rejection already uses
+        # (`demo._BAD_DOMAIN_MSG`) — the only field this route ever
+        # accepts is `domain`, so that message is accurate for every way
+        # the body can fail pydantic's shape check too (an extra field, a
+        # `type` field, a list `domain`, ...).
+        if request.url.path.startswith("/demo/"):
+            return JSONResponse(error_body("bad-request", demo._BAD_DOMAIN_MSG), status_code=400)
         fields = sorted(
             {".".join(str(part) for part in error["loc"] if part != "body") for error in exc.errors()}
         )
@@ -283,6 +299,11 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
                 "X-Netnl-Instance": settings.instance,
                 "X-Netnl-Notice": NOTICE,
                 **SECURITY_HEADERS,
+                # design.md, D7: this handler sits outside the middleware
+                # stack (see the comment above), so a demo-path 500 needs
+                # the same helper the `demo_headers` middleware itself
+                # uses, called directly here.
+                **demo.demo_response_headers(request, settings),
             },
         )
 
@@ -396,7 +417,7 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     def get_status(
         request_id: str, credential=Depends(auth.authenticate), conn=Depends(store.get_conn)
     ) -> dict:
-        row = _owned_request_or_404(conn, request_id, credential)
+        row = store.owned_request_or_404(conn, request_id, credential["id"])
         if row["upstream_id"] is None:
             # Still `reserving` — upstream was never contacted (or a crash
             # happened between commit and finalize). Owner-only, per
@@ -417,7 +438,7 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     def get_results(
         request_id: str, credential=Depends(auth.authenticate), conn=Depends(store.get_conn)
     ) -> dict:
-        row = _owned_request_or_404(conn, request_id, credential)
+        row = store.owned_request_or_404(conn, request_id, credential["id"])
         if row["upstream_id"] is None:
             out = _reserving_reply(row)
             out["domains"] = {}
@@ -434,5 +455,11 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
         # `domains` is carried over from `reply` untouched by the deep copy
         # above — no key added, removed, reordered or rewritten.
         return out
+
+    # Opt-in, anonymous `/demo/*` route family (openspec/changes/
+    # add-demo-run) — a no-op when `settings.demo` is `None`, i.e. the
+    # routes simply do not exist and every `/demo/*` path falls through to
+    # the ordinary 501 not-implemented catch-all above.
+    demo.register_routes(app, settings, client, call_upstream)
 
     return app

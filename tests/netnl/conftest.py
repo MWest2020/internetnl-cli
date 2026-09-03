@@ -139,3 +139,54 @@ def tenant(app):
     username, password = "tenant", "tenant-secret"
     add_test_credential(app, username, password)
     return {"username": username, "password": password, "headers": basic_auth_header(username, password)}
+
+
+# --- demo (openspec/changes/add-demo-run) -----------------------------------
+
+DEMO_ORIGIN = "https://demo.example.org"
+DEMO_TENANT = "netnl-demo"
+
+
+@pytest.fixture(autouse=True)
+def _reset_demo_state():
+    """`netnl.demo`'s per-IP-bucket and per-domain-cooldown structures are
+    process-global, in-memory state (design.md, D4/D5) — not scoped to a
+    single app/test, exactly like `netnl.auth`'s failed-authentication
+    aggregator above.
+    """
+    from netnl import demo
+
+    demo.reset_state()
+    yield
+    demo.reset_state()
+
+
+@pytest.fixture
+def demo_env(settings_env) -> dict:
+    env = dict(settings_env)
+    env["NETNL_DEMO_ENABLED"] = "1"
+    env["NETNL_DEMO_ALLOWED_ORIGIN"] = DEMO_ORIGIN
+    env["NETNL_DEMO_TENANT"] = DEMO_TENANT
+    return env
+
+
+@pytest.fixture
+def demo_settings(demo_env) -> Settings:
+    return load(demo_env)
+
+
+@pytest.fixture
+def demo_app(demo_settings, fake_opener, clock):
+    """A facade with the demo family enabled and its borrowed credential
+    row already issued — mirrors `netnl-admin user add` followed by
+    throwing the printed password away (design.md, D3): no test ever
+    authenticates as this credential.
+    """
+    app = create_app(demo_settings, opener=fake_opener, now=clock)
+    add_test_credential(app, DEMO_TENANT, "thrown-away-password")
+    return app
+
+
+@pytest.fixture
+def demo_client(demo_app):
+    return TestClient(demo_app, raise_server_exceptions=False)

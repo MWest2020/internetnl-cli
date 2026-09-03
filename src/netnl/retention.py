@@ -40,6 +40,15 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
     audit_cutoff = store.utcnow_iso(
         lambda: now - timedelta(days=settings.audit_retention_days)
     )
+    # openspec/changes/add-demo-run, D11: the demo family's own, much
+    # shorter retention window. `None` when the demo is not configured —
+    # nothing below ever runs in that case, so an operator who never opted
+    # in gets byte-identical `prune` behaviour to before this change.
+    demo_cutoff = (
+        store.utcnow_iso(lambda: now - timedelta(hours=settings.demo.retention_hours))
+        if settings.demo is not None
+        else None
+    )
 
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -102,6 +111,29 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
         )
         reserving_deleted = cur.rowcount if cur.rowcount >= 0 else 0
 
+        # openspec/changes/add-demo-run, D11: placed after the reserving-
+        # audit step above (so a stranded demo reservation is still
+        # individually audited by that pre-existing path before this
+        # newer, demo-scoped delete ever runs), before the audit-retention
+        # delete below. Scoped to `upstream_id IS NOT NULL` like the main
+        # result-retention delete — a still-`reserving` demo row is left
+        # entirely to the general reserving-grace mechanism above, not
+        # this one. No per-row audit here: a demo run reaching its own,
+        # much shorter retention window is the routine case (mirroring the
+        # main result-retention delete just above, which also writes none)
+        # — it is not the crash/stranded-reservation scenario the
+        # reserving-audit step exists to reconstruct.
+        demo_deleted = 0
+        if settings.demo is not None:
+            demo_credential = store.find_credential(conn, settings.demo.tenant)
+            if demo_credential is not None:
+                cur = conn.execute(
+                    "DELETE FROM requests WHERE credential_id = ? AND upstream_id IS NOT NULL "
+                    "AND submitted_at < ?",
+                    (demo_credential["id"], demo_cutoff),
+                )
+                demo_deleted = cur.rowcount if cur.rowcount >= 0 else 0
+
         conn.execute("DROP TRIGGER audit_no_delete")
         cur = conn.execute("DELETE FROM audit WHERE at < ?", (audit_cutoff,))
         audit_deleted = cur.rowcount if cur.rowcount >= 0 else 0
@@ -113,7 +145,7 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
             credential=None,
             event="prune",
             facade_id=None,
-            domain_count=requests_deleted + reserving_deleted + audit_deleted,
+            domain_count=requests_deleted + reserving_deleted + audit_deleted + demo_deleted,
         )
         conn.execute("COMMIT")
     except Exception:
@@ -128,4 +160,8 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
         "requests_deleted": requests_deleted,
         "reserving_deleted": reserving_deleted,
         "audit_deleted": audit_deleted,
+        # openspec/changes/add-demo-run, D11: always present (0 when the
+        # demo is not configured) — counted separately from the tenant
+        # retention counters above, never folded into them.
+        "demo_deleted": demo_deleted,
     }

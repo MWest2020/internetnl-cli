@@ -50,8 +50,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 import uvicorn
 
-from conftest import Clock, add_test_credential
-from fakes import METADATA_REPLY
+from conftest import DEMO_ORIGIN, DEMO_TENANT, Clock, add_test_credential
+from fakes import METADATA_REPLY, REGISTER_REPLY
 from internetnl_cli.client import HttpResponse
 
 from netnl import store
@@ -92,9 +92,44 @@ class _LockedMetadataOpener:
         return HttpResponse(status=200, body=json.dumps(METADATA_REPLY).encode())
 
 
+class _LockedRegisterOpener:
+    """Same shape as `_LockedMetadataOpener` above (a real lock around a
+    shared call counter), answering every call with a register-shaped
+    reply — good enough for both `client.submit` (the demo submit route)
+    and `client.status` (`limits.refresh_stale_non_terminal`'s own
+    upstream call), since this test only cares about how many *demo*
+    submissions the facade itself accepts, not the shape of the upstream
+    reply beyond "valid enough to parse".
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.calls = 0
+
+    def __call__(self, method, url, body, headers, timeout) -> HttpResponse:
+        with self._lock:
+            self.calls += 1
+        return HttpResponse(status=200, body=json.dumps(REGISTER_REPLY).encode())
+
+
 def _basic_auth_header(username: str, password: str) -> str:
     token = base64.b64encode(f"{username}:{password}".encode()).decode()
     return f"Basic {token}"
+
+
+def _post_json(port: int, path: str, body: dict, headers: dict) -> int:
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=data,
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
 
 
 def _get(port: int, path: str, auth_header: str) -> int:
@@ -235,3 +270,105 @@ def test_real_uvicorn_handles_concurrent_requests_without_cross_thread_500s(
     else:
         assert len(rows) == 1, rows
         assert rows[0]["detail"] == f"/metadata/report failures={observed_401}", rows[0]["detail"]
+
+
+# --- builder-review fix (S1=M1): demo per-IP cap and per-domain cooldown,
+# --- proven race-free under real concurrency, not just `TestClient` --------
+#
+# Both bounds used to check ("is this key already at/over its limit?") and
+# act ("record this acceptance") across two *separate* lock acquisitions
+# (`netnl.demo`'s previous `_ip_over_limit`/`_record_ip_accept` and
+# `_domain_on_cooldown`/`_record_domain_cooldown`), leaving the same
+# classic check-then-act race window `test_netnl_real_server.py`'s first
+# test (above) already demonstrates a real uvicorn server's thread-pool
+# scheduling can hit, that `TestClient` cannot reproduce (see the module
+# docstring). Measured before the fix, on a real server: 12 parallel
+# submits from one IP against a per-IP cap of 2 -> 12 accepted; 8 submits
+# for the same domain from 8 different IPs (cooldown otherwise unbounded)
+# -> 8 accepted. `netnl.demo._try_claim_ip_slot`/`_try_claim_domain` now do
+# sweep+check+insert inside one lock hold each.
+
+
+def test_real_server_demo_per_ip_cap_holds_under_concurrent_submits(settings_env, tmp_path):
+    env = dict(settings_env)
+    env["NETNL_DB"] = str(tmp_path / "real-server-demo-ip.sqlite3")
+    env["NETNL_DEMO_ENABLED"] = "1"
+    env["NETNL_DEMO_ALLOWED_ORIGIN"] = DEMO_ORIGIN
+    env["NETNL_DEMO_TENANT"] = DEMO_TENANT
+    per_ip_cap = 2
+    env["NETNL_DEMO_PER_IP_PER_HOUR"] = str(per_ip_cap)
+    # High enough that only the per-IP cap under test can reject anything.
+    env["NETNL_DEMO_MAX_PER_HOUR"] = "1000"
+    env["NETNL_DEMO_MAX_CONCURRENT"] = "1000"
+    settings = load(env)
+
+    opener = _LockedRegisterOpener()
+    app = create_app(settings, opener=opener)
+    add_test_credential(app, DEMO_TENANT, "thrown-away-password")
+
+    n_requests = 12
+    same_ip = {"Origin": DEMO_ORIGIN, "CF-Connecting-IP": "203.0.113.42"}
+
+    with _RealServer(app) as running:
+        with ThreadPoolExecutor(max_workers=n_requests) as pool:
+            futures = [
+                pool.submit(
+                    _post_json,
+                    running.port,
+                    "/demo/requests",
+                    {"domain": f"race-ip-{i}.example.nl"},
+                    same_ip,
+                )
+                for i in range(n_requests)
+            ]
+            statuses = [f.result(timeout=15) for f in futures]
+
+    assert set(statuses) <= {200, 429}, statuses
+    accepted = statuses.count(200)
+    # The whole point of the fix: never more, *and* never fewer (a vacuous
+    # pass at 0 accepted would say nothing about the race), than the
+    # configured cap, however many identical requests arrive at the exact
+    # same instant (round-4 builder-review fix, N6).
+    assert accepted == per_ip_cap, statuses
+
+
+def test_real_server_demo_cooldown_holds_under_concurrent_submits(settings_env, tmp_path):
+    env = dict(settings_env)
+    env["NETNL_DB"] = str(tmp_path / "real-server-demo-cooldown.sqlite3")
+    env["NETNL_DEMO_ENABLED"] = "1"
+    env["NETNL_DEMO_ALLOWED_ORIGIN"] = DEMO_ORIGIN
+    env["NETNL_DEMO_TENANT"] = DEMO_TENANT
+    # High enough that only the per-domain cooldown under test can reject
+    # anything — every request below comes from its own distinct address.
+    env["NETNL_DEMO_PER_IP_PER_HOUR"] = "1000"
+    env["NETNL_DEMO_MAX_PER_HOUR"] = "1000"
+    env["NETNL_DEMO_MAX_CONCURRENT"] = "1000"
+    settings = load(env)
+
+    opener = _LockedRegisterOpener()
+    app = create_app(settings, opener=opener)
+    add_test_credential(app, DEMO_TENANT, "thrown-away-password")
+
+    n_requests = 8
+
+    with _RealServer(app) as running:
+        with ThreadPoolExecutor(max_workers=n_requests) as pool:
+            futures = [
+                pool.submit(
+                    _post_json,
+                    running.port,
+                    "/demo/requests",
+                    {"domain": "race-cooldown.example.nl"},
+                    {"Origin": DEMO_ORIGIN, "CF-Connecting-IP": f"198.51.100.{i}"},
+                )
+                for i in range(n_requests)
+            ]
+            statuses = [f.result(timeout=15) for f in futures]
+
+    assert set(statuses) <= {200, 429}, statuses
+    accepted = statuses.count(200)
+    # Exactly one distinct-address submitter can ever win the cooldown for
+    # the same domain at (near enough) the same instant — `== 1`, not
+    # `<= 1`, so a vacuous 0-accepted pass cannot hide a broken claim
+    # (round-4 builder-review fix, N6).
+    assert accepted == 1, statuses
