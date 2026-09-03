@@ -136,16 +136,20 @@ class BatchClient:
         return urllib.parse.quote(request_id, safe="")
 
     def _validate_request_object(self, parsed: dict, path: str) -> None:
+        # Reached only after `_call` returned successfully, which only ever
+        # happens for an HTTP 200 reply — so `status=200` here reflects the
+        # real HTTP status, not a guess: the reply arrived fine, its *body*
+        # is what is malformed.
         host = self._config.endpoint_host
         request = parsed.get("request")
         if not isinstance(request, dict):
-            raise ApiError(f"malformed reply from {host} (missing 'request', {path})")
+            raise ApiError(f"malformed reply from {host} (missing 'request', {path})", status=200)
         request_id = request.get("request_id")
         status = request.get("status")
         if not is_valid_request_id(request_id):
-            raise ApiError(f"malformed reply from {host} (invalid request_id, {path})")
+            raise ApiError(f"malformed reply from {host} (invalid request_id, {path})", status=200)
         if not isinstance(status, str):
-            raise ApiError(f"malformed reply from {host} (invalid status, {path})")
+            raise ApiError(f"malformed reply from {host} (invalid status, {path})", status=200)
 
     def _validate_domains(self, parsed: dict, path: str) -> None:
         """Round 2 (m2): fail closed on a malformed `domains` block.
@@ -156,33 +160,39 @@ class BatchClient:
         `request` object one layer up. A `domains` key that is entirely
         absent is left to callers (an unfinished-run status reply has none).
         """
+        # As in `_validate_request_object` above: only reachable after a
+        # real HTTP 200, so `status=200` is the actual status, not a guess.
         host = self._config.endpoint_host
         domains = parsed.get("domains")
         if domains is None:
             return
         if not isinstance(domains, dict):
-            raise ApiError(f"malformed reply from {host} (domains is not an object, {path})")
+            raise ApiError(f"malformed reply from {host} (domains is not an object, {path})", status=200)
         for domain in domains.values():
             if not isinstance(domain, dict):
                 raise ApiError(
-                    f"malformed reply from {host} (domain entry is not an object, {path})"
+                    f"malformed reply from {host} (domain entry is not an object, {path})", status=200
                 )
             results = domain.get("results")
             if results is None:
                 continue
             if not isinstance(results, dict):
                 raise ApiError(
-                    f"malformed reply from {host} (domain results is not an object, {path})"
+                    f"malformed reply from {host} (domain results is not an object, {path})",
+                    status=200,
                 )
             tests = results.get("tests")
             if tests is None:
                 continue
             if not isinstance(tests, dict):
-                raise ApiError(f"malformed reply from {host} (tests is not an object, {path})")
+                raise ApiError(
+                    f"malformed reply from {host} (tests is not an object, {path})", status=200
+                )
             for test in tests.values():
                 if not isinstance(test, dict):
                     raise ApiError(
-                        f"malformed reply from {host} (test entry is not an object, {path})"
+                        f"malformed reply from {host} (test entry is not an object, {path})",
+                        status=200,
                     )
 
     def _headers(self) -> dict:
@@ -215,9 +225,9 @@ class BatchClient:
             try:
                 parsed = json.loads(response.body)
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise ApiError(f"malformed reply from {host} (HTTP 200, {path})") from exc
+                raise ApiError(f"malformed reply from {host} (HTTP 200, {path})", status=200) from exc
             if not isinstance(parsed, dict):
-                raise ApiError(f"malformed reply from {host} (HTTP 200, {path})")
+                raise ApiError(f"malformed reply from {host} (HTTP 200, {path})", status=200)
             return parsed
 
         detail = ""
@@ -230,4 +240,9 @@ class BatchClient:
         except (json.JSONDecodeError, UnicodeDecodeError):
             pass
 
-        raise ApiError(f"HTTP {response.status} from {host} ({method} {path}){detail}")
+        # `status=response.status`: the real HTTP status of this reply, so a
+        # caller (e.g. the facade's `netnl.api._translate_api_error`) can map
+        # on it directly instead of re-deriving it out-of-band.
+        raise ApiError(
+            f"HTTP {response.status} from {host} ({method} {path}){detail}", status=response.status
+        )

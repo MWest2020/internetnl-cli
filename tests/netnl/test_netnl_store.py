@@ -198,3 +198,175 @@ def test_utcnow_iso_is_lexicographically_comparable():
     late = store.utcnow_iso(lambda: datetime(2026, 1, 2, tzinfo=timezone.utc))
     assert early < late
     assert early.endswith("+00:00")
+
+
+# --- round-3: migrating a pre-round-2 database in place --------------------
+
+
+def _create_pre_round2_schema(path) -> None:
+    """The shape a database created before the `audit.detail` column
+    existed would actually have: no `detail` column, but the append-only
+    triggers already in place (they predate `detail`)."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE credentials (
+                id INTEGER PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                revoked_at TEXT
+            );
+            CREATE TABLE requests (
+                id INTEGER PRIMARY KEY,
+                facade_id TEXT NOT NULL UNIQUE,
+                upstream_id TEXT,
+                credential_id INTEGER NOT NULL REFERENCES credentials(id),
+                request_type TEXT NOT NULL,
+                domain_count INTEGER NOT NULL,
+                submitted_at TEXT NOT NULL,
+                last_status TEXT NOT NULL,
+                finished_at TEXT
+            );
+            CREATE TABLE audit (
+                id INTEGER PRIMARY KEY,
+                at TEXT NOT NULL,
+                credential TEXT,
+                event TEXT NOT NULL,
+                facade_id TEXT,
+                domain_count INTEGER
+            );
+            CREATE TRIGGER audit_no_update
+            BEFORE UPDATE ON audit
+            BEGIN
+                SELECT RAISE(ABORT, 'audit is append-only');
+            END;
+            CREATE TRIGGER audit_no_delete
+            BEFORE DELETE ON audit
+            BEGIN
+                SELECT RAISE(ABORT, 'audit is append-only');
+            END;
+            """
+        )
+        conn.execute(
+            "INSERT INTO audit (at, credential, event, facade_id, domain_count) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("2026-01-01T00:00:00+00:00", "alice", "submit", "f" * 32, 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_migrate_upgrades_pre_round2_schema_in_place(tmp_path):
+    """Round-3 fix (reviewer-M6): build a database with the pre-round-2
+    schema (`audit` with no `detail` column, triggers already present), run
+    `store.migrate` twice (idempotency), and confirm the column and both
+    triggers are present and enforcing, with the pre-existing row intact
+    and back-filled with `detail = NULL` rather than dropped or rewritten.
+    """
+    path = tmp_path / "pre-round2.sqlite3"
+    _create_pre_round2_schema(path)
+
+    conn = store.connect(path)
+    try:
+        store.migrate(conn)
+        store.migrate(conn)  # idempotent, per its own docstring
+
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit)")}
+        assert "detail" in columns
+
+        row = conn.execute("SELECT * FROM audit WHERE credential = 'alice'").fetchone()
+        assert row is not None
+        assert row["event"] == "submit"
+        assert row["facade_id"] == "f" * 32
+        assert row["domain_count"] == 1
+        assert row["detail"] is None
+
+        with pytest.raises(sqlite3.IntegrityError, match="audit is append-only"):
+            conn.execute("UPDATE audit SET event = 'tampered'")
+        with pytest.raises(sqlite3.IntegrityError, match="audit is append-only"):
+            conn.execute("DELETE FROM audit")
+    finally:
+        conn.close()
+
+
+# --- round-3: the `ALTER TABLE ... ADD COLUMN` upgrade tolerates a race ----
+
+
+def test_ensure_audit_detail_column_tolerates_concurrent_alter_race(tmp_path):
+    """Round-3 fix (security-L2): `migrate()` runs on every process
+    startup, so two processes racing the same upgrade can both see
+    `detail` missing and both attempt the `ALTER`; SQLite lets only one
+    through. `_ensure_audit_detail_column` must not treat the loser's
+    `OperationalError` as fatal once the column is actually present.
+    """
+    from netnl.store import _ensure_audit_detail_column
+
+    path = tmp_path / "alter-race.sqlite3"
+    conn = store.connect(path)
+    try:
+        conn.executescript(
+            "CREATE TABLE audit (id INTEGER PRIMARY KEY, at TEXT NOT NULL, credential TEXT, "
+            "event TEXT NOT NULL, facade_id TEXT, domain_count INTEGER)"
+        )
+
+        class _RacingConnection:
+            """Simulates another connection's identical `ALTER` winning
+            the race: the column really does get added (so the PRAGMA
+            re-check the fix performs actually finds it), but this call
+            still sees `OperationalError`, exactly like SQLite's own
+            "duplicate column name" for the loser of a real race."""
+
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *args, **kwargs):
+                if isinstance(sql, str) and "ALTER TABLE audit" in sql:
+                    self._real.execute(sql)
+                    raise sqlite3.OperationalError("duplicate column name: detail")
+                return self._real.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        _ensure_audit_detail_column(_RacingConnection(conn))  # must not raise
+
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit)")}
+        assert "detail" in columns
+    finally:
+        conn.close()
+
+
+def test_ensure_audit_detail_column_reraises_a_genuine_failure(tmp_path):
+    """A non-race `OperationalError` (the column still genuinely missing
+    afterwards) must still propagate — the re-check must not swallow a
+    real failure."""
+    from netnl.store import _ensure_audit_detail_column
+
+    path = tmp_path / "alter-fail.sqlite3"
+    conn = store.connect(path)
+    try:
+        conn.executescript(
+            "CREATE TABLE audit (id INTEGER PRIMARY KEY, at TEXT NOT NULL, credential TEXT, "
+            "event TEXT NOT NULL, facade_id TEXT, domain_count INTEGER)"
+        )
+
+        class _AlwaysFailingConnection:
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *args, **kwargs):
+                if isinstance(sql, str) and "ALTER TABLE audit" in sql:
+                    raise sqlite3.OperationalError("disk I/O error")
+                return self._real.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            _ensure_audit_detail_column(_AlwaysFailingConnection(conn))
+    finally:
+        conn.close()

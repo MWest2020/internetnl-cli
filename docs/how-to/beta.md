@@ -124,6 +124,16 @@ things up further:
 | `NETNL_RATE_LIMIT=10` | submissions/credential/hour | beta users hitting 429 `rate-limited` routinely for legitimate use (not misuse) |
 | `NETNL_MAX_DOMAINS=500` | domains/request | beta users splitting requests to work around 400 `bad-request` |
 | `NETNL_MAX_CONCURRENT=2` | non-terminal runs/credential | beta users queuing behind their own earlier runs that haven't finished |
+| in-process scrypt-concurrency cap (`max(4, min(8, cpu_count))`, not env-tunable) | concurrent password-hash verifications this process will run at once | a 503 `overloaded` reaching a beta user under ordinary (not attack) traffic — that means legitimate concurrent logins are queuing past the cap's short bounded wait, worth escalating rather than a symptom of a credential-guessing campaign |
+
+A 503 `overloaded` carries a `Retry-After: 1` header; a well-behaved
+client should back off briefly and retry. It is distinct from 429
+`rate-limited` (a per-credential quota) — 503 can hit a caller who has
+never made a request before, because it reflects this process's own
+authentication-verification capacity, not anything the caller did wrong.
+See design.md's "Authentication cost is bounded" and
+[deploy-facade.md](deploy-facade.md#brute-force--rate-limiting-at-the-edge)
+for what actually causes it and what backstops it at the edge.
 
 Also watch the **upstream instance's** capacity directly — CPU, memory
 and how long a batch of N domains actually takes on the VPS sizing

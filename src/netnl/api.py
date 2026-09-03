@@ -13,7 +13,6 @@ from __future__ import annotations
 import copy
 import secrets
 import sqlite3
-import threading
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Literal
 
@@ -57,6 +56,12 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
 }
 
+# Round-4 fix (N4, Info): the allowlist `handle_netnl_http_error` filters
+# `NetnlHTTPError.headers` through before merging it into a reply — see the
+# comment at that call site for why this exists even though every current
+# raise site's value is already static and safe.
+_ALLOWED_EXTRA_HEADERS = {"Retry-After"}
+
 
 class SubmitRequest(BaseModel):
     type: Literal["web", "mail"]
@@ -75,25 +80,6 @@ def _owned_request_or_404(conn, request_id: str, credential) -> sqlite3.Row:
             return row
     raise NetnlHTTPError(404, "unknown-request", "this request_id does not exist for the user")
 
-# Per-thread, reset at the start of every `_upstream()` call. Starlette runs
-# a sync route handler and everything it calls (including the opener) on the
-# *same* worker thread, so this is visible where it is read — inside that
-# same handler, never across a request boundary — without the pitfalls of a
-# contextvar (whose mutations inside `run_in_threadpool` do not propagate
-# back to the coroutine that awaited it) or of a plain shared attribute
-# (which a concurrent request on another thread could clobber).
-_thread_state = threading.local()
-
-
-def _status_tracking_opener(opener: Opener) -> Opener:
-    def _wrapped(method, url, body, headers, timeout):
-        response = opener(method, url, body, headers, timeout)
-        _thread_state.last_status = response.status
-        return response
-
-    return _wrapped
-
-
 # Round-1 fix (M5): known upstream statuses keep their existing label and
 # message. Any other non-2xx status is passed through with its *real*
 # status — not forced to 502 — under the generic "upstream-error" label, so
@@ -107,9 +93,14 @@ _KNOWN_UPSTREAM_LABELS = {
 
 
 def _translate_api_error(exc: ApiError, status: int | None, host: str) -> NetnlHTTPError:
-    """One helper for every upstream call: `ApiError`'s status is not
-    reliably recoverable from the message alone, so the opener wrapper
-    above records the raw HTTP status and this function maps it.
+    """One helper for every upstream call: `status` comes straight from
+    `exc.status` (round-2 fix, finding 4) — `ApiError` now carries the raw
+    HTTP status of the reply that caused it (`internetnl_cli.errors.
+    ApiError`), set in `internetnl_cli.client.BatchClient._call`. This
+    replaced a `threading.local`-based side channel (an opener wrapper that
+    recorded the last HTTP status on the calling thread) that worked but
+    was a thread-local side channel for information the exception itself
+    could simply carry.
 
     Upstream 401/403 are the operator's problem, not the tenant's — they
     map to 502 `upstream-error` so a tenant never mistrusts its own facade
@@ -155,12 +146,10 @@ def call_upstream(client, fn: Callable, *args, **kwargs):
     a generic handler — this is the only path into the upstream instance
     from a route handler.
     """
-    _thread_state.last_status = None
     try:
         return fn(*args, **kwargs)
     except ApiError as exc:
-        status = getattr(_thread_state, "last_status", None)
-        raise _translate_api_error(exc, status, client.endpoint_host) from exc
+        raise _translate_api_error(exc, exc.status, client.endpoint_host) from exc
     except TransportError as exc:
         raise NetnlHTTPError(502, "upstream-unreachable", str(exc)) from exc
 
@@ -171,7 +160,7 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     raw_opener = opener or urllib_opener
-    client = upstream.build_client(settings, opener=_status_tracking_opener(raw_opener))
+    client = upstream.build_client(settings, opener=raw_opener)
 
     # Round-1 fix (B1): schema migration uses its own short-lived
     # connection, closed immediately — it is not kept around as a shared
@@ -231,8 +220,34 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
 
     @app.exception_handler(NetnlHTTPError)
     async def handle_netnl_http_error(request: Request, exc: NetnlHTTPError) -> JSONResponse:
-        headers = {"WWW-Authenticate": 'Basic realm="netnl"'} if exc.status == 401 else None
-        return JSONResponse(error_body(exc.label, exc.msg), status_code=exc.status, headers=headers)
+        # Round-3 fix: `exc.headers` (e.g. `Retry-After` on 503
+        # `overloaded` — see `netnl.auth._overloaded`) is merged in on top
+        # of the fixed 401 `WWW-Authenticate` header, so a raising site's
+        # own headers are never silently dropped.
+        #
+        # Round-4 fix (N4, Info): filtered through `_ALLOWED_EXTRA_HEADERS`
+        # rather than merged verbatim. Every `NetnlHTTPError(..., headers=…)`
+        # raise site today (only `netnl.auth._overloaded`) already supplies
+        # nothing but a static, hardcoded `Retry-After` value — never
+        # attacker- or upstream-influenced input — so this allowlist changes
+        # no current behaviour. It exists so that stays true: a *future*
+        # raise site must not be able to smuggle an arbitrary or
+        # attacker-influenced header (header/response-splitting-adjacent
+        # risk, or simply an accidental override of a security header) onto
+        # a reply just by passing it through `headers=`; extending the
+        # allowlist is a deliberate, reviewable one-line change here, not an
+        # implicit side effect of adding a `headers={...}` argument
+        # somewhere else in the codebase.
+        headers: dict[str, str] = {}
+        if exc.status == 401:
+            headers["WWW-Authenticate"] = 'Basic realm="netnl"'
+        if exc.headers:
+            headers.update(
+                {k: v for k, v in exc.headers.items() if k in _ALLOWED_EXTRA_HEADERS}
+            )
+        return JSONResponse(
+            error_body(exc.label, exc.msg), status_code=exc.status, headers=headers or None
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:

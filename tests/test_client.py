@@ -163,6 +163,29 @@ def test_http_error_status_maps_to_api_error(status):
     message = str(excinfo.value)
     assert str(status) in message
     assert "batch.example" in message
+    # Round-2 fix (finding 4): the raw HTTP status rides on the exception
+    # itself now, so a caller (the facade) never needs a side channel to
+    # recover it.
+    assert excinfo.value.status == status
+
+
+def test_api_error_status_is_none_for_a_purely_local_failure():
+    """No HTTP call is made at all for an invalid request id — there is no
+    real HTTP status to report, so it stays `None` rather than a guess."""
+    client = BatchClient(_config(), opener=FakeOpener())
+    with pytest.raises(ApiError) as excinfo:
+        client.status("not-a-valid-id")
+    assert excinfo.value.status is None
+
+
+def test_api_error_status_is_200_for_a_malformed_200_body():
+    """The HTTP call itself succeeded (200) — it is the body shape that is
+    wrong — so `status` reports the real 200, not `None`."""
+    opener = FakeOpener([HttpResponse(status=200, body=b"not json")])
+    client = BatchClient(_config(), opener=opener)
+    with pytest.raises(ApiError) as excinfo:
+        client.status(REQUEST_ID)
+    assert excinfo.value.status == 200
 
 
 def test_urlerror_maps_to_transport_error():

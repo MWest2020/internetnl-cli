@@ -36,6 +36,22 @@ def isolated_netnl_env(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_auth_failure_aggregator():
+    """`netnl.auth`'s per-minute auth-failure aggregator (round-2 fix,
+    finding 2) is deliberately process-global, in-memory state — it is not
+    scoped to a single app/test. Without this, one test's failed-auth
+    buckets (keyed on username + route, both commonly reused across test
+    files, e.g. `"tenant"` + `"/metadata/report"`) could leak into another
+    test's assertions about exactly how many audit rows exist.
+    """
+    from netnl import auth
+
+    auth._auth_failure_buckets.clear()
+    yield
+    auth._auth_failure_buckets.clear()
+
+
 @pytest.fixture
 def settings_env(tmp_path) -> dict:
     return {

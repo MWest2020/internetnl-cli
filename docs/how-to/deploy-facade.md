@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-08-31
+last_reviewed: 2026-09-03
 ---
 
 # Deploying the netnl facade
@@ -36,6 +36,75 @@ topologies") pins two ways to run the facade:
 
 The rest of this page covers topology 2. This page deploys
 `deploy/compose.yaml` next to (not inside) the instance's own stack.
+
+## Brute-force / rate limiting at the edge
+
+The facade itself only offers a last-resort backstop against
+credential-guessing traffic: `netnl.auth` fast-fails a request with no (or
+an unparseable) `Authorization` header without touching the password
+hasher, and caps how many password verifications may run *concurrently*
+(a small, fixed number) — see
+`openspec/changes/add-measurement-api/design.md`, "Tenancy and identity"
+("Authentication cost is bounded on two axes"). That bound protects this
+process's own CPU and memory from a burst of concurrent bad-credential
+requests; it is **not** a rate limit, and it does nothing to slow down a
+sustained, low-concurrency credential-guessing campaign spread out over
+time. That is the edge's job, and it differs by topology:
+
+- **Topology 1 (Cloudflare Tunnel in front of K8s).** Add a Cloudflare
+  [rate limiting rule](https://developers.cloudflare.com/waf/rate-limiting-rules/)
+  scoped to the auth-bearing paths (`POST /requests`, `GET
+  /requests/*`, `GET /metadata/report` — everything except `GET /health`
+  and the opt-in `security.txt`), keyed on the client IP, with a
+  low-enough threshold that a credential-guessing script gets throttled or
+  challenged long before it can run through any meaningful password space.
+  This is configured in the Cloudflare dashboard/API for the tunnel's
+  hostname, not in this repo.
+
+  **Topology 1 has a second public ingress this rule does not cover
+  (reviewer-M7).** Per `design.md`, "Two supported topologies", the same
+  facade is also reachable via the **Tailscale Funnel** `*.ts.net`
+  hostname kept up in parallel as a fallback (see `docs/how-to/beta.md`).
+  A Cloudflare rate-limiting rule is scoped to the Cloudflare Tunnel's own
+  hostname — it does nothing at all for traffic that goes straight to the
+  Funnel hostname instead, which serves the exact same facade over a
+  completely separate public path. Two honest options, pick one
+  deliberately rather than assuming the Cloudflare rule alone covers this
+  topology:
+  - **Turn the Funnel off** except when actually needed for a specific
+    fallback test or incident, so there is only one public ingress to rate
+    limit at any given time; or
+  - **Accept it as a known gap**: while the Funnel stays up, the facade's
+    own in-process scrypt-concurrency cap (`netnl.auth`, bounded wait +
+    503 `overloaded` on sustained saturation — see "Authentication cost is
+    bounded" in design.md) is the *only* backstop against credential
+    guessing over that path, since nothing at the edge is rate-limiting
+    it. That backstop protects this process's own CPU/memory; it is not a
+    rate limit and does not slow down a sustained, low-concurrency
+    guessing campaign the way the Cloudflare rule does for the primary
+    hostname.
+- **Topology 2 (Caddy at the edge, the compose recipe on this page).**
+  Vanilla Caddy, as shipped in `deploy/Caddyfile`, has **no built-in rate
+  limiting** — being honest about that rather than implying protection
+  that is not actually there. Two realistic options, neither wired up by
+  default in `deploy/compose.yaml`:
+  - The third-party
+    [`caddy-ratelimit`](https://github.com/mholt/caddy-ratelimit) plugin,
+    built into a custom Caddy image (`xcaddy build --with
+    github.com/mholt/caddy-ratelimit`) and configured with a `rate_limit`
+    directive on the auth-bearing paths, keyed on the client IP — the
+    closest equivalent to the Cloudflare rule above.
+  - A **fail2ban-on-logs** approach: point `fail2ban` at Caddy's JSON
+    access log (`deploy/Caddyfile` already logs to a file the compose unit
+    can mount into a `fail2ban` sidecar or the host), with a filter that
+    matches repeated 401 responses from the same client IP against the
+    facade's auth-bearing paths, and a ban action (e.g. a host firewall
+    rule) once a threshold is crossed. Coarser than a proper rate-limiter
+    (it reacts after the fact, per IP) but needs no custom Caddy build.
+
+  Either way, this is a deployment-time addition an operator running
+  topology 2 needs to make deliberately; it is not part of the
+  `deploy/compose.yaml` recipe as shipped.
 
 ## Prerequisites
 
