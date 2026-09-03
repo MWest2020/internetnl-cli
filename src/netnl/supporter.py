@@ -84,17 +84,22 @@ def _pending_lease_seconds(cfg: SupporterSettings) -> int:
     still genuinely in flight" before a later call for the same
     transaction is allowed to take it over (security review fix, B1(a)).
 
-    Derived from `cfg.smtp_timeout` plus a fixed 30s safety margin rather
-    than a bare constant: the only thing that can legitimately keep a row
-    `pending` is the mail send itself, which is bounded by that timeout —
-    a lease shorter than it could take over (and revoke) a credential
-    whose mail send is still genuinely running. Measured without this
-    fix: 5 concurrent, identically-signed deliveries for the same
+    Resolved once, at settings-load time
+    (`netnl.settings.SupporterSettings.pending_lease_seconds` — see that
+    module for the derivation: `smtp_timeout * 8 + 30s` by default, or an
+    explicit `NETNL_SUPPORTER_LEASE_SECONDS` override). A lease shorter
+    than a real, still-in-flight send could take over (and revoke) a
+    credential whose mail send has not actually finished — exactly the
+    race B1 exists to close; a naive `smtp_timeout + 30` (an earlier,
+    corrected version of this derivation) undercounted a full send's
+    several sequential round trips, each individually subject to that
+    timeout, and could be shorter than one. Measured without any lease at
+    all: 5 concurrent, identically-signed deliveries for the same
     transaction minted 5 credentials and left an active orphan no
     `supporter_issuance` row referenced — see `_persist_and_mint`'s
     docstring.
     """
-    return cfg.smtp_timeout + 30
+    return cfg.pending_lease_seconds
 
 
 def _eligible_for_takeover(existing_row: sqlite3.Row, lease_cutoff_iso: str) -> bool:
@@ -201,18 +206,21 @@ def _persist_and_mint(
                 )
 
         # Security review fix (undeliverable-asymmetry): the hourly cap
-        # gates *every* mint attempt *and* every newly-recorded
-        # undeliverable outcome — checked once, before branching into
-        # either path below. Previously an undeliverable delivery wrote an
-        # uncapped `supporter_issuance` row regardless of volume; folding
-        # it in here means a flood of no-usable-email deliveries is now
-        # bounded exactly like a flood of qualifying ones is, at the
-        # (deliberately conservative) cost of a legitimate donation
-        # occasionally answering 503 sooner because unmailable events
-        # already consumed the hour's budget. A takeover (an existing,
-        # stale/failed row) is included too (B2(c)) — a crash-loop of
-        # retries must not be able to mint past the hourly cap just
-        # because each retry targets an *existing* transaction id.
+        # also gates a newly-recorded undeliverable outcome for a *new*
+        # transaction id, checked once here, before branching into either
+        # path below — previously an undeliverable delivery wrote an
+        # uncapped `supporter_issuance` row regardless of volume. This
+        # check also runs on a takeover path (an existing `failed` or
+        # lease-expired `pending` row); note what it does *not* claim
+        # (security review fix, N5): `count_issuances_since` counts by
+        # `created_at`, which a takeover never changes, so this check
+        # cannot itself bound how many times *one* transaction is
+        # retried — it only ever rejects a takeover when *other*,
+        # unrelated new transactions have already filled the hour's
+        # quota. The bound on a single transaction's own retry count is
+        # `NETNL_SUPPORTER_MAX_ATTEMPTS` alone (checked above, before this
+        # point is ever reached) — see design.md's "B2: attempts and the
+        # hourly cap" for the fuller accounting.
         if existing is None or existing["state"] != store.SUPPORTER_UNDELIVERABLE:
             cutoff = store.utcnow_iso(lambda: now - timedelta(hours=1))
             if store.count_issuances_since(conn, cutoff) >= cfg.max_per_hour:
@@ -221,6 +229,21 @@ def _persist_and_mint(
                 )
 
         if decision == bmc.Decision.UNDELIVERABLE_NO_EMAIL:
+            if existing is not None and existing["username"]:
+                # Security review fix (N4): a takeover into "no usable
+                # email" must still revoke whatever credential a *previous*
+                # attempt for this same row already minted (a `pending` row
+                # past its lease, or a `failed` retry) — `undeliverable` is
+                # terminal (never revisited by this function again, and
+                # never separately pruned/revoked elsewhere), so without
+                # this the previous attempt's credential would stay active
+                # forever. Measured scenario: attempt 1 mints and persists
+                # `pending`, then crashes before mailing; a later delivery
+                # for the same transaction (BMC's own retry) now carries no
+                # usable email at all — without this fix, attempt 1's
+                # credential is simply abandoned, active, unreferenced by
+                # any row ever again.
+                store.revoke_credential(conn, existing["username"], now_iso)
             if existing is None:
                 store.insert_issuance(
                     conn,
@@ -235,7 +258,7 @@ def _persist_and_mint(
                 store.update_issuance(
                     conn,
                     txn_id,
-                    username=existing["username"],
+                    username="",
                     state=store.SUPPORTER_UNDELIVERABLE,
                     attempts=existing["attempts"],
                     updated_at=now_iso,

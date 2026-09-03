@@ -309,3 +309,53 @@ def test_plaintext_mode_error_mentions_the_relay_password(settings_env):
     env = _supporter_env(settings_env, NETNL_SMTP_MODE="plaintext")
     with pytest.raises(SettingsError, match="password"):
         load(env)
+
+
+# --- N3: non-finite values on every supporter numeric variable -------------
+
+
+@pytest.mark.parametrize("bad_value", ["nan", "inf", "-inf", "1e400"])
+@pytest.mark.parametrize(
+    "var",
+    [
+        "NETNL_SMTP_TIMEOUT",
+        "NETNL_SUPPORTER_MAX_ATTEMPTS",
+        "NETNL_SUPPORTER_MAX_PER_HOUR",
+        "NETNL_SMTP_PORT",
+        "NETNL_BMC_MAX_BODY_BYTES",
+    ],
+)
+def test_supporter_numeric_vars_reject_non_finite_values(settings_env, var, bad_value):
+    env = _supporter_env(settings_env, **{var: bad_value})
+    with pytest.raises(SettingsError, match=var):
+        load(env)
+
+
+# --- N1: the pending-lease derivation and its explicit override ------------
+
+
+def test_lease_seconds_default_is_derived_from_smtp_timeout(settings_env):
+    env = _supporter_env(settings_env, NETNL_SMTP_TIMEOUT="15")
+    s = load(env)
+    # 8x the timeout (a full send is several sequential round trips, each
+    # individually bounded by the timeout — measured ~5.3x end to end for
+    # a successful send; 8x leaves headroom) plus a fixed margin.
+    assert s.supporter.pending_lease_seconds == 15 * 8 + 30
+
+
+def test_lease_seconds_scales_with_a_longer_smtp_timeout(settings_env):
+    env = _supporter_env(settings_env, NETNL_SMTP_TIMEOUT="60")
+    s = load(env)
+    assert s.supporter.pending_lease_seconds == 60 * 8 + 30
+
+
+def test_lease_seconds_explicit_override(settings_env):
+    env = _supporter_env(settings_env, NETNL_SUPPORTER_LEASE_SECONDS="600")
+    s = load(env)
+    assert s.supporter.pending_lease_seconds == 600
+
+
+def test_lease_seconds_rejects_non_finite_values(settings_env):
+    env = _supporter_env(settings_env, NETNL_SUPPORTER_LEASE_SECONDS="inf")
+    with pytest.raises(SettingsError, match="NETNL_SUPPORTER_LEASE_SECONDS"):
+        load(env)

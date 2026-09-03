@@ -322,7 +322,18 @@ def create_app(
         # ahead of that generic handler, purely so this ordinary case does
         # not produce that noise. There is no client left to deliver a
         # response to either way.
-        _logger.debug("client disconnected mid-request: %s", request.url.path)
+        #
+        # Security review fix (N6): logs `auth._route_path(request)` (the
+        # matched route's fixed *template*, e.g. `/webhooks/bmc`), never
+        # `request.url.path` directly — uvicorn percent-decodes the raw
+        # path before this handler ever sees it, so a crafted `%0A` in an
+        # attacker-chosen path segment would otherwise land as a literal
+        # newline in this log line (log injection). `_route_path` already
+        # exists for exactly this reason (see `auth.py`'s own use of it
+        # ahead of every authenticated route) and falls back to a
+        # printable-only, length-capped sanitizer on the rare path where
+        # routing metadata is unavailable, rather than the raw path.
+        _logger.debug("client disconnected mid-request: %s", auth._route_path(request))
         return JSONResponse(error_body("bad-request", "client disconnected"), status_code=400)
 
     @app.exception_handler(Exception)

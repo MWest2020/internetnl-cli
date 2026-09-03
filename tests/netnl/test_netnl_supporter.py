@@ -548,6 +548,46 @@ def test_pending_row_past_lease_allows_takeover(supporter_settings, clock, conn)
     assert _active_credential_orphans(conn) == set()
 
 
+def test_takeover_into_undeliverable_revokes_the_previous_credential(
+    supporter_settings, clock, conn
+):
+    """Security review fix (N4): attempt 1 mints and persists `pending`
+    (a real credential minted for it), then is abandoned (its lease
+    expires without ever being confirmed delivered — e.g. the process
+    crashed before mailing). A later delivery for the exact same
+    transaction — BMC's own retry — this time carries no usable email at
+    all (`UNDELIVERABLE_NO_EMAIL`). Without this fix, the row moves to
+    `undeliverable` (terminal, never revisited) while attempt 1's
+    credential is simply abandoned: active, and referenced by no row ever
+    again.
+    """
+    cfg = supporter_settings.supporter
+    delivery1 = bmc.parse_delivery(bmc_payload(data={"transaction_id": "txn-undeliverable-takeover"}))
+    username1, _password1, _sanitized1, _attempts1 = supporter._persist_and_mint(
+        conn, cfg, delivery1, bmc.Decision.ISSUE, clock()
+    )
+    cred1_before = store.find_credential(conn, username1)
+    assert cred1_before["revoked_at"] is None  # sanity: really minted, really active
+
+    clock.advance(supporter._pending_lease_seconds(cfg) + 1)
+    payload2 = bmc_payload(data={"transaction_id": "txn-undeliverable-takeover"})
+    del payload2["data"]["email"]
+    delivery2 = bmc.parse_delivery(payload2)
+
+    outcome = supporter._persist_and_mint(
+        conn, cfg, delivery2, bmc.Decision.UNDELIVERABLE_NO_EMAIL, clock()
+    )
+    assert outcome == "ignored"
+
+    cred1_after = store.find_credential(conn, username1)
+    assert cred1_after["revoked_at"] is not None  # N4: no longer abandoned-but-active
+
+    row = store.find_issuance(conn, "txn-undeliverable-takeover")
+    assert row["state"] == "undeliverable"
+    assert row["username"] == ""
+    assert _active_credential_orphans(conn) == set()
+
+
 def test_b1_invariant_holds_when_a_stale_outcome_write_arrives_after_takeover(
     supporter_settings, clock, conn
 ):
@@ -699,3 +739,89 @@ def test_client_disconnect_mid_body_read_answers_400_not_500(supporter_client, m
     assert resp.json()["error"]["label"] == "bad-request"
     # Never the generic 500 path.
     assert "an unexpected error occurred" not in resp.text
+
+
+def test_client_disconnect_handler_uses_route_path_not_the_raw_url(
+    supporter_client, monkeypatch, caplog
+):
+    """Security review fix (N6): the handler must log `auth._route_path
+    (request)`, never `request.url.path` directly — uvicorn percent-
+    decodes the raw path before Starlette ever sees it, so a crafted
+    `%0A` in an attacker-chosen path segment would land as a literal
+    newline in a log line built from the raw path (log injection). Proven
+    by monkeypatching `auth._route_path` itself to a sentinel and
+    confirming the handler's log line reflects *that*, not the request's
+    own URL — i.e. the handler is actually wired through it, not through
+    `request.url.path`.
+    """
+    from netnl import auth
+
+    monkeypatch.setattr(auth, "_route_path", lambda request: "<sentinel-route-path>")
+
+    async def _disconnecting_stream(self):
+        yield b'{"type": "dona'
+        raise ClientDisconnect()
+
+    monkeypatch.setattr(StarletteRequest, "stream", _disconnecting_stream)
+    caplog.set_level(logging.DEBUG, logger="netnl")
+
+    resp = supporter_client.post(
+        "/webhooks/bmc",
+        content=b'{"type": "donation.created"}',
+        headers={"Content-Type": "application/json", "X-Signature-Sha256": "0" * 64},
+    )
+    assert resp.status_code == 400
+    assert "<sentinel-route-path>" in caplog.text
+    # The real path never appears verbatim alongside it — the handler
+    # went through `auth._route_path`, not `request.url.path`.
+    disconnect_records = [r for r in caplog.records if "client disconnected" in r.getMessage()]
+    assert disconnect_records
+    assert disconnect_records[0].getMessage() == (
+        "client disconnected mid-request: <sentinel-route-path>"
+    )
+
+
+def test_route_path_sanitizes_an_unmatched_raw_path_with_control_characters():
+    """Direct unit proof of the mechanism `handle_client_disconnect` (N6)
+    relies on: `auth._route_path` falls back to a printable-only,
+    length-capped sanitizer of the raw path only when no route matched —
+    a raw path carrying a decoded `%0A` (a literal newline, exactly what
+    uvicorn would hand Starlette for a URL containing that escape) never
+    reaches a log line unfiltered.
+    """
+    from netnl.auth import _route_path
+
+    class _FakeURL:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+    class _FakeRequest:
+        def __init__(self, path: str) -> None:
+            self.scope: dict = {}  # no matched route
+            self.url = _FakeURL(path)
+
+    malicious = _FakeRequest("/webhooks/bmc\ninjected: evil-header-line")
+    result = _route_path(malicious)
+    assert "\n" not in result
+
+
+def test_route_path_uses_the_fixed_template_when_a_route_matched():
+    from netnl.auth import _route_path
+
+    class _FakeRoute:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+    class _FakeURL:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+    class _FakeRequest:
+        def __init__(self, route_path: str, raw_path: str) -> None:
+            self.scope = {"route": _FakeRoute(route_path)}
+            self.url = _FakeURL(raw_path)
+
+    # Even a raw URL carrying attacker-chosen content is irrelevant once a
+    # route actually matched — only the fixed template is ever returned.
+    request = _FakeRequest("/webhooks/bmc", "/webhooks/bmc?whatever\ninjected")
+    assert _route_path(request) == "/webhooks/bmc"

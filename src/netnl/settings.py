@@ -6,6 +6,7 @@ missing required variables refuse to start, naming the variable.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -104,6 +105,22 @@ _SUPPORTER_NUMERIC_DEFAULTS = {
     "NETNL_SMTP_TIMEOUT": ("smtp_timeout", 15),
 }
 
+# Security review fix (N1): `NETNL_SMTP_TIMEOUT` bounds a single socket
+# operation (connect, or one read/write), not an entire send — a full
+# credential-mail send is several sequential round trips (connect, EHLO,
+# STARTTLS, EHLO again, AUTH LOGIN's exchange, MAIL FROM, RCPT TO, DATA +
+# body, QUIT), each individually subject to that timeout. Measured: a
+# genuinely successful send took ~5.3x the configured timeout end to end
+# across those ~8 round trips. An earlier version of the pending-lease
+# derivation (`netnl.supporter._pending_lease_seconds`) used
+# `smtp_timeout + 30`, which could be *shorter* than a real, still
+# in-flight send — exactly the race B1 exists to close. `8x` leaves
+# headroom above the measured 5.3x; the margin absorbs the DB round-trips
+# either side of the SMTP call itself. See `NETNL_SUPPORTER_LEASE_SECONDS`
+# below for an explicit override, for a relay whose own behaviour differs.
+_LEASE_TIMEOUT_MULTIPLIER = 8
+_LEASE_MARGIN_SECONDS = 30
+
 _SMTP_MODES = {"starttls", "ssl", "plaintext"}
 
 
@@ -136,6 +153,7 @@ class SupporterSettings:
     smtp_mode: str
     smtp_timeout: int
     notify: str | None
+    pending_lease_seconds: int
 
 
 @dataclass(frozen=True)
@@ -169,6 +187,14 @@ def _resolve_numeric(env: Mapping[str, str], var: str, default: int) -> int:
         value = float(raw)
     except ValueError as exc:
         raise SettingsError(f"{var} must be a number: got '{raw}'") from exc
+    # Security review fix (N3): `float("nan")`/`float("inf")`/`float(
+    # "1e400")` (float overflow) all parse without raising above — `int()`
+    # on a non-finite float is what actually raises (a raw `ValueError`
+    # for NaN, `OverflowError` for +/-inf), neither of which is
+    # `SettingsError`. Checked explicitly, before ever calling `int()`, so
+    # this always fails closed with a clean, variable-naming error.
+    if not math.isfinite(value):
+        raise SettingsError(f"{var} must be a finite number: got '{raw}'")
     if value < 0:
         raise SettingsError(f"{var} must not be negative: got '{raw}'")
     if value != int(value):
@@ -403,6 +429,19 @@ def _load_supporter(env: Mapping[str, str]) -> SupporterSettings | None:
     supporter_kwargs: dict = {}
     for var, (attr, default) in _SUPPORTER_NUMERIC_DEFAULTS.items():
         supporter_kwargs[attr] = _resolve_numeric(env, var, default)
+
+    # Security review fix (N1): the pending-lease default is derived from
+    # `smtp_timeout`, not a bare constant — see `_LEASE_TIMEOUT_MULTIPLIER`
+    # for the measured basis — with an explicit `NETNL_SUPPORTER_
+    # LEASE_SECONDS` override for an operator whose relay's own behaviour
+    # differs. Resolved via the same `_resolve_numeric` (finite,
+    # non-negative, integer) as every other numeric setting.
+    derived_lease = (
+        supporter_kwargs["smtp_timeout"] * _LEASE_TIMEOUT_MULTIPLIER + _LEASE_MARGIN_SECONDS
+    )
+    supporter_kwargs["pending_lease_seconds"] = _resolve_numeric(
+        env, "NETNL_SUPPORTER_LEASE_SECONDS", derived_lease
+    )
 
     return SupporterSettings(
         webhook_secret=secret,

@@ -69,7 +69,8 @@ mirroring `DemoSettings`' own "opt-in, not read at all" shape.
 | `NETNL_SMTP_PASSWORD` | unset | Read only when `NETNL_SMTP_USERNAME` is set. |
 | `NETNL_SMTP_FROM` | — (required) | CR/LF rejected (written into a mail header). |
 | `NETNL_SMTP_MODE` | `starttls` | One of `starttls`, `ssl`, `plaintext`. `plaintext` additionally requires `NETNL_SMTP_ALLOW_PLAINTEXT=1`. |
-| `NETNL_SMTP_TIMEOUT` | `15` | Seconds. |
+| `NETNL_SMTP_TIMEOUT` | `15` | Seconds. Bounds one socket operation, not an entire send — see `NETNL_SUPPORTER_LEASE_SECONDS`. |
+| `NETNL_SUPPORTER_LEASE_SECONDS` | `NETNL_SMTP_TIMEOUT × 8 + 30` | How long a not-yet-delivered issuance is treated as "still in flight" before a retry may take it over — see "B1: idempotency under concurrency". |
 | `NETNL_SUPPORTER_NOTIFY` | unset | Optional operator address for the post-delivery notification mail. |
 
 ## `bmc.py` — pure, no I/O
@@ -167,23 +168,39 @@ Ordering, each step short-circuiting the next:
      - `undeliverable` → 200 `{"status": "ignored"}`.
      - `attempts >= NETNL_SUPPORTER_MAX_ATTEMPTS` → 503
        `delivery-failed` ("parked"), no further mint attempted.
-     - `pending` and younger than the pending lease (`NETNL_SMTP_TIMEOUT +
-       30` seconds — see "B1: idempotency under concurrency" below) → 503
-       `delivery-failed` ("already in progress"); this call did not take
-       the row over.
+     - `pending` and younger than the pending lease
+       (`NETNL_SUPPORTER_LEASE_SECONDS`, default `NETNL_SMTP_TIMEOUT × 8 +
+       30` seconds — see "B1: idempotency under concurrency" below for why
+       `8×`, not `1×`) → 503 `delivery-failed` ("already in progress");
+       this call did not take the row over.
      - Otherwise (no row yet, a `failed` row under the attempt cap, or a
        `pending` row past its lease): continue — this call proceeds to
        mint, whether that is a brand new transaction or a takeover.
    - **The hourly cap (`NETNL_SUPPORTER_MAX_PER_HOUR`) is checked once,
-     here, before branching into either path below** — it therefore
-     bounds a takeover mint and a newly-recorded `undeliverable` outcome
-     exactly as it bounds a brand new issuance (security review fix,
+     here, before branching into either path below.** It bounds a
+     newly-recorded `undeliverable` outcome for a *new* transaction id
+     exactly as it bounds a brand-new issuance (security review fix,
      "undeliverable-asymmetry": previously an undeliverable delivery wrote
-     an uncapped row regardless of volume). Exceeded → 503
-     `delivery-failed`.
+     an uncapped row regardless of volume). It is also checked on a
+     takeover path, but — stated precisely, not overclaimed (security
+     review fix, N5) — `count_issuances_since` counts by `created_at`,
+     which a takeover never changes, so this check does **not** itself
+     bound how many times *one* transaction can be retried; on a takeover
+     it only ever rejects when *other*, unrelated new transactions have
+     already filled the hour's quota. The bound on a single transaction's
+     own retry count is `NETNL_SUPPORTER_MAX_ATTEMPTS` alone (checked
+     above, before this point). Exceeded → 503 `delivery-failed`.
    - `UNDELIVERABLE_NO_EMAIL` decision (or a present-but-invalid address,
-     per `bmc.valid_recipient`): write the row as `undeliverable` (no
-     credential ever minted), commit, 200 `{"status": "ignored"}`.
+     per `bmc.valid_recipient`): if this is a takeover (an existing row
+     with a non-empty `username` — a credential a *previous* attempt for
+     this same transaction already minted), revoke that credential first
+     (security review fix, N4: `undeliverable` is terminal and never
+     revisited, so a previous attempt's credential left un-revoked here
+     would stay active forever — measured scenario: attempt 1 mints and
+     crashes before mailing; BMC's retry then carries no usable email at
+     all). Write the row as `undeliverable` with an empty `username` (no
+     credential is ever *live* for this state), commit, 200
+     `{"status": "ignored"}`.
    - If retrying (a takeover of a `failed` or lease-expired `pending`
      row), revoke the previous username in place and increment `attempts`
      *now*, at mint time — not only when a delivery attempt later fails
@@ -243,21 +260,38 @@ transaction" and "no credential that could not be delivered stays usable"
 Two independent layers close this:
 
 - **B1(a), a pending lease.** A `pending` row is only eligible for takeover
-  once it is older than `NETNL_SMTP_TIMEOUT + 30` seconds — derived from
-  the SMTP timeout (the only thing that can legitimately keep a row
-  `pending`) plus a fixed safety margin, rather than a bare constant, so a
-  slow-but-genuine mail send is never mistaken for an abandoned one. A
-  concurrent call landing inside the lease gets 503 `delivery-failed`
-  ("already in progress") instead of taking the row over.
+  once it is older than `NETNL_SUPPORTER_LEASE_SECONDS` (default
+  `NETNL_SMTP_TIMEOUT × 8 + 30` seconds). Security review fix (N1): an
+  earlier version of this derivation used `smtp_timeout + 30` — wrong,
+  because `NETNL_SMTP_TIMEOUT` bounds a single socket operation, not an
+  entire send. A full credential-mail send is several sequential round
+  trips (connect, `EHLO`, `STARTTLS`, `EHLO` again, `AUTH LOGIN`'s
+  exchange, `MAIL FROM`, `RCPT TO`, `DATA` + body, `QUIT`), each
+  individually subject to that timeout; measured, a genuinely successful
+  send took ~5.3× the configured timeout end to end across those ~8 round
+  trips. A lease of `smtp_timeout + 30` could therefore be *shorter* than
+  a real, still-in-flight send — exactly the race this lease exists to
+  close. `8×` leaves headroom above the measured 5.3×; the margin absorbs
+  the DB round trips either side of the SMTP call itself.
+  `NETNL_SUPPORTER_LEASE_SECONDS` is available as an explicit override for
+  a relay whose own behaviour differs. A concurrent call landing inside
+  the lease gets 503 `delivery-failed` ("already in progress") instead of
+  taking the row over.
 - **B1(b), a conditional outcome write.** The step 7/8 write is
   `UPDATE supporter_issuance SET ... WHERE txn_id = ? AND username = ?`
   (`netnl.store.update_issuance`'s `expected_username`) — if some other
   call has already taken the row over by the time this one finishes
   mailing, the write matches zero rows, and this call revokes its *own*
-  credential instead of blindly overwriting the row with a stale username.
-  With B1(a) in place this should be effectively unreachable in ordinary
-  operation; it exists as a second, independent layer for a lease-boundary
-  or clock-skew edge case.
+  credential instead of blindly overwriting the row with a stale username
+  (audited as `supporter-deliver-orphaned`). With B1(a) in place this
+  should be effectively unreachable in ordinary operation; it exists as a
+  second, independent layer for a lease-boundary or clock-skew edge case.
+  One residual, accepted consequence when it *does* trigger: the donor may
+  already have received a mail carrying the now-revoked (dead) credential
+  from the losing call, while the winning takeover's own mail carries the
+  one that actually works — there is no way to "unsend" the first mail, so
+  this is a documented rough edge, not a further bug (see
+  `docs/how-to/supporter-webhook.md`'s troubleshooting table).
 
 Proven both directly (`tests/netnl/test_netnl_supporter.py`'s
 `test_pending_row_within_lease_refuses_takeover`,

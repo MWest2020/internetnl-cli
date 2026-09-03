@@ -64,7 +64,11 @@ SHALL be acknowledged with 200 and an `{"status": "ignored"}` body, and
 SHALL NOT cause any database row to be written, any mail to be sent, or any
 audit row to be written. A qualifying delivery with no usable recipient
 address SHALL instead record an `undeliverable` idempotency row (never mint
-a credential) and also answer 200 `{"status": "ignored"}`.
+a credential) and answer 200 `{"status": "ignored"}`, unless the hourly
+issuance cap (see "Issuance volume is bounded per hour" below) has already
+been reached for a transaction id not previously seen, in which case it
+SHALL answer 503 instead, identically to a qualifying, mintable delivery
+under the same cap.
 
 #### Scenario: A non-donation event is ignored
 
@@ -96,10 +100,21 @@ a credential) and also answer 200 `{"status": "ignored"}`.
 #### Scenario: A qualifying delivery with no usable recipient is undeliverable, not issued
 
 - WHEN a delivery otherwise qualifies but carries no recipient address, or
-  one that fails the facade's conservative address check
+  one that fails the facade's conservative address check, for a
+  transaction id not already recorded as `undeliverable`, and the hourly
+  issuance cap has not been reached
 - THEN the facade records an `undeliverable` idempotency row for the
   transaction, mints no credential, sends no mail, and answers 200
   `{"status": "ignored"}`
+
+#### Scenario: A no-usable-recipient delivery is bounded by the hourly cap too
+
+- WHEN a delivery with no usable recipient address is for a transaction id
+  not already recorded, and the hourly issuance cap has already been
+  reached
+- THEN the facade answers 503, mints no credential, sends no mail, and
+  records no `undeliverable` row either — a flood of no-usable-email
+  deliveries is bounded exactly like a flood of mintable ones
 
 ### Requirement: Idempotent, persist-then-mail issuance with no orphaned working credential
 
@@ -108,7 +123,13 @@ issuance. A credential and an idempotency row SHALL be written together,
 atomically, before any mail is sent. A credential that could not be
 delivered by mail SHALL be revoked before the request's reply is sent, and
 SHALL NOT remain a usable credential. Replaying an already-`delivered`
-transaction SHALL NOT mint a second credential.
+transaction SHALL NOT mint a second credential. A transaction whose most
+recent attempt has not yet concluded (its credential was persisted but
+mail delivery has not yet been confirmed to have succeeded or failed)
+SHALL NOT be taken over by a concurrent or near-simultaneous request for
+the same transaction id; such a request SHALL instead be answered 503,
+without minting a second credential, until that conclusion is reached or a
+bounded waiting period has passed.
 
 #### Scenario: A fresh qualifying transaction is issued and mailed
 
@@ -131,6 +152,15 @@ transaction SHALL NOT mint a second credential.
 - THEN the just-minted credential is revoked before the reply is sent, the
   transaction's state records the failure with an incremented attempt
   count, and the facade answers 503 so the sender may retry
+
+#### Scenario: A concurrent request for an in-flight transaction is asked to retry, not raced
+
+- WHEN a request for a transaction id arrives while a previous request for
+  that same transaction id has persisted a credential but not yet
+  concluded whether mail delivery succeeded or failed, and that previous
+  attempt is still within its bounded waiting period
+- THEN the facade answers 503 and does not mint a second credential, take
+  over the in-flight attempt's credential, or revoke it
 
 #### Scenario: A retry after a mail failure mints a fresh credential and revokes the failed one
 
