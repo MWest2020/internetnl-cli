@@ -126,12 +126,14 @@ def test_user_reissue_turns_a_revoked_user_back_on(settings_env):
 
 
 def test_user_reissue_works_on_a_never_revoked_user_too(settings_env):
-    """`reissue` is not conditioned on the row being revoked — it re-keys
-    whatever is there, active or not."""
+    """`reissue --force` is not conditioned on the row being revoked — it
+    re-keys whatever is there, active or not (round-4 builder-review fix,
+    N3: without `--force`, reissuing an active row is refused — see
+    `test_user_reissue_of_an_active_user_needs_force` below)."""
     _, first_out, _ = _run_admin(["user", "add", "alice"], settings_env)
     first_password = first_out.strip()
 
-    code, second_out, err = _run_admin(["user", "reissue", "alice"], settings_env)
+    code, second_out, err = _run_admin(["user", "reissue", "--force", "alice"], settings_env)
     assert code == 0
     assert err == ""
     second_password = second_out.strip()
@@ -165,6 +167,46 @@ def test_user_reissue_unknown_user_fails_without_printing_a_password(settings_en
     assert "nobody" in err
 
 
+def test_user_reissue_of_an_active_user_needs_force(settings_env):
+    """Round-4 builder-review fix (N3): re-keying a currently *active* row
+    immediately invalidates that credential's live password for anyone
+    using it — a much bigger blast radius than the intended
+    kill-switch-reversal use (re-keying an already-revoked row). Refused
+    without `--force`, with an explanation; no password printed, and the
+    original password still works."""
+    _, first_out, _ = _run_admin(["user", "add", "alice"], settings_env)
+    first_password = first_out.strip()
+
+    code, out, err = _run_admin(["user", "reissue", "alice"], settings_env)
+    assert code == 1
+    assert out == ""
+    assert "alice" in err
+    assert "--force" in err
+    assert "not revoked" in err
+
+    settings = load(settings_env)
+    fake_opener = FakeOpener()
+    app = create_app(settings, opener=fake_opener)
+    client = TestClient(app, raise_server_exceptions=False)
+    queue_json(fake_opener, REGISTER_REPLY)
+    resp = client.post(
+        "/requests",
+        json={"type": "web", "domains": ["example.nl"]},
+        headers=basic_auth_header("alice", first_password),
+    )
+    assert resp.status_code == 200  # unchanged: reissue was refused
+
+
+def test_user_reissue_of_a_revoked_user_does_not_need_force(settings_env):
+    _run_admin(["user", "add", "alice"], settings_env)
+    _run_admin(["user", "revoke", "alice"], settings_env)
+
+    code, out, err = _run_admin(["user", "reissue", "alice"], settings_env)
+    assert code == 0
+    assert err == ""
+    assert out.strip()
+
+
 def test_audit_contains_user_reissue(settings_env):
     _run_admin(["user", "add", "alice"], settings_env)
     _run_admin(["user", "revoke", "alice"], settings_env)
@@ -175,6 +217,32 @@ def test_audit_contains_user_reissue(settings_env):
         row["event"] for row in conn.execute("SELECT event FROM audit ORDER BY id").fetchall()
     ]
     assert "user-reissue" in events
+
+
+def test_audit_user_reissue_detail_records_previous_revoked_at(settings_env):
+    """Round-4 builder-review fix (N3): the audit row records what
+    `revoked_at` was immediately before the reissue — otherwise the audit
+    trail cannot tell "this re-keyed a revoked (kill-switched) row" apart
+    from "this re-keyed a live one" after the fact."""
+    _run_admin(["user", "add", "alice"], settings_env)
+    _run_admin(["user", "revoke", "alice"], settings_env)
+    _run_admin(["user", "reissue", "alice"], settings_env)
+
+    conn = store.connect(settings_env["NETNL_DB"])
+    row = conn.execute(
+        "SELECT detail FROM audit WHERE event = 'user-reissue' AND credential = 'alice'"
+    ).fetchone()
+    assert row is not None
+    assert row["detail"].startswith("previous-revoked-at=")
+    assert row["detail"] != "previous-revoked-at=none"
+
+    _run_admin(["user", "add", "bob"], settings_env)
+    _run_admin(["user", "reissue", "--force", "bob"], settings_env)
+    row_bob = conn.execute(
+        "SELECT detail FROM audit WHERE event = 'user-reissue' AND credential = 'bob'"
+    ).fetchone()
+    assert row_bob is not None
+    assert row_bob["detail"] == "previous-revoked-at=none"
 
 
 def test_reissued_password_not_stored_in_plain(settings_env):

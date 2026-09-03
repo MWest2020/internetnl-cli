@@ -22,16 +22,42 @@ replicas" note). Each is swept of expired entries on every call and,
 additionally, hard-capped at `_MAX_BUCKETS` distinct keys (an "overflow"
 key merges any key past that cap): the per-IP and per-poll buckets are
 claimed *before* the reservation that could still fail (see
-`_try_claim_ip_slot`/`_try_claim_poll` below), so — unlike the strict "only
-ever grows on an outcome gated by the global cap" story an earlier version
-of this module could make — a flood of distinct source addresses, each
-making exactly one request, can transiently grow these dicts before a
-failed reservation releases its entry again. `_MAX_BUCKETS` is the actual
-hard ceiling that keeps that transient growth bounded regardless of how
-many distinct addresses an attacker can present, mirroring
-`netnl.auth._auth_failure_buckets`'s own `_MAX_BUCKETS`/overflow-key shape
-(see that module's docstring) rather than merely asserting boundedness by
-construction.
+`_try_claim_ip_slot`/`_try_claim_poll` below), so a flood of distinct
+source addresses, each making exactly one request, can grow these dicts
+regardless of whether any of those requests is ultimately accepted.
+`_MAX_BUCKETS` is the actual hard ceiling that keeps that growth bounded
+regardless of how many distinct addresses an attacker can present,
+mirroring `netnl.auth._auth_failure_buckets`'s own `_MAX_BUCKETS`/
+overflow-key shape (see that module's docstring) rather than merely
+asserting boundedness by construction.
+
+**A per-IP or per-domain claim, once made, is never released (round-4
+builder-review fix, N1).** An earlier version released the per-IP and
+per-domain-cooldown claims whenever a *later* step failed — the tenant-
+level rate/concurrency cap in `reserve_submission`, the domain cooldown
+check, or the upstream `submit` call itself — on the reasoning that "a
+request that produced no result for the visitor should not cost them one
+of their bounded slots". Measured on a saturated demo (every reservation
+answering 429): 30 POSTs from one IP produced 30 upstream `status` calls
+(`limits.refresh_stale_non_terminal`, which always runs *before*
+`reserve_submission` and so has already spent up to `max_concurrent`
+upstream calls by the time that 429 fires) and left the per-IP bucket
+*empty* afterwards — the per-IP cap never actually bit, because every
+rejection immediately handed the slot back. Releasing on the upstream-
+`submit` failure has the same shape: if upstream is genuinely down, every
+visitor's attempt fails at that same step, and releasing would let each
+one retry indefinitely, hammering an already-failing upstream harder the
+longer it stays down. A claimed slot or cooldown entry is now permanent
+for the rest of its window regardless of what happens next — a failed
+attempt still costs the visitor's own budget, the same as an accepted one.
+This is what makes the hard invariant an anonymous caller cannot exceed
+hold unconditionally: at most `per_ip_per_hour` claims per IP per hour,
+each spending at most `max_concurrent` upstream calls (refresh) plus 1
+(the `submit` call itself, only reached on a successful reservation) —
+`per_ip_per_hour × (max_concurrent + 1)` upstream calls, full stop,
+independent of how any individual attempt turns out. See design.md's
+amended D4/D5 and "HTTP surface" sections for the release matrix this
+replaces.
 """
 
 from __future__ import annotations
@@ -192,24 +218,10 @@ def _try_claim_ip_slot(key: str, now: datetime, per_hour: int) -> str | None:
         return effective
 
 
-def _release_ip_slot(effective_key: str, now: datetime) -> None:
-    """Undo a claim made by `_try_claim_ip_slot` for *this* request only —
-    called when a later step (the atomic reservation, or the upstream call
-    itself) ultimately fails, so a demo run that never actually happened
-    does not still cost the visitor one of their per-IP slots (builder-
-    review fix, S1=M1 reviewer-minor)."""
-    with _ip_lock:
-        bucket = _ip_accepted.get(effective_key)
-        if not bucket:
-            return
-        try:
-            bucket.remove(now)
-        except ValueError:
-            return
-        if bucket:
-            _ip_accepted[effective_key] = bucket
-        else:
-            del _ip_accepted[effective_key]
+# N1 (round-4 builder-review fix): there used to be a `_release_ip_slot`
+# here, undoing a claim made by `_try_claim_ip_slot` whenever a later step
+# failed. Removed — see the module docstring's "never released" section
+# for the measured bug this closes and the hard invariant it restores.
 
 
 # --- per-domain cooldown (D5) ------------------------------------------------
@@ -243,12 +255,9 @@ def _try_claim_domain(domain: str, now: datetime, cooldown_seconds: int) -> str 
         return effective
 
 
-def _release_domain_claim(effective_key: str, now: datetime) -> None:
-    """Undo a claim made by `_try_claim_domain` for this request only — see
-    `_release_ip_slot`'s docstring for why."""
-    with _cooldown_lock:
-        if _domain_cooldowns.get(effective_key) == now:
-            del _domain_cooldowns[effective_key]
+# N1 (round-4 builder-review fix): same removal as `_release_ip_slot`
+# above, for the domain-cooldown claim — a cooldown-blocked (or otherwise
+# rejected) attempt no longer hands its domain claim back either.
 
 
 # --- per-IP poll budget (M2) --------------------------------------------------
@@ -524,7 +533,15 @@ def register_routes(app: FastAPI, settings: Settings, client, call_upstream: Cal
 
         claimed_domain = _try_claim_domain(domain, current, demo_cfg.domain_cooldown_seconds)
         if claimed_domain is None:
-            _release_ip_slot(claimed_ip, current)
+            # N1 (round-4 builder-review fix): the per-IP claim above is
+            # *not* released here — a domain-cooldown rejection still costs
+            # this visitor one of their per-IP slots, the same as an
+            # accepted submission would. Before this fix, releasing it made
+            # the cooldown check a free, unbounded cross-visitor oracle: an
+            # IP could probe any number of domains for "was this recently
+            # submitted by someone else?" at no cost to itself (measured:
+            # 12 free probes). It is now bounded to `per_ip_per_hour`
+            # probes per IP per hour, same as every other claim (N2).
             raise NetnlHTTPError(429, "rate-limited", _TOO_MANY_RECENT_MSG)
 
         # D3: the demo tenant's own rate/concurrency numbers gate this
@@ -565,22 +582,44 @@ def register_routes(app: FastAPI, settings: Settings, client, call_upstream: Cal
         except NetnlHTTPError:
             # Builder-review fix (S4=B2): never let `reserve_submission`'s
             # tenant-facing 429 (it names the configured numbers) reach a
-            # demo visitor verbatim (D13). Also release the per-IP/cooldown
-            # claims made above (S1=M1 reviewer-minor): a submission that
-            # never actually got a reservation must not still cost the
-            # visitor one of their bounded slots.
-            _release_domain_claim(claimed_domain, current)
-            _release_ip_slot(claimed_ip, current)
+            # demo visitor verbatim (D13).
+            #
+            # N1 (round-4 builder-review fix): the per-IP/cooldown claims
+            # made above are *not* released here, unlike an earlier version
+            # of this code. By the time this 429 fires,
+            # `limits.refresh_stale_non_terminal` above has already spent
+            # up to `max_concurrent` real upstream calls on this attempt's
+            # behalf — releasing the claim let the same IP retry
+            # immediately, so the per-IP cap never actually bounded
+            # anything (measured: 30 POSTs from one saturated-demo IP ->
+            # 30 upstream calls, per-IP bucket empty afterwards). The
+            # failed attempt now costs the same per-IP/per-domain budget an
+            # accepted one would.
             raise NetnlHTTPError(429, "rate-limited", _DEMO_BUSY_MSG)
 
         try:
             reply = _demo_call_upstream(client.submit, [domain], "web", DEMO_UPSTREAM_NAME)
         except NetnlHTTPError:
-            # Same reasoning as the reservation-failure branch above: an
-            # upstream failure after a successful reservation produced no
-            # result for this visitor, so it must not burn either bound.
-            _release_domain_claim(claimed_domain, current)
-            _release_ip_slot(claimed_ip, current)
+            # N1 (round-4 builder-review fix): an earlier version released
+            # both claims here, on the reasoning that a genuine upstream
+            # failure at this specific call (network-level, unreachable —
+            # the only kind `_visitor_upstream_error` maps back to this
+            # facade's own 503 `demo-unavailable`) was "not the visitor's
+            # fault". Chosen instead: still do not release. Two reasons,
+            # both required by the hard invariant this module's docstring
+            # states (an anonymous caller can never cause more than
+            # `per_ip_per_hour × (max_concurrent + 1)` upstream calls per
+            # hour): (1) the refresh call above has already spent up to
+            # `max_concurrent` real upstream calls before this point is
+            # ever reached, exactly like the reservation-failure branch
+            # above — releasing here would let the same IP retry and spend
+            # that much again, with nothing capping how many times; (2) if
+            # upstream is genuinely down, *every* visitor's attempt fails
+            # here, so releasing would turn a real outage into every
+            # visitor hammering the already-failing upstream on an
+            # unbounded retry loop instead of backing off for the rest of
+            # their per-IP window. A failed attempt costs the same budget
+            # an accepted one would, same as the two branches above.
             raise
 
         upstream_request = reply["request"]

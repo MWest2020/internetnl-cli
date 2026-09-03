@@ -15,6 +15,7 @@ import pytest
 from fakes import REGISTER_REPLY, RESULTS_REPLY, STATUS_DONE, STATUS_RUNNING, FakeOpener
 
 from conftest import DEMO_ORIGIN, DEMO_TENANT, basic_auth_header, queue_json
+from internetnl_cli.client import HttpResponse
 from netnl import auth, store
 
 
@@ -640,13 +641,17 @@ def test_tenant_cap_rejection_uses_a_visitor_literal_not_the_tenant_wording(
     assert "1" not in msg  # the configured number itself never leaks either
 
 
-def test_upstream_failure_after_reservation_releases_ip_and_domain_claims(
+def test_upstream_failure_after_reservation_still_costs_ip_and_domain_claims(
     settings_env, clock
 ):
-    """A demo submission whose reservation succeeded but whose upstream
-    call then failed produced no result for the visitor — it must not
-    still cost them their (capped) per-IP slot or their domain's cooldown
-    window (S1=M1 reviewer-minor)."""
+    """Round-4 builder-review fix (N1): a demo submission whose reservation
+    succeeded but whose upstream `submit` call then failed still costs the
+    visitor their (capped) per-IP slot and their domain's cooldown window
+    — this used to release both (see the module docstring's "never
+    released" section for why that was unsafe: the refresh call already
+    spent up to `max_concurrent` real upstream calls before this point,
+    and releasing would let a persistently-flaky upstream be hammered by
+    the same IP on an unbounded retry loop instead of backing off)."""
     from starlette.testclient import TestClient
     from conftest import add_test_credential
     from netnl.api import create_app
@@ -677,13 +682,156 @@ def test_upstream_failure_after_reservation_releases_ip_and_domain_claims(
     )
     assert first.status_code == 503  # host-free upstream-unreachable outcome (M3)
 
-    # The failed attempt above must not have burned the per-IP slot (cap
-    # is 1) or the domain's cooldown: the exact same address and domain can
-    # try again immediately and succeed once upstream actually cooperates.
+    # The failed attempt above *did* burn the per-IP slot (cap is 1): the
+    # exact same address retrying immediately, even against a domain that
+    # would otherwise be fine, is now rejected on the per-IP cap rather
+    # than being allowed to spend another round of upstream calls.
     second = client.post(
-        "/demo/requests", json={"domain": "flaky.nl"}, headers=_demo_headers(ip="203.0.113.7")
+        "/demo/requests",
+        json={"domain": "a-different-domain.nl"},
+        headers=_demo_headers(ip="203.0.113.7"),
     )
-    assert second.status_code == 200
+    assert second.status_code == 429
+    # No second upstream call was made at all — rejected on the per-IP
+    # claim before ever reaching `refresh_stale_non_terminal` or `submit`.
+    assert calls["n"] == 1
+
+
+# --- round-4 builder-review fixes: N1 (never release) and N2 (bounded oracle) ---
+
+
+def _submit_or_refresh_opener(method, url, body, headers, timeout):
+    """Answers every `POST /requests` (`client.submit`) with a fresh
+    register-shaped reply and every `GET /requests/{id}` (`client.status`,
+    `refresh_stale_non_terminal`'s own upstream call) with a still-running
+    reply — good enough to drive an arbitrary sequence of demo submits
+    without having to hand-queue the exact call count in advance."""
+    if method == "POST":
+        return HttpResponse(status=200, body=json.dumps(REGISTER_REPLY).encode())
+    return HttpResponse(status=200, body=json.dumps(STATUS_RUNNING).encode())
+
+
+def test_saturated_demo_bounds_total_upstream_calls_from_one_ip(settings_env, clock):
+    """The N1 regression: measured before the fix, 30 POSTs from one IP
+    against a saturated demo (tenant concurrency cap already at its
+    limit) produced 30 upstream `status` calls and left the per-IP bucket
+    *empty* afterwards — the per-IP cap never actually bit, because every
+    rejection (the tenant-level cap's own 429, which fires *after*
+    `refresh_stale_non_terminal` has already spent up to `max_concurrent`
+    upstream calls) immediately handed the per-IP slot back.
+
+    After the fix: a claim, once made, is never released, so at most
+    `per_ip_per_hour` attempts are ever made at all, each spending at most
+    `max_concurrent` upstream calls (refresh) plus 1 (the `submit` call
+    itself, only reached on a successful reservation) — hard ceiling
+    `per_ip_per_hour * (max_concurrent + 1)` upstream calls, full stop.
+    """
+    from starlette.testclient import TestClient
+    from conftest import add_test_credential
+    from netnl import demo
+    from netnl.api import create_app
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_DEMO_ENABLED"] = "1"
+    env["NETNL_DEMO_ALLOWED_ORIGIN"] = DEMO_ORIGIN
+    env["NETNL_DEMO_TENANT"] = DEMO_TENANT
+    per_ip_per_hour = 5
+    max_concurrent = 2
+    env["NETNL_DEMO_PER_IP_PER_HOUR"] = str(per_ip_per_hour)
+    env["NETNL_DEMO_MAX_CONCURRENT"] = str(max_concurrent)
+    env["NETNL_DEMO_MAX_PER_HOUR"] = "1000"  # only the concurrency cap saturates here
+    settings = load(env)
+
+    opener = _submit_or_refresh_opener
+    calls: list[tuple] = []
+
+    def counting_opener(method, url, body, headers, timeout):
+        calls.append((method, url))
+        return opener(method, url, body, headers, timeout)
+
+    app = create_app(settings, opener=counting_opener, now=clock)
+    add_test_credential(app, DEMO_TENANT, "thrown-away")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    n_posts = 30
+    ip = "198.51.100.9"
+    statuses = []
+    for i in range(n_posts):
+        resp = client.post(
+            "/demo/requests",
+            json={"domain": f"probe-{i}.example.nl"},
+            headers=_demo_headers(ip=ip),
+        )
+        statuses.append(resp.status_code)
+
+    assert set(statuses) <= {200, 429}
+    hard_ceiling = per_ip_per_hour * (max_concurrent + 1)
+    assert len(calls) <= hard_ceiling, (len(calls), hard_ceiling, statuses)
+
+    # The per-IP bucket is full, not empty: every one of the visitor's
+    # `per_ip_per_hour` allotted attempts was spent, accepted or not.
+    key = f"{ip}/32"
+    assert len(demo._ip_accepted[key]) == per_ip_per_hour
+
+
+def test_domain_cooldown_probing_is_bounded_by_the_per_ip_cap(settings_env, clock):
+    """The N2 regression: a domain-cooldown rejection is a residual,
+    accepted cross-visitor oracle (it reveals "someone submitted this
+    domain recently") — but before this fix it was a *free* one, costing
+    the prober nothing, since the per-IP claim used to get released on
+    exactly this rejection. Probing is now bounded to `per_ip_per_hour`
+    domains per IP per hour, the same as every other claim.
+    """
+    from starlette.testclient import TestClient
+    from conftest import add_test_credential
+    from netnl.api import create_app
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_DEMO_ENABLED"] = "1"
+    env["NETNL_DEMO_ALLOWED_ORIGIN"] = DEMO_ORIGIN
+    env["NETNL_DEMO_TENANT"] = DEMO_TENANT
+    per_ip_per_hour = 3
+    env["NETNL_DEMO_PER_IP_PER_HOUR"] = str(per_ip_per_hour)
+    env["NETNL_DEMO_MAX_PER_HOUR"] = "1000"
+    env["NETNL_DEMO_MAX_CONCURRENT"] = "1000"
+    settings = load(env)
+
+    app = create_app(settings, opener=_submit_or_refresh_opener, now=clock)
+    add_test_credential(app, DEMO_TENANT, "thrown-away")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # One accepted submission puts "already-taken.nl" on cooldown, from a
+    # different IP so it does not spend the prober's own per-IP budget.
+    setup = client.post(
+        "/demo/requests",
+        json={"domain": "already-taken.nl"},
+        headers=_demo_headers(ip="203.0.113.200"),
+    )
+    assert setup.status_code == 200
+
+    # The prober repeatedly checks the same already-cooling-down domain
+    # from one IP, well past `per_ip_per_hour` times.
+    prober_ip = "198.51.100.77"
+    statuses = [
+        client.post(
+            "/demo/requests",
+            json={"domain": "already-taken.nl"},
+            headers=_demo_headers(ip=prober_ip),
+        ).status_code
+        for _ in range(10)
+    ]
+    # Every probe is rejected (still on cooldown) — but only the first
+    # `per_ip_per_hour` of them are live rejections; once its own per-IP
+    # budget is spent, the prober cannot even reach the cooldown check
+    # again this hour, whether or not the domain is still on cooldown.
+    assert statuses == [429] * 10
+
+    from netnl import demo
+
+    key = f"{prober_ip}/32"
+    assert len(demo._ip_accepted[key]) == per_ip_per_hour
 
 
 # --- builder-review fix: host-free upstream errors (M3) -------------------------

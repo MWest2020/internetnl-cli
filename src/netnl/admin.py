@@ -40,6 +40,15 @@ def _build_parser():
         "reissue", help="re-key an existing credential (works whether revoked or not)"
     )
     reissue.add_argument("name")
+    # Round-4 builder-review fix (N3): re-keying a row that is currently
+    # *active* immediately invalidates that credential's live password for
+    # anyone using it. Only a row that is already revoked (the intended
+    # kill-switch-reversal use, D17) is reissued without this flag.
+    reissue.add_argument(
+        "--force",
+        action="store_true",
+        help="also re-key a currently active (non-revoked) credential",
+    )
 
     user_sub.add_parser("list", help="list credentials")
 
@@ -77,15 +86,34 @@ def _user_revoke(conn, name: str, now: datetime, stderr: IO[str]) -> int:
     return 0
 
 
-def _user_reissue(conn, name: str, now: datetime, stdout: IO[str], stderr: IO[str]) -> int:
+def _user_reissue(
+    conn, name: str, now: datetime, force: bool, stdout: IO[str], stderr: IO[str]
+) -> int:
     """Builder-review fix (S6=B3): the other half of the kill switch — a
     revoked (or never-touched) row gets a fresh password/salt and
     `revoked_at` cleared, in place. Unlike `_user_add`, this never refuses
     on "already exists"; it refuses only when the username has no row at
     all (nothing to reissue — use `user add` for a brand new name).
+
+    Round-4 builder-review fix (N3): re-keying a row that is currently
+    *active* (not revoked) immediately invalidates that credential's live
+    password for anyone using it — a much bigger blast radius than the
+    intended kill-switch-reversal use (re-keying an already-revoked row,
+    which nobody could authenticate as anyway). That now needs `--force`;
+    reissuing an already-revoked row does not.
     """
-    if store.find_credential(conn, name) is None:
+    credential = store.find_credential(conn, name)
+    if credential is None:
         print(f"error: no user '{name}' to reissue (use 'user add' for a new name)", file=stderr)
+        return 1
+    previous_revoked_at = credential["revoked_at"]
+    if previous_revoked_at is None and not force:
+        print(
+            f"error: user '{name}' is not revoked; reissuing it would immediately "
+            "invalidate its current password for anyone using it — pass --force "
+            "if that is intended",
+            file=stderr,
+        )
         return 1
     password = auth.new_password()
     salt = auth.new_salt()
@@ -93,7 +121,13 @@ def _user_reissue(conn, name: str, now: datetime, stdout: IO[str], stderr: IO[st
     store.reissue_credential(
         conn, name, password_hash=auth.hash_password(password, salt), salt=salt.hex()
     )
-    store.record_audit(conn, at=reissued_at, credential=name, event="user-reissue")
+    store.record_audit(
+        conn,
+        at=reissued_at,
+        credential=name,
+        event="user-reissue",
+        detail=f"previous-revoked-at={previous_revoked_at or 'none'}",
+    )
     # Same one-time-print convention as `_user_add`: shown here, stored
     # nowhere. For the demo tenant specifically, the demo never
     # authenticates as this credential (design.md, D9) — throw this away
@@ -151,7 +185,7 @@ def main(
         if args.user_command == "revoke":
             return _user_revoke(conn, args.name, now, stderr)
         if args.user_command == "reissue":
-            return _user_reissue(conn, args.name, now, stdout, stderr)
+            return _user_reissue(conn, args.name, now, args.force, stdout, stderr)
         if args.user_command == "list":
             return _user_list(conn, stdout)
     if args.command == "prune":

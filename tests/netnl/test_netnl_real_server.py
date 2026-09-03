@@ -325,9 +325,11 @@ def test_real_server_demo_per_ip_cap_holds_under_concurrent_submits(settings_env
 
     assert set(statuses) <= {200, 429}, statuses
     accepted = statuses.count(200)
-    # The whole point of the fix: never more than the configured cap,
-    # however many identical requests arrive at the exact same instant.
-    assert accepted <= per_ip_cap, statuses
+    # The whole point of the fix: never more, *and* never fewer (a vacuous
+    # pass at 0 accepted would say nothing about the race), than the
+    # configured cap, however many identical requests arrive at the exact
+    # same instant (round-4 builder-review fix, N6).
+    assert accepted == per_ip_cap, statuses
 
 
 def test_real_server_demo_cooldown_holds_under_concurrent_submits(settings_env, tmp_path):
@@ -366,5 +368,7 @@ def test_real_server_demo_cooldown_holds_under_concurrent_submits(settings_env, 
     assert set(statuses) <= {200, 429}, statuses
     accepted = statuses.count(200)
     # Exactly one distinct-address submitter can ever win the cooldown for
-    # the same domain at (near enough) the same instant.
-    assert accepted <= 1, statuses
+    # the same domain at (near enough) the same instant — `== 1`, not
+    # `<= 1`, so a vacuous 0-accepted pass cannot hide a broken claim
+    # (round-4 builder-review fix, N6).
+    assert accepted == 1, statuses

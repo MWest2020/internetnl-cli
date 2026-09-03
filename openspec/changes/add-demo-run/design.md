@@ -57,36 +57,62 @@ list and the measured findings each amendment closes.
   each under its own independent lock acquisition — left a check-then-act
   race a real ASGI server's thread-pool scheduling can hit: measured, 12
   parallel submits from one IP against a cap of 2 → 12 accepted.
-  `_try_claim_ip_slot` now does sweep+check+insert inside one lock hold;
-  `_release_ip_slot` undoes a claim when a later step (the reservation, or
-  the upstream call) fails, so a claim that produced no accepted run never
-  still costs the visitor a slot. `_MAX_BUCKETS` (4096, overflow-key shape
-  mirroring `netnl.auth`'s own failed-auth aggregator) caps the number of
-  distinct keys this structure will ever hold at once — claiming *before*
-  the reservation that could still fail means this can no longer be
-  described as "only ever grows on an outcome the global cap already
-  gated", so an explicit hard ceiling replaces that argument rather than
-  merely asserting it.
+  `_try_claim_ip_slot` now does sweep+check+insert inside one lock hold.
+  `_MAX_BUCKETS` (4096, overflow-key shape mirroring `netnl.auth`'s own
+  failed-auth aggregator) caps the number of distinct keys this structure
+  will ever hold at once — claiming *before* the reservation that could
+  still fail means this can no longer be described as "only ever grows on
+  an outcome the global cap already gated", so an explicit hard ceiling
+  replaces that argument rather than merely asserting it. **Round-4
+  builder-review fix (N1) — a claim, once made, is never released:** an
+  earlier version of this fix released a claim (via a since-removed
+  `_release_ip_slot`) whenever a later step failed — the tenant-level
+  rate/concurrency cap, the domain cooldown, or the upstream `submit` call
+  itself. Measured on a saturated demo (every reservation answering 429):
+  30 POSTs from one IP produced 30 upstream `status` calls
+  (`refresh_stale_non_terminal` runs, and so has already spent up to
+  `max_concurrent` upstream calls, *before* that 429 ever fires) and left
+  the per-IP bucket **empty** afterwards — the per-IP cap never actually
+  bit, because every rejection immediately handed the slot back. A claimed
+  slot is now permanent for the rest of its hour regardless of outcome: a
+  failed attempt costs the same per-IP budget an accepted one would. See
+  "HTTP surface" below for the release matrix this replaces (there is no
+  longer one — nothing is ever released) and the hard invariant it
+  restores.
 - **D5 — per-domain cooldown, in-memory, atomically claimed.**
   `NETNL_DEMO_DOMAIN_COOLDOWN_SECONDS` (default 900) blocks a repeat run
   against the same normalised domain until the window elapses. A cooldown
   hit is a plain rejection: it **never** returns an existing `request_id`
   — there is nothing here for a visitor to poll into someone else's
   still-running (or since-finished) demo run. **Builder-review fix
-  (S1=M1):** same atomic claim-then-release shape as D4's per-IP bucket
-  (`_try_claim_domain`/`_release_domain_claim`), for the same measured
-  race (8 different IPs submitting the same domain concurrently → 8
-  accepted, before the fix). **Builder-review fix (S5):** the cooldown
-  rejection and the per-IP-cap rejection (D4) now share the exact same
-  429 message, and the per-IP claim is attempted strictly before the
-  domain claim — an already over-quota IP's request now never even
-  touches the cooldown state for the domain it submitted, and even where
-  both would reject, the identical wording gives an observer no way to
-  tell which bound actually fired for someone else's request. Before this
-  fix, distinct wording ("this domain was checked recently..." vs. "too
-  many demo runs from this network...") let an over-quota IP learn whether
-  an unrelated domain was on cooldown purely from which message it got
-  back.
+  (S1=M1):** same atomic claim shape as D4's per-IP bucket
+  (`_try_claim_domain`), for the same measured race (8 different IPs
+  submitting the same domain concurrently → 8 accepted, before the fix).
+  **Builder-review fix (S5):** the cooldown rejection and the per-IP-cap
+  rejection (D4) now share the exact same 429 message, and the per-IP
+  claim is attempted strictly before the domain claim — an already
+  over-quota IP's request now never even touches the cooldown state for
+  the domain it submitted, and even where both would reject, the
+  identical wording gives an observer no way to tell which bound actually
+  fired for someone else's request. Before this fix, distinct wording
+  ("this domain was checked recently..." vs. "too many demo runs from
+  this network...") let an over-quota IP learn whether an unrelated
+  domain was on cooldown purely from which message it got back.
+  **Round-4 builder-review fix (N2) — the cooldown itself is a residual,
+  now-bounded, cross-visitor oracle:** hitting the cooldown at all still
+  tells a caller "someone (possibly not you) submitted this domain in the
+  last `NETNL_DEMO_DOMAIN_COOLDOWN_SECONDS`" — that residual signal is
+  accepted, not eliminated (eliminating it would mean either not
+  rejecting repeat domains at all, defeating D5's purpose, or returning
+  a generic error indistinguishable from every other rejection, which S5
+  already achieves at the message level). What N1's "never release" fix
+  closes is the previously-*unbounded* cost of *using* that oracle: before
+  it, a cooldown rejection handed the per-IP claim back, so one IP could
+  probe an unlimited number of distinct domains for free (measured: 12
+  free probes). A cooldown rejection now still costs its own per-IP claim
+  like any other attempt, so probing this oracle is bounded to
+  `NETNL_DEMO_PER_IP_PER_HOUR` domains per IP per hour — accepted as a
+  residual, but no longer free.
 - **D6 — CORS, exactly one origin.** The demo answers with `Access-Control-
   Allow-Origin` set to the literal configured `NETNL_DEMO_ALLOWED_ORIGIN` —
   never an echo of the request's `Origin`, never paired with `Access-
@@ -213,12 +239,25 @@ list and the measured findings each amendment closes.
   `revoked_at` cleared, printed once to stdout exactly like `user add`'s
   password (thrown away the same way for the demo tenant, which never
   authenticates as itself — D9). Unlike `user add`, it never refuses on
-  "already exists" — it works whether the row is currently revoked or not,
-  and refuses only when no row with that username exists at all. Audited
-  as `user-reissue`, the same shape as `user-add`/`user-revoke`
-  (`credential = <name>`, no other fields). This is D3's kill switch's
-  other, previously-missing half: `revoke` turns a surface off, `reissue`
-  turns it back on, both without a restart or a configuration change.
+  "already exists" — and refuses only when no row with that username
+  exists at all. Audited as `user-reissue`, the same shape as
+  `user-add`/`user-revoke` (`credential = <name>`), plus a `detail` of
+  `previous-revoked-at=<value or none>` (round-4 builder-review fix, N3)
+  recording what the row's `revoked_at` was immediately before this
+  reissue — without it, the audit trail could not distinguish "this
+  re-keyed a revoked (kill-switched) row" from "this re-keyed a live
+  one" after the fact. This is D3's kill switch's other,
+  previously-missing half: `revoke` turns a surface off, `reissue` turns
+  it back on, both without a restart or a configuration change.
+  **Round-4 builder-review fix (N3) — re-keying a live row needs
+  `--force`:** `reissue` on a row whose `revoked_at` is already set (the
+  intended kill-switch-reversal use) needs nothing extra, but re-keying a
+  row that is currently *active* immediately invalidates that credential's
+  live password for anyone using it — including, outside the demo tenant,
+  a real tenant an operator did not mean to lock out by fat-fingering the
+  wrong name. `reissue <name>` without `--force` now refuses with an
+  explanatory error on an active row; `reissue --force <name>` re-keys it
+  anyway, same as before this fix.
 
 ## Header trust and multiple replicas (builder-review fix, S3 — doc-only)
 
@@ -272,15 +311,22 @@ fail-closed convention as the tenant-surface required variables.
   availability check (D3, 503 `demo-unavailable`) → normalise (D14) and
   `limits.check_domains` reused for shape/SSRF (400, D14's literal message
   on any failure) → atomic per-IP claim (D4, 429 on the shared literal) →
-  atomic per-domain-cooldown claim (D5, 429 on the *same* shared literal,
-  releasing the per-IP claim first) → `limits.refresh_stale_non_terminal`
-  (D3's fix) → `limits.reserve_submission` with the `dataclasses.replace`d
-  settings (D3, 429 rewritten to D13's fixed visitor literal on the demo
-  tenant's own rate/concurrency limit, releasing both claims) → upstream
-  call with `name="netnl-demo"` (D12), `_visitor_upstream_error`-wrapped
-  (D13's fix), releasing both claims on failure. Only once every step
-  above succeeds does the reply go out, in the same v2 `RequestReply`
-  shape as the tenant surface, with the facade id substituted.
+  atomic per-domain-cooldown claim (D5, 429 on the *same* shared literal)
+  → `limits.refresh_stale_non_terminal` (D3's fix) →
+  `limits.reserve_submission` with the `dataclasses.replace`d settings
+  (D3, 429 rewritten to D13's fixed visitor literal on the demo tenant's
+  own rate/concurrency limit) → upstream call with `name="netnl-demo"`
+  (D12), `_visitor_upstream_error`-wrapped (D13's fix). **Round-4
+  builder-review fix (N1): there is no release matrix here any more.**
+  Every prior version of this bullet described specific claims being
+  released on specific later failures; none of that happens now — a claim
+  made by the per-IP or per-domain-cooldown step above is never released,
+  regardless of which step after it fails or why (see D4's bullet for the
+  measured bug this closes and the hard invariant — `per_ip_per_hour ×
+  (max_concurrent + 1)` upstream calls per IP per hour, unconditionally —
+  it restores). Only once every step above succeeds does the reply go
+  out, in the same v2 `RequestReply` shape as the tenant surface, with the
+  facade id substituted.
 - `GET /demo/requests/{id}` — origin check → availability check → poll-
   budget claim (D16, 429 on its own literal) → owner-scoped lookup via
   `store.owned_request_or_404` → a `reserving` row answers from the store

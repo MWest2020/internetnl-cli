@@ -185,10 +185,10 @@ no scope beyond what those findings named:
       `NETNL_DEMO_RETENTION_HOURS`
 - [x] 9.2 Check-then-act race: `netnl.demo._try_claim_ip_slot`/
       `_try_claim_domain` do sweep+check+insert inside one lock hold each
-      (previously two separate lock acquisitions); explicit release
-      (`_release_ip_slot`/`_release_domain_claim`) when a later step
-      (the reservation, or the upstream call) fails, so a claim that
-      produced no accepted run never still costs the visitor a slot.
+      (previously two separate lock acquisitions). This item originally
+      also added an explicit release (`_release_ip_slot`/
+      `_release_domain_claim`) when a later step failed — **superseded by
+      T10/N1 below**, which removes that release entirely; see T10 for why.
       Real-server concurrency tests added
       (`tests/netnl/test_netnl_real_server.py`)
 - [x] 9.3 Visitor language on the aggregate-cap 429:
@@ -223,6 +223,59 @@ no scope beyond what those findings named:
   tests/netnl/test_netnl_demo_cors.py tests/netnl/test_netnl_demo_privacy.py
   tests/netnl/test_netnl_demo_settings.py tests/netnl/test_netnl_admin.py
   tests/netnl/test_netnl_real_server.py -q`
+
+## T10. Round-4 builder-review fixes (rehearsal blocker + minors)
+
+Rehearsal approved all 12 prior findings but measured one new blocker
+(N1) plus four smaller gaps. Fixed here, no scope beyond what was named:
+
+- [x] 10.1 N1 (blocking): claims are never released any more. Measured
+      before this fix: 30 POSTs from one IP against a saturated demo
+      (tenant concurrency cap already at its limit) → 30 upstream `status`
+      calls, per-IP bucket empty afterwards — the per-IP cap never
+      actually bit, because `reserve_submission`'s own 429 (which fires
+      *after* `refresh_stale_non_terminal` has already spent up to
+      `max_concurrent` upstream calls) handed the claim straight back.
+      `_release_ip_slot`/`_release_domain_claim` removed; a claim made by
+      `_try_claim_ip_slot`/`_try_claim_domain` is now permanent for the
+      rest of its window regardless of what happens afterwards — a
+      reservation 429, a domain-cooldown rejection, or a genuine upstream
+      failure on the `submit` call itself all now cost the same per-IP/
+      per-domain budget an accepted run would (design.md's D4/D5 and
+      "HTTP surface" sections amended; the release matrix they described
+      no longer exists). New regression:
+      `test_saturated_demo_bounds_total_upstream_calls_from_one_ip`
+      (N POSTs from one IP → at most `per_ip_per_hour * (max_concurrent +
+      1)` upstream calls total, per-IP bucket full afterwards). The
+      pre-existing `test_upstream_failure_after_reservation_releases_ip_
+      and_domain_claims` (which asserted the old release-on-upstream-
+      failure behaviour) is renamed/rewritten to assert the new one
+- [x] 10.2 N2 (low, follows from N1): the per-domain cooldown remains a
+      residual, accepted cross-visitor oracle ("was this domain submitted
+      recently") — but no longer a free one. New regression:
+      `test_domain_cooldown_probing_is_bounded_by_the_per_ip_cap`
+      (repeated cooldown probes from one IP are bounded to
+      `per_ip_per_hour`). design.md's D5 bullet documents the residual and
+      the bound explicitly
+- [x] 10.3 N3 (low): `netnl-admin user reissue` now refuses to re-key a
+      currently *active* (non-revoked) row without a new `--force` flag,
+      with an error explaining why (re-keying it invalidates the live
+      credential for anyone using it); reissuing an already-revoked row
+      needs no flag, unchanged. The `user-reissue` audit row's `detail`
+      now records `previous-revoked-at=<value or none>`. Tests in
+      `test_netnl_admin.py`
+- [x] 10.4 N4 (nit): resolved by 10.1 — with no release ever happening,
+      `bucket.remove(now)`'s timestamp-identity race (a failing request's
+      release freeing a concurrently-succeeding request's own entry) can
+      no longer occur; there is nothing left to give a unique claim token
+- [x] 10.5 N6 (nit): the real-server per-IP-cap/cooldown concurrency tests
+      now assert `accepted == per_ip_cap` / `accepted == 1` rather than
+      `<=`, so a vacuous zero-accepted pass can no longer hide a broken
+      claim
+- Verify: `uv run pytest tests/netnl/test_netnl_demo.py
+  tests/netnl/test_netnl_real_server.py tests/netnl/test_netnl_admin.py -q`;
+  repeat the N1 measurement (30 POSTs, one IP, saturated demo) and confirm
+  the bounded call count and full bucket
 
 ## Overall verification
 
