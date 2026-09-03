@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -12,6 +14,7 @@ from fakes import FakeOpener
 from internetnl_cli.client import HttpResponse
 from netnl import auth, store
 from netnl.api import create_app
+from netnl.mail import Mail
 from netnl.settings import Settings, load
 
 
@@ -190,3 +193,100 @@ def demo_app(demo_settings, fake_opener, clock):
 @pytest.fixture
 def demo_client(demo_app):
     return TestClient(demo_app, raise_server_exceptions=False)
+
+
+# --- supporter webhook bridge (openspec/changes/add-supporter-issuance) ----
+
+SUPPORTER_SECRET = "test-webhook-secret"
+
+
+class RecordingSender:
+    """A `netnl.mail.Sender` that appends every `Mail` it is asked to send
+    to a list instead of touching a real SMTP server. `fail_next` (a set of
+    zero-indexed call counts, or `True` for "every call") lets a test make
+    a specific call raise `DeliveryError` without needing a real SMTP
+    failure to reproduce.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[Mail] = []
+        self.fail_always = False
+        self.fail_on_calls: set[int] = set()
+
+    def __call__(self, mail_obj: Mail) -> None:
+        from netnl.mail import DeliveryError
+
+        call_index = len(self.sent)
+        if self.fail_always or call_index in self.fail_on_calls:
+            self.sent.append(mail_obj)  # still record the attempt
+            raise DeliveryError("failed to deliver supporter credential mail")
+        self.sent.append(mail_obj)
+
+
+@pytest.fixture
+def recording_sender() -> RecordingSender:
+    return RecordingSender()
+
+
+@pytest.fixture
+def supporter_env(settings_env) -> dict:
+    env = dict(settings_env)
+    env["NETNL_BMC_WEBHOOK_SECRET"] = SUPPORTER_SECRET
+    env["NETNL_PUBLIC_ENDPOINT"] = "https://facade.example.org"
+    env["NETNL_SMTP_HOST"] = "smtp.example.org"
+    env["NETNL_SMTP_FROM"] = "netnl@example.org"
+    return env
+
+
+@pytest.fixture
+def supporter_settings(supporter_env) -> Settings:
+    return load(supporter_env)
+
+
+@pytest.fixture
+def supporter_app(supporter_settings, fake_opener, clock, recording_sender):
+    return create_app(
+        supporter_settings, opener=fake_opener, now=clock, sender=recording_sender
+    )
+
+
+@pytest.fixture
+def supporter_client(supporter_app):
+    return TestClient(supporter_app, raise_server_exceptions=False)
+
+
+def sign_body(body: bytes, secret: str = SUPPORTER_SECRET) -> str:
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def bmc_payload(**overrides) -> dict:
+    """A `donation.created` BMC webhook payload literal — derived from
+    documented shape; replace with an owner-supplied real delivery once one
+    is available (see `docs/how-to/supporter-webhook.md`).
+    """
+    base = {
+        "type": "donation.created",
+        "live_mode": True,
+        "attempt": 1,
+        "data": {
+            "id": 12345,
+            "amount": "5.00",
+            "currency": "EUR",
+            "transaction_id": "txn-abc123",
+            "email": "supporter@example.org",
+            "supporter_name": "Jane Doe",
+            "support_note": "keep it up!",
+        },
+    }
+    base["data"].update(overrides.pop("data", {}))
+    base.update(overrides)
+    return base
+
+
+def post_webhook(client, payload: dict, *, secret: str = SUPPORTER_SECRET, header: str = "X-Signature-Sha256"):
+    body = json.dumps(payload).encode()
+    return client.post(
+        "/webhooks/bmc",
+        content=body,
+        headers={"Content-Type": "application/json", header: sign_body(body, secret)},
+    )

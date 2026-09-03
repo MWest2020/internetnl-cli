@@ -412,3 +412,49 @@ def test_prune_without_demo_config_has_a_zero_demo_deleted_and_no_other_change(
     assert row["domain_count"] == (
         counts["requests_deleted"] + counts["reserving_deleted"] + counts["audit_deleted"]
     )
+
+
+# --- supporter issuance retention (openspec/changes/add-supporter-issuance, T3) --
+
+
+def test_issuance_row_older_than_audit_cutoff_is_pruned(app, settings, conn):
+    now = datetime.now(timezone.utc)
+    old = store.utcnow_iso(lambda: now - timedelta(days=settings.audit_retention_days + 1))
+    store.insert_issuance(
+        conn,
+        txn_id="txn-old",
+        username="supporter-aaaa0000",
+        state="delivered",
+        attempts=0,
+        created_at=old,
+        updated_at=old,
+    )
+
+    counts = retention.prune(conn, settings, now)
+
+    assert counts["issuance_deleted"] == 1
+    assert store.find_issuance(conn, "txn-old") is None
+
+
+def test_issuance_row_within_audit_cutoff_is_kept(app, settings, conn):
+    now = datetime.now(timezone.utc)
+    recent = store.utcnow_iso(lambda: now - timedelta(days=1))
+    store.insert_issuance(
+        conn,
+        txn_id="txn-recent",
+        username="supporter-bbbb0000",
+        state="delivered",
+        attempts=0,
+        created_at=recent,
+        updated_at=recent,
+    )
+
+    counts = retention.prune(conn, settings, now)
+
+    assert counts["issuance_deleted"] == 0
+    assert store.find_issuance(conn, "txn-recent") is not None
+
+
+def test_issuance_deleted_is_zero_without_the_bridge_ever_used(app, settings, conn):
+    counts = retention.prune(conn, settings, datetime.now(timezone.utc))
+    assert counts["issuance_deleted"] == 0

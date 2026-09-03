@@ -74,7 +74,38 @@ CREATE TABLE IF NOT EXISTS audit (
 
 CREATE INDEX IF NOT EXISTS idx_audit_credential_event_at
     ON audit (credential, event, at);
+
+-- openspec/changes/add-supporter-issuance: idempotency + delivery-state
+-- tracking for the `POST /webhooks/bmc` bridge. Deliberately holds no
+-- supporter PII (no email, no name) — see that change's design.md,
+-- "Privacy and audit". `CREATE TABLE IF NOT EXISTS` is a no-op migration
+-- against a database that already has this table, exactly like every
+-- other table here.
+CREATE TABLE IF NOT EXISTS supporter_issuance (
+    id INTEGER PRIMARY KEY,
+    txn_id TEXT NOT NULL UNIQUE,
+    username TEXT NOT NULL,
+    state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_supporter_issuance_created_at
+    ON supporter_issuance (created_at);
 """
+
+# Valid values for `supporter_issuance.state` (openspec/changes/
+# add-supporter-issuance, D3): `pending` immediately after the atomic
+# mint-and-persist step, before mail is attempted; `delivered` once mail
+# succeeds; `undeliverable` for a qualifying donation with no usable
+# recipient (no credential is ever minted for this state); `failed` after a
+# mail attempt fails (the credential just minted for that attempt is
+# revoked in the same step).
+SUPPORTER_PENDING = "pending"
+SUPPORTER_DELIVERED = "delivered"
+SUPPORTER_UNDELIVERABLE = "undeliverable"
+SUPPORTER_FAILED = "failed"
 
 _CREATE_TRIGGERS = """
 CREATE TRIGGER IF NOT EXISTS audit_no_update
@@ -437,3 +468,65 @@ def find_credential(conn: sqlite3.Connection, username: str) -> sqlite3.Row | No
     return conn.execute(
         "SELECT * FROM credentials WHERE username = ?", (username,)
     ).fetchone()
+
+
+# --- supporter issuance (openspec/changes/add-supporter-issuance) ----------
+
+
+def find_issuance(conn: sqlite3.Connection, txn_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM supporter_issuance WHERE txn_id = ?", (txn_id,)
+    ).fetchone()
+
+
+def insert_issuance(
+    conn: sqlite3.Connection,
+    *,
+    txn_id: str,
+    username: str,
+    state: str,
+    attempts: int,
+    created_at: str,
+    updated_at: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO supporter_issuance "
+        "(txn_id, username, state, attempts, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (txn_id, username, state, attempts, created_at, updated_at),
+    )
+
+
+def update_issuance(
+    conn: sqlite3.Connection,
+    txn_id: str,
+    *,
+    username: str,
+    state: str,
+    attempts: int,
+    updated_at: str,
+) -> None:
+    """Updates an existing row in place — used both for a retry (fresh
+    `username`, `state` reset to `pending`) and for recording a mail
+    outcome (`state`/`attempts` change, `username` unchanged). `created_at`
+    is never touched: it always reflects when this transaction id was first
+    seen.
+    """
+    conn.execute(
+        "UPDATE supporter_issuance SET username = ?, state = ?, attempts = ?, "
+        "updated_at = ? WHERE txn_id = ?",
+        (username, state, attempts, updated_at, txn_id),
+    )
+
+
+def count_issuances_since(conn: sqlite3.Connection, cutoff_iso: str) -> int:
+    """The number of distinct BMC transactions that started an issuance
+    attempt within the window — a retry of an existing row (`update_
+    issuance` above) never changes `created_at`, so it is counted exactly
+    once here regardless of how many times it is retried.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM supporter_issuance WHERE created_at >= ?",
+        (cutoff_iso,),
+    ).fetchone()
+    return int(row["n"])

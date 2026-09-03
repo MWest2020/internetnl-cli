@@ -8,6 +8,36 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- An opt-in webhook bridge on the `netnl` facade
+  (`openspec/changes/add-supporter-issuance`): `POST /webhooks/bmc`, gated
+  entirely by `NETNL_BMC_WEBHOOK_SECRET`, turns a qualifying Buy Me a
+  Coffee donation (`donation.created`, live mode, at or above an
+  operator-configured minimum — default 0, i.e. every donation) into a
+  `netnl` tenant credential, mailed directly to the donor. Every request is
+  verified with HMAC-SHA256 over the raw body before anything else happens
+  — no database connection, password hash, mail, or audit row for an
+  unsigned or invalid request. Persist-then-mail: a credential and an
+  idempotency row (keyed on BMC's own transaction id) are written together
+  in one `BEGIN IMMEDIATE` transaction before mail is ever sent; a mail
+  failure revokes the just-minted credential and marks the row failed
+  (with an attempt counter) so BMC's own retry mints a fresh key next time
+  — a credential that could not be delivered never stays usable, and
+  replaying an already-delivered transaction is a safe no-op. No supporter
+  PII is stored: only the transaction id, generated username, delivery
+  state, an attempt counter and timestamps persist, pruned on the existing
+  `NETNL_AUDIT_RETENTION_DAYS` cutoff. Issuance is capped per hour
+  (`NETNL_SUPPORTER_MAX_PER_HOUR`) and every state transition is audited
+  without ever recording a secret. Credential minting itself
+  (`netnl/issue.py`) is now shared between `netnl-admin user add` and this
+  bridge, so the two paths cannot silently diverge. An optional
+  `NETNL_SUPPORTER_NOTIFY` mails the operator a short, password-free
+  confirmation after each successful delivery. New docs:
+  [`docs/how-to/supporter-webhook.md`](docs/how-to/supporter-webhook.md)
+  (the operator runbook — secret generation, BMC dashboard configuration,
+  rollout verification, a test-donation procedure, troubleshooting, and
+  security notes) and a rewrite of
+  [`docs/how-to/supporter-key.md`](docs/how-to/supporter-key.md) for the
+  automatic flow, with manual issuance kept as the documented fallback.
 - An opt-in, anonymous demo route family on the `netnl` facade
   (`openspec/changes/add-demo-run`): `POST /demo/requests` accepts exactly
   `{"domain": "example.nl"}` (pydantic `extra="forbid"` makes a list or a

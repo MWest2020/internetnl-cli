@@ -25,7 +25,7 @@ def test_migrate_is_idempotent(conn):
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     }
-    assert {"credentials", "requests", "audit"} <= tables
+    assert {"credentials", "requests", "audit", "supporter_issuance"} <= tables
 
 
 def test_journal_mode_is_wal(conn):
@@ -370,3 +370,146 @@ def test_ensure_audit_detail_column_reraises_a_genuine_failure(tmp_path):
             _ensure_audit_detail_column(_AlwaysFailingConnection(conn))
     finally:
         conn.close()
+
+
+# --- supporter issuance (openspec/changes/add-supporter-issuance, T3) ------
+
+
+def test_find_issuance_missing_returns_none(conn):
+    assert store.find_issuance(conn, "txn-unknown") is None
+
+
+def test_insert_and_find_issuance(conn):
+    store.insert_issuance(
+        conn,
+        txn_id="txn-1",
+        username="supporter-aaaa1111",
+        state="pending",
+        attempts=0,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    row = store.find_issuance(conn, "txn-1")
+    assert row is not None
+    assert row["username"] == "supporter-aaaa1111"
+    assert row["state"] == "pending"
+    assert row["attempts"] == 0
+
+
+def test_txn_id_is_unique(conn):
+    store.insert_issuance(
+        conn,
+        txn_id="txn-dup",
+        username="a",
+        state="pending",
+        attempts=0,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.insert_issuance(
+            conn,
+            txn_id="txn-dup",
+            username="b",
+            state="pending",
+            attempts=0,
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+
+
+def test_update_issuance_changes_state_username_and_attempts_but_not_created_at(conn):
+    store.insert_issuance(
+        conn,
+        txn_id="txn-2",
+        username="supporter-old",
+        state="failed",
+        attempts=1,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    store.update_issuance(
+        conn,
+        "txn-2",
+        username="supporter-new",
+        state="pending",
+        attempts=1,
+        updated_at="2026-01-01T00:05:00+00:00",
+    )
+    row = store.find_issuance(conn, "txn-2")
+    assert row["username"] == "supporter-new"
+    assert row["state"] == "pending"
+    assert row["created_at"] == "2026-01-01T00:00:00+00:00"
+    assert row["updated_at"] == "2026-01-01T00:05:00+00:00"
+
+
+def test_count_issuances_since_counts_by_created_at_only(conn):
+    store.insert_issuance(
+        conn,
+        txn_id="txn-old",
+        username="a",
+        state="delivered",
+        attempts=0,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    store.insert_issuance(
+        conn,
+        txn_id="txn-new",
+        username="b",
+        state="pending",
+        attempts=0,
+        created_at="2026-01-01T00:30:00+00:00",
+        updated_at="2026-01-01T00:30:00+00:00",
+    )
+    # A retry of the new row must not double-count it: created_at is
+    # untouched by `update_issuance`.
+    store.update_issuance(
+        conn, "txn-new", username="c", state="failed", attempts=1,
+        updated_at="2026-01-01T00:31:00+00:00",
+    )
+
+    count = store.count_issuances_since(conn, "2026-01-01T00:15:00+00:00")
+    assert count == 1
+
+
+def test_supporter_issuance_rows_are_updatable_unlike_audit(conn):
+    """Unlike `audit`, `supporter_issuance` carries no append-only trigger
+    — it must be a plain, updatable table."""
+    store.insert_issuance(
+        conn,
+        txn_id="txn-3",
+        username="a",
+        state="pending",
+        attempts=0,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    store.update_issuance(
+        conn, "txn-3", username="a", state="delivered", attempts=0,
+        updated_at="2026-01-01T00:01:00+00:00",
+    )
+    assert store.find_issuance(conn, "txn-3")["state"] == "delivered"
+
+
+# --- shared credential minting (netnl/issue.py) -----------------------------
+
+
+def test_issue_credential_returns_plaintext_and_persists_only_the_hash(conn):
+    from netnl import auth, issue
+
+    password = issue.issue_credential(conn, username="alice", created_at="2026-01-01T00:00:00+00:00")
+    assert isinstance(password, str) and len(password) > 0
+
+    row = store.find_credential(conn, "alice")
+    assert row is not None
+    assert row["password_hash"] != password  # never stored in plaintext
+    assert auth.verify(row["password_hash"], bytes.fromhex(row["salt"]), password) is True
+
+
+def test_issue_credential_raises_integrity_error_on_duplicate_username(conn):
+    from netnl import issue
+
+    issue.issue_credential(conn, username="bob", created_at="2026-01-01T00:00:00+00:00")
+    with pytest.raises(sqlite3.IntegrityError):
+        issue.issue_credential(conn, username="bob", created_at="2026-01-01T00:00:00+00:00")

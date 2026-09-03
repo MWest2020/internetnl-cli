@@ -9,10 +9,14 @@ This page describes the issuance model for opening the `netnl` facade
 beyond the handful of known users in
 [Running the netnl private beta](beta.md) — task 5 of
 `openspec/changes/add-measurement-api` ("community opening"). The
-donation link now exists (see "Getting a supporter key" below), but
-issuance itself is still a manual, out-of-band process, the same as
-onboarding a beta user — there is no self-serve automation tying a
-donation to a credential.
+donation link (<https://buymeacoffee.com/mark.westerweel>) is live, and
+issuance is now automatic once an operator has enabled the webhook
+bridge described below — see
+[Automatic supporter-key issuance](supporter-webhook.md) for the
+operator runbook (enabling it, testing it, troubleshooting it). Manual
+issuance, the process this page originally described, remains the
+fallback for when the bridge is disabled or the mail path is
+unavailable.
 
 ## The model, in one paragraph
 
@@ -34,9 +38,9 @@ facade container, one VPS instance, cron-scheduled retention, no
 managed-service guarantee. A donation buys a **lifetime key**, not
 **lifetime uptime** — the service can go down, change limits, or (in
 the worst case) be discontinued, and "I donated" does not create an
-SLA the operator does not otherwise offer. State this plainly to
-every supporter at issuance time, the same way `beta.md`'s "Terms"
-section states it to beta users.
+SLA the operator does not otherwise offer. The credential mail sent by
+the automatic bridge states this plainly; state it just as plainly if
+you ever issue a key by hand.
 
 ## Fair use, not a paid tier
 
@@ -58,7 +62,36 @@ has a legitimate need that does not fit the defaults, that is the
 same "observe and adjust the default" loop `beta.md` already
 describes, not a reason to special-case one credential.
 
-## Issuing a supporter key (operator procedure)
+## Getting a supporter key
+
+Donate via [Buy Me a Coffee](https://buymeacoffee.com/mark.westerweel).
+When the webhook bridge is enabled, a qualifying donation mints a
+credential automatically and mails it to the address BMC has on file
+for that donation — nothing further to do. If the bridge is disabled
+(or a delivery genuinely cannot be completed — see
+[Automatic supporter-key issuance](supporter-webhook.md#troubleshooting)),
+issuance falls back to the manual process below.
+
+## Automatic issuance (the normal path)
+
+See [Automatic supporter-key issuance](supporter-webhook.md) for the
+full operator runbook: enabling `NETNL_BMC_WEBHOOK_SECRET` and the
+mail configuration it requires, verifying the bridge actually rejects
+an unsigned request, running a test donation, and troubleshooting a
+delivery that did not arrive.
+
+In short, once enabled: BMC calls `POST /webhooks/bmc` for every
+donation event; the facade verifies the signature, mints a credential
+for a qualifying live donation, and mails it directly to the donor —
+the same credential shape, the same fair-use limits, and the same
+"beta, best-effort, no SLA" terms as a manually-issued key. No
+supporter email address or name is ever stored by the facade; only the
+BMC transaction id, the generated username, and delivery state are
+kept (and pruned on the existing audit-retention window), which is
+enough to make a duplicate delivery a safe no-op and a failed delivery
+retryable, without holding onto anything that identifies the donor.
+
+## Manual issuance (fallback)
 
 Once a donation is confirmed (out of band — the facade has no
 payment integration and none is planned), issue the credential the
@@ -87,11 +120,12 @@ donor out of band, together with:
 
 ## Revoking a supporter key
 
-Revocation is the same operation as for any other tenant, effective
+Revocation is the same operation regardless of how the key was issued
+— automatically by the webhook bridge, or by hand — effective
 immediately, no grace period:
 
 ```sh
-kubectl -n netnl exec deploy/netnl -- netnl-admin user revoke <donor-name>
+kubectl -n netnl exec deploy/netnl -- netnl-admin user revoke <username>
 ```
 
 "Lifetime" describes the intended issuance policy (no built-in
@@ -100,18 +134,13 @@ measuring hosts without permission, or the operator discontinuing the
 service are all still grounds to revoke, same as for a beta
 credential.
 
-## Getting a supporter key
-
-Donate via [Buy Me a Coffee](https://buymeacoffee.com/mark.westerweel).
-There is no automated link between the donation page and credential
-issuance — "supporter key" is a documented model with a real payment
-link, not a self-serve flow; issuance still goes through the same
-manual, out-of-band `netnl-admin` process (see "Issuing a supporter
-key" above) as a beta credential.
-
 ## See also
 
-- [Running the netnl private beta](beta.md) — the process that is
-  actually live today, for the handful of known users.
+- [Automatic supporter-key issuance](supporter-webhook.md) — the
+  operator runbook for the webhook bridge: enabling it, testing it,
+  and troubleshooting a delivery that did not arrive.
+- [Running the netnl private beta](beta.md) — the process this model
+  builds on, for the handful of known users onboarded before the
+  donation link existed.
 - [Use in CI](ci.md#e-getting-a-credential) — where this page is
   linked from as one of the ways to get a credential.

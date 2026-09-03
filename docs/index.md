@@ -32,6 +32,10 @@ until the implementation lands.
 - [Supporter keys](how-to/supporter-key.md) — the lifetime credential
   issued for a small donation: beta, best-effort, no SLA, with the
   per-tenant rate limit as the fair-use mechanism.
+- [Automatic supporter-key issuance](how-to/supporter-webhook.md) — the
+  Buy Me a Coffee webhook bridge that mints and mails a supporter key
+  without an operator in the loop: enabling it, testing it, and
+  troubleshooting a delivery that did not arrive.
 - [Use in CI](how-to/ci.md) — the bundled GitHub Action, a plain-CLI
   recipe for other CI systems, and the gate's exit-code semantics.
 

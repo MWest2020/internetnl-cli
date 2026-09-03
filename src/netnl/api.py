@@ -25,7 +25,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from internetnl_cli.client import Opener, urllib_opener
 from internetnl_cli.errors import ApiError, TransportError
 
-from netnl import auth, demo, limits, store, upstream
+from netnl import auth, demo, limits, mail, store, supporter, upstream
 from netnl.errors import NetnlHTTPError
 from netnl.replies import API_VERSION, NOTICE, error_body
 from netnl.settings import Settings
@@ -143,7 +143,13 @@ def call_upstream(client, fn: Callable, *args, **kwargs):
         raise NetnlHTTPError(502, "upstream-unreachable", str(exc)) from exc
 
 
-def create_app(settings: Settings, *, opener: Opener | None = None, now: Callable[[], datetime] | None = None) -> FastAPI:
+def create_app(
+    settings: Settings,
+    *,
+    opener: Opener | None = None,
+    now: Callable[[], datetime] | None = None,
+    sender: mail.Sender | None = None,
+) -> FastAPI:
     # No docs/openapi/redoc routes: those would leak framework-specific
     # paths outside the v2 shape this facade otherwise guarantees.
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -168,6 +174,21 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     app.state.client = client
     app.state.now = clock
     app.state.metadata_cache = None  # {"payload": dict, "at": datetime} | None
+    # openspec/changes/add-supporter-issuance: the `Sender` used by the
+    # webhook bridge (`netnl.supporter`), injectable for tests exactly like
+    # `opener` above is for the upstream client. Built from `settings.
+    # supporter` only when that opt-in is configured — unused (never even
+    # constructed) otherwise.
+    if settings.supporter is not None:
+        app.state.sender = sender or mail.smtp_sender(
+            host=settings.supporter.smtp_host,
+            port=settings.supporter.smtp_port,
+            username=settings.supporter.smtp_username,
+            password=settings.supporter.smtp_password,
+            from_addr=settings.supporter.smtp_from,
+            mode=settings.supporter.smtp_mode,
+            timeout=settings.supporter.smtp_timeout,
+        )
 
     @app.middleware("http")
     async def enforce_body_size(request: Request, call_next):
@@ -461,5 +482,18 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
     # routes simply do not exist and every `/demo/*` path falls through to
     # the ordinary 501 not-implemented catch-all above.
     demo.register_routes(app, settings, client, call_upstream)
+
+    if settings.supporter is not None:
+        # Opt-in `POST /webhooks/bmc` bridge (openspec/changes/
+        # add-supporter-issuance) — only registered when
+        # `NETNL_BMC_WEBHOOK_SECRET` is set (D2); otherwise this path does
+        # not exist as a route at all, on the same "acts like it does not
+        # exist" terms as `/health`'s optional neighbours and `/demo/*`
+        # above. Only POST is registered: any other method on this path
+        # falls through to the ordinary 501 not-implemented catch-all, not
+        # a 405.
+        @app.post("/webhooks/bmc")
+        async def webhook_bmc(request: Request) -> dict:
+            return await supporter.handle_webhook(request, settings)
 
     return app

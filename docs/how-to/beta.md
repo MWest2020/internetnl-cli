@@ -191,10 +191,13 @@ for a handful of known users, not the public-facing story.
 Task 5.2's self-serve runbook is [Supporter keys](supporter-key.md): a
 lifetime tenant credential issued after a small donation, still
 subject to the same per-tenant rate limits described above as its
-fair-use mechanism. The donation link is live, but issuance itself
-remains a manual, out-of-band process, the same as onboarding a beta
-user — see that page's "Getting a supporter key" for how to donate and
-what happens (and does not yet happen automatically) after.
+fair-use mechanism. The donation link is live, and — once an operator
+has enabled the webhook bridge described in
+[Automatic supporter-key issuance](supporter-webhook.md) — issuance
+itself is automatic: a qualifying donation mints and mails the
+credential without an operator in the loop. The manual, out-of-band
+`netnl-admin user add` process described above remains the fallback
+when the bridge is disabled or unavailable.
 
 ## Not an SLA
 
