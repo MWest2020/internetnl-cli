@@ -174,6 +174,34 @@ def test_preflight_on_the_id_paths(demo_client):
         _assert_demo_cors(resp, origin_matches=True)
 
 
+# --- builder-review fix (S7): the preflight actually grants permission -----------
+
+
+def test_preflight_matching_origin_grants_method_and_header_permission(demo_client):
+    resp = demo_client.options("/demo/requests", headers=_origin_header())
+    assert resp.status_code == 204
+    assert resp.headers.get("Access-Control-Allow-Methods") == "POST, GET, OPTIONS"
+    assert resp.headers.get("Access-Control-Allow-Headers") == "content-type"
+    assert "Access-Control-Max-Age" in resp.headers
+
+
+def test_preflight_mismatched_origin_grants_no_method_or_header_permission(demo_client):
+    resp = demo_client.options("/demo/requests", headers=_origin_header("https://evil.example"))
+    assert resp.status_code == 204
+    assert "Access-Control-Allow-Methods" not in resp.headers
+    assert "Access-Control-Allow-Headers" not in resp.headers
+    assert "Access-Control-Max-Age" not in resp.headers
+
+
+def test_preflight_with_no_origin_still_grants_permission(demo_client):
+    # A non-browser preflight probe (no `Origin` at all) is treated the
+    # same as a match — nothing here is browser-enforced without an
+    # `Origin` to check against.
+    resp = demo_client.options("/demo/requests")
+    assert resp.status_code == 204
+    assert resp.headers.get("Access-Control-Allow-Methods") == "POST, GET, OPTIONS"
+
+
 # --- forbidden-origin on an actual request (D6) ------------------------------------
 
 

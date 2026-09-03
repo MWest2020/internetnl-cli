@@ -41,7 +41,20 @@ All notable changes to this project are documented here. The format follows
   [`docs/reference/demo-api.md`](docs/reference/demo-api.md) (the page
   contract the dark-launched demo page relies on). The BMC-bridge that
   would turn a demo visitor into a real tenant is a separate, later
-  change and is not built or stubbed here.
+  change and is not built or stubbed here. Post-review hardening pass on
+  the same (still unreleased) demo family: the per-IP and per-domain-
+  cooldown bounds are now claimed atomically (proven race-free under real
+  concurrency, not just `TestClient`); a non-polled run whose upstream
+  status went terminal is refreshed before the next reservation, instead
+  of occupying a concurrency slot until the retention window prunes it;
+  every upstream-originated error and every aggregate-cap 429 reaching a
+  demo reply is now a fixed, host-free, tenant-number-free visitor
+  literal; a new per-IP poll budget (`NETNL_DEMO_POLLS_PER_IP_PER_HOUR`)
+  bounds anonymous status/results polling, and a status poll of an
+  already-terminal row is answered from the store with no upstream call;
+  `netnl-admin user reissue <name>` re-keys an existing credential row in
+  place (revoked or not), the kill switch's previously-missing "turn it
+  back on" half.
 - `action.yml`: a composite GitHub Action wrapping `internetnl submit`,
   installed from the same ref as the action itself (`uses:
   MWest2020/internetnl-cli@<ref>`). Inputs cover `hosts`/`file`, `type`,

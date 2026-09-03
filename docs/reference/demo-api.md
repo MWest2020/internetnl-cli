@@ -77,7 +77,26 @@ minute or so of polling, and **give up around 10 minutes** if `status`
 never reaches a terminal value (`done`, `error`, `cancelled`) — a run that
 has not finished by then should be treated as failed by the page, not
 polled forever. This mirrors the batch instance's own realistic run time
-for a single domain; there is no server-sent push notification.
+for a single domain; there is no server-sent push notification. At that
+cadence, one run polled through to completion is roughly 45 requests to
+this endpoint — well inside the per-IP poll budget below.
+
+A poll of an id whose *status is already terminal* answers instantly from
+the facade's own store, with no call to the upstream instance at all —
+polling a finished id in a loop (e.g. a page that keeps a completed run's
+tab open) costs nothing beyond the first poll that observed the terminal
+status. `GET .../{id}/results` is different: it always fetches from
+upstream (the facade does not keep a copy of the `domains` payload), so
+repeat calls to it always cost one upstream call each — fetch results once
+per finished run, not in the same poll loop as the status check.
+
+`NETNL_DEMO_POLLS_PER_IP_PER_HOUR` (default 120) bounds how many status/
+results requests one client-IP bucket may make per trailing hour, on top
+of (not instead of) the per-submission bounds above — exceeding it answers
+429 the same way an over-quota submission does (see the error table
+below). Sized well above the ~45-poll cost of one run polled to
+completion; a page following the cadence above will not hit it under
+ordinary use.
 
 The all-zero id `00000000000000000000000000000000` is reserved as a smoke
 probe: it always answers 404 when the demo is enabled (there is no request
@@ -133,20 +152,32 @@ Every error reply is shaped like the rest of the facade:
 
 | Status | Label | When | `msg` (shown as-is; written for a visitor) |
 |---|---|---|---|
-| 400 | `bad-request` | The body has an extra/`type` field, or `domain` is not a plain string | `invalid request body: ...` (pydantic-shape errors) |
-| 400 | `bad-request` | The domain fails the shape or anti-SSRF check | `enter a bare domain like example.nl, not a URL` |
+| 400 | `bad-request` | The body has an extra/`type` field, `domain` is not a plain string, or the domain fails the shape/anti-SSRF check | `enter a bare domain like example.nl, not a URL` (one literal for every one of these — pydantic's own field-level errors are never reflected back) |
 | 403 | `forbidden-origin` | The request's `Origin` is present and does not match the configured one | `this origin is not allowed to use the demo` |
 | 404 | `unknown-request` | The id does not exist, is malformed, or belongs to a different credential (including a tenant's own id) | `this request_id does not exist for the user` |
-| 429 | `rate-limited` | The submitted domain was checked too recently (cooldown) | `this domain was checked recently; please try again later` |
-| 429 | `rate-limited` | Too many accepted runs from this network recently | `too many demo runs from this network recently; please try again later` |
-| 429 | `rate-limited` | The demo's own hourly or concurrency cap is at its limit | the demo's own rate-limit wording, distinct from the tenant surface's |
-| 503 | `demo-unavailable` | The borrowed demo credential is missing or revoked (the kill switch) | `the live demo is temporarily unavailable; please try again shortly` |
+| 429 | `rate-limited` | The submitted domain was checked too recently (cooldown), **or** too many accepted runs from this network recently (per-IP cap) | `too many demo runs recently from this network; please try again later` — the same text for both, deliberately (see "Cooldown and the per-IP cap" below) |
+| 429 | `rate-limited` | Too many status/results requests from this network recently (the poll budget, `NETNL_DEMO_POLLS_PER_IP_PER_HOUR`) | `too many status checks from this network recently; please try again later` |
+| 429 | `rate-limited` | The demo's own hourly or concurrency cap is at its limit | `the demo is busy right now; please try again shortly` |
+| 502 | `upstream-error` | The upstream instance answered, but not with something usable (any non-2xx status, or a malformed 2xx) | `the measurement instance is unreachable right now` — never the upstream's own status or hostname |
+| 503 | `demo-unavailable` | The borrowed demo credential is missing or revoked (the kill switch), **or** the upstream instance could not be reached at the network level at all | `the live demo is temporarily unavailable; please try again shortly` — both causes share this one outcome; the page cannot (and does not need to) tell them apart |
 | 501 | `not-implemented` | The demo is not enabled at all | `this batch API v2 path is not proxied by this instance` |
-| 500 | `server-error` | Something unexpected broke | `an unexpected error occurred` |
+| 500 | `server-error` | Something broke inside the facade itself, unrelated to the upstream instance (a bug, not an upstream failure — those are the 502/503 rows above) | `an unexpected error occurred` |
 
-A `429`/`503` reply never returns a `request_id` — polling into an id from
-before the rejection is never the right response to any of these; the page
-should surface the `msg` and let the visitor retry later.
+A `429`/`502`/`503` reply never returns a `request_id` — polling into an id
+from before the rejection is never the right response to any of these; the
+page should surface the `msg` and let the visitor retry later.
+
+### Cooldown and the per-IP cap
+
+The cooldown and per-IP-cap rows above deliberately return the *exact
+same* `msg`. An earlier version of this facade distinguished them, which
+let an already over-quota visitor learn whether an unrelated domain was on
+cooldown just by reading which message came back — a small but real
+information leak with nothing to do with either bound's own purpose. The
+per-IP cap is also checked strictly before the domain cooldown is ever
+touched, so an over-quota visitor's request never even reaches (and thus
+never affects) the cooldown state for whatever domain they happened to
+submit.
 
 ## Provenance
 

@@ -116,17 +116,24 @@ guess, so a Cloudflare rule or `caddy-ratelimit`/`fail2ban` config scoped to
 "the auth-bearing paths" (as written above) simply does not cover
 `/demo/*`, and should not be extended to it naively either: the demo's own
 in-process bounds (the demo tenant's hourly/concurrency cap, a per-IP
-hourly cap, and a per-domain cooldown — see `design.md`, D3–D5) are already
+hourly cap on accepted submissions, a per-domain cooldown, and — added in
+the builder-review hardening pass — a separate per-IP budget on *polling*,
+`NETNL_DEMO_POLLS_PER_IP_PER_HOUR` — see `design.md`, D3–D5) are already
 the load-bearing limits for this surface, not a backstop behind an
 edge-level one the way `netnl.auth`'s scrypt cap is for the authenticated
-paths. Two things worth doing at the edge anyway, both optional:
+paths. See [how-to/demo-run.md](demo-run.md#header-trust-and-the-client-ip)
+for the header-trust assumption those per-IP bounds rest on, and its
+per-process/per-replica scope. Two things worth doing at the edge anyway,
+both optional:
 
-- **A separate, generous rate-limiting rule scoped to `/demo/*` only**, if
-  the edge already has the machinery from the section above — high enough
-  not to fight the demo's own per-IP cap (`NETNL_DEMO_PER_IP_PER_HOUR`) for
-  a legitimate visitor, low enough to blunt a volumetric flood before it
-  reaches the process at all. Not required: the demo's own bounds hold
-  without it.
+- **A separate, generous rate-limiting rule scoped to `/demo/*` only**
+  (still recommended), if the edge already has the machinery from the
+  section above — high enough not to fight the demo's own per-IP caps
+  (`NETNL_DEMO_PER_IP_PER_HOUR` on submissions, `NETNL_DEMO_POLLS_PER_IP_
+  PER_HOUR` on status/results polls) for a legitimate visitor, low enough
+  to blunt a volumetric flood before it reaches the process at all. Not
+  required: the demo's own bounds hold without it, the poll budget
+  included.
 - **A CDN/edge cache rule that never caches `/demo/*` responses.** Every
   demo reply already carries `Cache-Control: no-store` (design.md, D7), so
   a compliant cache will not store them regardless — this is belt-and-

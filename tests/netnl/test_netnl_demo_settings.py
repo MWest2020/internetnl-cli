@@ -74,6 +74,9 @@ def test_defaults_match_design(settings_env):
     assert s.demo.client_ip_header == "CF-Connecting-IP"
     assert s.demo.domain_cooldown_seconds == 900
     assert s.demo.retention_hours == 24
+    # Builder-review fix (M2): the poll budget, bounding anonymous GET
+    # status/results calls the way `per_ip_per_hour` bounds accepted POSTs.
+    assert s.demo.polls_per_ip_per_hour == 120
 
 
 def test_numeric_overrides_are_applied(settings_env):
@@ -84,6 +87,7 @@ def test_numeric_overrides_are_applied(settings_env):
         NETNL_DEMO_PER_IP_PER_HOUR="3",
         NETNL_DEMO_DOMAIN_COOLDOWN_SECONDS="60",
         NETNL_DEMO_RETENTION_HOURS="1",
+        NETNL_DEMO_POLLS_PER_IP_PER_HOUR="30",
     )
     s = load(env)
     assert s.demo.max_per_hour == 12
@@ -91,6 +95,7 @@ def test_numeric_overrides_are_applied(settings_env):
     assert s.demo.per_ip_per_hour == 3
     assert s.demo.domain_cooldown_seconds == 60
     assert s.demo.retention_hours == 1
+    assert s.demo.polls_per_ip_per_hour == 30
 
 
 def test_client_ip_header_is_overridable(settings_env):
@@ -160,4 +165,10 @@ def test_negative_demo_numeric_rejected(settings_env):
 def test_non_numeric_demo_value_rejected(settings_env):
     env = _demo_env(settings_env, NETNL_DEMO_PER_IP_PER_HOUR="lots")
     with pytest.raises(SettingsError, match="NETNL_DEMO_PER_IP_PER_HOUR"):
+        load(env)
+
+
+def test_negative_poll_budget_rejected(settings_env):
+    env = _demo_env(settings_env, NETNL_DEMO_POLLS_PER_IP_PER_HOUR="-1")
+    with pytest.raises(SettingsError, match="NETNL_DEMO_POLLS_PER_IP_PER_HOUR"):
         load(env)

@@ -36,21 +36,22 @@
 
 - [x] 2.1 `DemoSettings` dataclass in `netnl/settings.py`: `allowed_origin`,
       `tenant`, `max_per_hour`, `max_concurrent`, `per_ip_per_hour`,
-      `client_ip_header`, `domain_cooldown_seconds`, `retention_hours`
+      `client_ip_header`, `domain_cooldown_seconds`, `retention_hours`,
+      `polls_per_ip_per_hour` (builder-review fix, M2)
 - [x] 2.2 `Settings.demo: DemoSettings | None`; `None` when
       `NETNL_DEMO_ENABLED` is unset/not `"1"`
 - [x] 2.3 Fail-closed: `NETNL_DEMO_ALLOWED_ORIGIN`/`NETNL_DEMO_TENANT`
       required once enabled, `SettingsError` naming the missing variable
 - [x] 2.4 Origin validated against `^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$`,
       `http://localhost[:port]` accepted only under `NETNL_ALLOW_HTTP=1`
-- [x] 2.5 Numeric defaults (6/2/2/900/24) via the existing
+- [x] 2.5 Numeric defaults (6/2/2/900/24/120) via the existing
       `_resolve_numeric` helper; negative/non-integer rejected the same way
       as every other numeric setting
 - [x] 2.6 Tests: defaults, each required-var-missing case names itself,
       origin-shape rejection (bad scheme, bad port, embedded path), the
       `NETNL_ALLOW_HTTP` localhost carve-out, disabled-by-default (`demo is
       None` with no other demo var set)
-- Verify: `uv run pytest tests/netnl/test_netnl_settings.py -q`
+- Verify: `uv run pytest tests/netnl/test_netnl_demo_settings.py -q`
 
 ## T3. Demo submit route
 
@@ -170,6 +171,58 @@
 - Verify: links resolve (`grep` for the new file paths from `docs/index.md`);
   `openspec validate add-demo-run --strict` and `openspec validate --all
   --strict`
+
+## T9. Builder-review fixes (post-review hardening pass)
+
+Two parallel reviews (adversarial + security) of the initial T1–T8 build
+found overlapping, measured gaps. Fixed here, on top of the original build,
+no scope beyond what those findings named:
+
+- [x] 9.1 Slot leak: `POST /demo/requests` now calls `limits.
+      refresh_stale_non_terminal` before reserving, mirroring the tenant
+      path (`api.py`'s `submit`) — a non-polled run whose upstream status
+      went terminal no longer occupies a concurrency slot for up to
+      `NETNL_DEMO_RETENTION_HOURS`
+- [x] 9.2 Check-then-act race: `netnl.demo._try_claim_ip_slot`/
+      `_try_claim_domain` do sweep+check+insert inside one lock hold each
+      (previously two separate lock acquisitions); explicit release
+      (`_release_ip_slot`/`_release_domain_claim`) when a later step
+      (the reservation, or the upstream call) fails, so a claim that
+      produced no accepted run never still costs the visitor a slot.
+      Real-server concurrency tests added
+      (`tests/netnl/test_netnl_real_server.py`)
+- [x] 9.3 Visitor language on the aggregate-cap 429:
+      `limits.reserve_submission`'s tenant-facing wording is caught and
+      rewritten to one fixed literal before reaching a demo reply
+- [x] 9.4 Kill switch is two-directional: `netnl-admin user reissue <name>`
+      re-keys an existing row (revoked or not) in place — fresh
+      password/salt, `revoked_at` cleared, audited as `user-reissue`
+- [x] 9.5 Poll budget: `NETNL_DEMO_POLLS_PER_IP_PER_HOUR` (default 120)
+      bounds anonymous GET status/results calls per client-IP bucket; a
+      status poll of a row whose *stored* status is already terminal
+      answers from the store with no upstream call at all
+- [x] 9.6 Host-free upstream errors: every upstream-originated
+      `NetnlHTTPError` reaching a demo route is rewritten to one of two
+      fixed, host-free outcomes (`netnl.demo._visitor_upstream_error`)
+- [x] 9.7 Cooldown oracle closed: per-IP and per-domain-cooldown 429s share
+      one literal; check order is origin → availability → shape/validation
+      → per-IP → cooldown, so an over-quota IP never touches the domain
+      cooldown at all
+- [x] 9.8 Preflight completeness: `OPTIONS` replies add
+      `Access-Control-Allow-Methods`/`-Allow-Headers`/`-Max-Age` on an
+      origin match
+- [x] 9.9 Header-trust and multi-replica notes documented (design.md,
+      demo-run.md) — no behaviour change, doc-only per owner decision
+- [x] 9.10 Demo-tenant hygiene note in demo-run.md
+- [x] 9.11 pydantic validation failures on `/demo/*` flatten to the D14
+      literal rather than reflecting field/`loc` paths
+- [x] 9.12 Reviewer-minors: route-count wording, README's live-demo link,
+      T2's verify command, generic-500 privacy test, `_MAX_BUCKETS`
+      overflow cap added to the per-IP/poll/domain-cooldown structures
+- Verify: `uv run pytest tests/netnl/test_netnl_demo.py
+  tests/netnl/test_netnl_demo_cors.py tests/netnl/test_netnl_demo_privacy.py
+  tests/netnl/test_netnl_demo_settings.py tests/netnl/test_netnl_admin.py
+  tests/netnl/test_netnl_real_server.py -q`
 
 ## Overall verification
 

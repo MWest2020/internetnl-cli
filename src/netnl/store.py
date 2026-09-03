@@ -20,7 +20,11 @@ from internetnl_cli.client import is_valid_request_id
 
 from netnl.errors import NetnlHTTPError
 
-_TERMINAL_STATUSES = {"done", "error", "cancelled"}
+# Public (not `_`-prefixed): `netnl.demo` needs this set too, to answer a
+# status poll for an already-terminal row straight from the store rather
+# than re-contacting upstream for a result that cannot change any more
+# (builder-review fix M2).
+TERMINAL_STATUSES = {"done", "error", "cancelled"}
 
 # A row reserved inside the atomic reserve-then-submit transaction (see
 # `reserve_submission` in `limits.py`) before upstream has been contacted.
@@ -363,11 +367,11 @@ def update_status(
 
 
 def non_terminal_requests(conn: sqlite3.Connection, credential_id: int) -> list[sqlite3.Row]:
-    placeholders = ",".join("?" for _ in _TERMINAL_STATUSES)
+    placeholders = ",".join("?" for _ in TERMINAL_STATUSES)
     rows = conn.execute(
         f"SELECT * FROM requests WHERE credential_id = ? "
         f"AND last_status NOT IN ({placeholders})",
-        (credential_id, *sorted(_TERMINAL_STATUSES)),
+        (credential_id, *sorted(TERMINAL_STATUSES)),
     ).fetchall()
     return list(rows)
 
@@ -402,6 +406,25 @@ def revoke_credential(conn: sqlite3.Connection, username: str, revoked_at: str) 
     cur = conn.execute(
         "UPDATE credentials SET revoked_at = ? WHERE username = ? AND revoked_at IS NULL",
         (revoked_at, username),
+    )
+    return cur.rowcount > 0
+
+
+def reissue_credential(
+    conn: sqlite3.Connection, username: str, *, password_hash: str, salt: str
+) -> bool:
+    """Builder-review fix (S6=B3): re-key an *existing* row in place — a
+    fresh password/salt and `revoked_at` cleared — rather than requiring a
+    brand new row. Unlike `add_credential`, this works whether the row is
+    currently revoked or not: it is the operator's one lever to turn a
+    kill-switched surface (`netnl-admin user revoke ...`) back on without
+    running into `add`'s own "user already exists" refusal. Returns `False`
+    when no row with this username exists at all (nothing to reissue).
+    """
+    cur = conn.execute(
+        "UPDATE credentials SET password_hash = ?, salt = ?, revoked_at = NULL "
+        "WHERE username = ?",
+        (password_hash, salt, username),
     )
     return cur.rowcount > 0
 

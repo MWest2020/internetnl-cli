@@ -63,6 +63,32 @@ when their own preconditions are unmet.
   is a separate surface, governed entirely by "Anonymous demo runs are
   strictly bounded" below
 
+### Requirement: Credential lifecycle
+
+The facade SHALL support operator-issued credentials and immediate
+revocation; acceptance of the terms of use (only measure hosts you operate
+or have permission to test) SHALL be a documented precondition of
+issuance. The facade SHALL also support re-keying an existing credential
+row in place — a fresh password and immediate un-revocation — without
+requiring that row's username to be free of any prior row, so that an
+operator can turn a previously revoked credential back on without a
+restart or a configuration change.
+
+#### Scenario: Revoked credential
+
+- WHEN a revoked credential makes any call
+- THEN the facade answers 401 immediately, with no grace period
+
+#### Scenario: Reissuing a credential turns it back on
+
+- WHEN an operator reissues an existing credential row, whether it is
+  currently revoked or not
+- THEN the facade generates a fresh password for that row, clears any
+  revocation, and prints the new password exactly once; a subsequent call
+  authenticating with the new password succeeds, and issuing a reissue for
+  a username with no existing row at all is refused rather than silently
+  creating one
+
 ## ADDED Requirements
 
 ### Requirement: Anonymous demo runs are strictly bounded
@@ -99,7 +125,9 @@ accepted or rejected.
   additional field, a `type` field, or a `domain` that is a list rather
   than a string
 - THEN the facade rejects the request before any limit, credential or
-  upstream check runs
+  upstream check runs, with the same single literal message a rejected
+  domain's own shape/anti-SSRF failure uses below — never a field name or
+  a JSON-path reflected back from the request body
 
 #### Scenario: A rejected domain shows one plain, showable message
 
@@ -118,24 +146,75 @@ accepted or rejected.
   `NETNL_DEMO_MAX_CONCURRENT`
 - THEN the next demo submission answers 429, enforced by the same atomic
   reservation transaction the measurement subset's own rate/concurrency
-  limits use, with no second, independently-maintained counter
+  limits use, with no second, independently-maintained counter, and with a
+  visitor-facing literal that never names the configured numbers (unlike
+  the equivalent tenant-facing rejection on the authenticated surface); a
+  non-terminal demo run whose upstream status has since become terminal
+  without ever being polled is refreshed before this check runs, so it no
+  longer counts toward `NETNL_DEMO_MAX_CONCURRENT`
 
 #### Scenario: A per-IP bucket bounds repeat submissions from one address
 
 - WHEN a client IP (read from the configured header, generalised to
   `/32` for IPv4 or `/64` for IPv6) has already had
-  `NETNL_DEMO_PER_IP_PER_HOUR` accepted submissions in the trailing hour
+  `NETNL_DEMO_PER_IP_PER_HOUR` accepted submissions in the trailing hour,
+  checked and recorded atomically so that concurrent submissions from the
+  same address can never all observe "not yet at the limit"
 - THEN a further submission from that same address answers 429, while a
   missing or unparseable client-IP header always falls into one shared
-  bucket rather than bypassing this limit or being given its own identity
+  bucket rather than bypassing this limit or being given its own identity;
+  a submission whose per-IP claim succeeded but whose reservation or
+  upstream call then failed does not count against this bucket
 
 #### Scenario: A domain cooldown blocks a repeat run without leaking an id
 
 - WHEN a domain was accepted for a demo run less than
-  `NETNL_DEMO_DOMAIN_COOLDOWN_SECONDS` ago
+  `NETNL_DEMO_DOMAIN_COOLDOWN_SECONDS` ago, checked and recorded atomically
+  so that concurrent submissions for the same domain can never all observe
+  "not on cooldown"
 - THEN a further submission for that same (normalised) domain answers 429
   and never returns the request id of the run already in progress or
-  finished for it
+  finished for it; a submission whose cooldown claim succeeded but whose
+  reservation or upstream call then failed does not leave the domain on
+  cooldown
+
+#### Scenario: The per-IP cap and the domain cooldown are indistinguishable to a prober
+
+- WHEN a demo submission is rejected either because its client IP is at
+  its per-IP cap or because its domain is on cooldown
+- THEN both outcomes answer 429 with the identical literal message, and
+  the per-IP check is evaluated strictly before the domain-cooldown check,
+  so that a submission already rejected for being over its per-IP cap
+  never touches (and so never affects, or reveals anything about) any
+  domain's cooldown state
+
+#### Scenario: A per-IP poll budget bounds status and results requests
+
+- WHEN a client IP (keyed the same way as the per-IP submission bucket)
+  has already made `NETNL_DEMO_POLLS_PER_IP_PER_HOUR` status or results
+  requests in the trailing hour
+- THEN a further status or results request from that address answers 429
+  with its own literal message, independently of the per-submission bucket
+
+#### Scenario: A terminal status poll never re-contacts the upstream instance
+
+- WHEN `GET /demo/requests/{id}` is called for an id whose stored status is
+  already terminal (`done`, `error` or `cancelled`)
+- THEN the facade answers from its own store, without making any call to
+  the upstream instance; `GET /demo/requests/{id}/results` is unaffected by
+  this and always fetches from the upstream instance, since the facade
+  does not retain a copy of the results payload
+
+#### Scenario: An upstream failure on a demo route never reveals the upstream hostname
+
+- WHEN a call to the upstream instance made on behalf of a demo request
+  fails, for any reason (unreachable, an error status, or a malformed
+  reply)
+- THEN the facade answers with one of two fixed, host-free outcomes — a
+  503 reusing the same `demo-unavailable` message the kill switch already
+  uses when the upstream instance cannot be reached at all, or a 502 with a
+  single fixed literal for every other upstream failure — and the
+  upstream instance's own hostname never appears in the reply
 
 #### Scenario: A missing or revoked demo credential is the kill switch
 
@@ -143,7 +222,10 @@ accepted or rejected.
   has been revoked
 - THEN every demo submission answers 503 `demo-unavailable`, and this is
   the sole mechanism an operator needs to take the demo offline without a
-  restart or a configuration change
+  restart or a configuration change; the operator SHALL be able to take
+  the demo back online again, equally without a restart or a configuration
+  change, by re-keying the same credential row in place (see "Credential
+  lifecycle" below) rather than only being able to issue a brand new one
 
 #### Scenario: CORS is scoped to exactly one origin
 
@@ -156,6 +238,18 @@ accepted or rejected.
   answers 403 `forbidden-origin`, while the equivalent `OPTIONS` preflight
   still answers 204, simply without the CORS headers that would let a
   browser proceed
+
+#### Scenario: The preflight actually grants the browser permission to proceed
+
+- WHEN an `OPTIONS` preflight request to any `/demo/*` path carries an
+  `Origin` header that is absent or matches the configured one
+- THEN the 204 reply additionally carries `Access-Control-Allow-Methods`
+  covering `POST`, `GET` and `OPTIONS`, `Access-Control-Allow-Headers`
+  covering `content-type`, and an `Access-Control-Max-Age`, so a browser's
+  own preflight enforcement actually permits the cross-origin `POST` (with
+  a JSON `Content-Type`) the demo page needs to make; a mismatched `Origin`
+  gets none of these three, on top of already lacking the CORS headers
+  above
 
 #### Scenario: The demo path never touches authentication
 

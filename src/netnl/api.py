@@ -264,6 +264,20 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Builder-review fix (S9): on `/demo/*`, pydantic's own error shape
+        # (field names/`loc` paths straight from `exc.errors()`) is never
+        # reflected to an anonymous visitor — it is written for an API
+        # consumer inspecting a request body, not a person reading a demo
+        # page's error text, and reflecting raw field paths back is the
+        # kind of input-echoing a form should not do. Every `/demo/*`
+        # validation failure collapses to the same literal D14 message
+        # `POST /demo/requests`'s own domain-shape rejection already uses
+        # (`demo._BAD_DOMAIN_MSG`) — the only field this route ever
+        # accepts is `domain`, so that message is accurate for every way
+        # the body can fail pydantic's shape check too (an extra field, a
+        # `type` field, a list `domain`, ...).
+        if request.url.path.startswith("/demo/"):
+            return JSONResponse(error_body("bad-request", demo._BAD_DOMAIN_MSG), status_code=400)
         fields = sorted(
             {".".join(str(part) for part in error["loc"] if part != "body") for error in exc.errors()}
         )

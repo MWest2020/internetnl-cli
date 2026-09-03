@@ -13,7 +13,7 @@ import pathlib
 
 import pytest
 
-from fakes import REGISTER_REPLY
+from fakes import REGISTER_REPLY, STATUS_RUNNING
 
 from conftest import DEMO_ORIGIN, DEMO_TENANT, add_test_credential, queue_json
 from netnl import store
@@ -190,6 +190,11 @@ def test_tenant_cap_rejection_stores_no_domain_marker_and_no_extra_audit_row(
     assert first.status_code == 200
     after_accept = _audit_row_count(app)
 
+    # Builder-review fix (S2=B1): the second submit's own
+    # `refresh_stale_non_terminal` call refreshes the first (still
+    # non-terminal) row against upstream before its own reservation
+    # attempt is rejected by the hourly cap.
+    queue_json(fake_opener, STATUS_RUNNING)
     rejected_domain = "marker-tenantcap-rejected.nl"
     second = client.post(
         "/demo/requests",
@@ -200,3 +205,33 @@ def test_tenant_cap_rejection_stores_no_domain_marker_and_no_extra_audit_row(
 
     assert _audit_row_count(app) == after_accept
     _assert_no_markers(app, caplog, "198.51.100.2", rejected_domain)
+
+
+# --- reviewer-minor: the generic-500 crash path is also privacy-checked --------
+
+
+def test_generic_crash_rejection_stores_no_markers(settings_env, caplog):
+    from starlette.testclient import TestClient
+    from netnl.api import create_app
+    from netnl.settings import load
+
+    env = dict(settings_env)
+    env["NETNL_DEMO_ENABLED"] = "1"
+    env["NETNL_DEMO_ALLOWED_ORIGIN"] = DEMO_ORIGIN
+    env["NETNL_DEMO_TENANT"] = DEMO_TENANT
+    settings = load(env)
+
+    def crashing_opener(method, url, body, headers, timeout):
+        raise RuntimeError("boom")
+
+    app = create_app(settings, opener=crashing_opener)
+    add_test_credential(app, DEMO_TENANT, "thrown-away")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    domain = "marker-crash-xyz.nl"
+    resp = client.post("/demo/requests", json={"domain": domain}, headers=_headers())
+    assert resp.status_code == 500
+    assert resp.json()["error"]["label"] == "server-error"
+    assert domain not in resp.text
+    assert FAKE_IP not in resp.text
+    _assert_no_markers(app, caplog, FAKE_IP, domain)

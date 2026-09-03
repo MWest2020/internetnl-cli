@@ -90,10 +90,11 @@ rather than a parallel one:
   upstream submission — every bound (per-IP, per-domain, per-tenant-hour,
   SSRF/shape checks reused verbatim from `limits.check_domains`) is load-
   bearing, not defence in depth.
-- **Off by default.** `NETNL_DEMO_ENABLED` unset means the four `/demo/*`
-  routes do not exist as far as any client can tell — the same 501
-  `not-implemented` catch-all as any other unmapped path, not a 404 or a
-  "coming soon" reply that would leak that the feature exists.
+- **Off by default.** `NETNL_DEMO_ENABLED` unset means the three `/demo/*`
+  paths (six routes, counting each path's own `OPTIONS` preflight) do not
+  exist as far as any client can tell — the same 501 `not-implemented`
+  catch-all as any other unmapped path, not a 404 or a "coming soon" reply
+  that would leak that the feature exists.
 - **Operator load: one more credential to keep alive.** The kill switch
   (revoke the demo credential) is the same primitive operators already use
   for a misbehaving tenant, not a new mechanism to learn.

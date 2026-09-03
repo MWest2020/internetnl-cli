@@ -41,6 +41,14 @@ _DEMO_NUMERIC_DEFAULTS = {
     "NETNL_DEMO_PER_IP_PER_HOUR": ("per_ip_per_hour", 2),
     "NETNL_DEMO_DOMAIN_COOLDOWN_SECONDS": ("domain_cooldown_seconds", 900),
     "NETNL_DEMO_RETENTION_HOURS": ("retention_hours", 24),
+    # Builder-review fix (M2): bounds anonymous *polling* (GET status/
+    # results), a cost the per-IP submit cap above does nothing about — a
+    # single accepted run can otherwise be polled an unbounded number of
+    # times. 120/hour comfortably covers the page's own documented poll
+    # cadence (docs/reference/demo-api.md: 5s backing off to 15s, giving up
+    # around 10 minutes — worst case ~45 polls for one run) with headroom
+    # for more than one run polled at once from the same address.
+    "NETNL_DEMO_POLLS_PER_IP_PER_HOUR": ("polls_per_ip_per_hour", 120),
 }
 
 # var -> (attribute, default)
@@ -83,6 +91,7 @@ class DemoSettings:
     client_ip_header: str
     domain_cooldown_seconds: int
     retention_hours: int
+    polls_per_ip_per_hour: int
 
 
 @dataclass(frozen=True)

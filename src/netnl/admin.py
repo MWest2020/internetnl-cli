@@ -32,6 +32,15 @@ def _build_parser():
     revoke = user_sub.add_parser("revoke", help="revoke a credential")
     revoke.add_argument("name")
 
+    # Builder-review fix (S6=B3): the kill switch (`user revoke`) was
+    # one-directional — re-enabling a revoked username with `user add`
+    # fails ("already exists"). `reissue` works on the existing row
+    # (revoked or not): fresh password/salt, `revoked_at` cleared.
+    reissue = user_sub.add_parser(
+        "reissue", help="re-key an existing credential (works whether revoked or not)"
+    )
+    reissue.add_argument("name")
+
     user_sub.add_parser("list", help="list credentials")
 
     subparsers.add_parser("prune", help="apply retention windows")
@@ -65,6 +74,31 @@ def _user_revoke(conn, name: str, now: datetime, stderr: IO[str]) -> int:
         print(f"error: no active user '{name}'", file=stderr)
         return 1
     store.record_audit(conn, at=revoked_at, credential=name, event="user-revoke")
+    return 0
+
+
+def _user_reissue(conn, name: str, now: datetime, stdout: IO[str], stderr: IO[str]) -> int:
+    """Builder-review fix (S6=B3): the other half of the kill switch — a
+    revoked (or never-touched) row gets a fresh password/salt and
+    `revoked_at` cleared, in place. Unlike `_user_add`, this never refuses
+    on "already exists"; it refuses only when the username has no row at
+    all (nothing to reissue — use `user add` for a brand new name).
+    """
+    if store.find_credential(conn, name) is None:
+        print(f"error: no user '{name}' to reissue (use 'user add' for a new name)", file=stderr)
+        return 1
+    password = auth.new_password()
+    salt = auth.new_salt()
+    reissued_at = store.utcnow_iso(lambda: now)
+    store.reissue_credential(
+        conn, name, password_hash=auth.hash_password(password, salt), salt=salt.hex()
+    )
+    store.record_audit(conn, at=reissued_at, credential=name, event="user-reissue")
+    # Same one-time-print convention as `_user_add`: shown here, stored
+    # nowhere. For the demo tenant specifically, the demo never
+    # authenticates as this credential (design.md, D9) — throw this away
+    # exactly like the password `user add` printed originally.
+    print(password, file=stdout)
     return 0
 
 
@@ -116,6 +150,8 @@ def main(
             return _user_add(conn, args.name, now, stdout, stderr)
         if args.user_command == "revoke":
             return _user_revoke(conn, args.name, now, stderr)
+        if args.user_command == "reissue":
+            return _user_reissue(conn, args.name, now, stdout, stderr)
         if args.user_command == "list":
             return _user_list(conn, stdout)
     if args.command == "prune":
