@@ -19,6 +19,12 @@ for pipelines.
 [**internetnl-cli-demo**](https://github.com/MWest2020/internetnl-cli-demo)
 (quickstart + example hosts + CI-gate example).
 
+**Try it live, no account needed:** the `netnl` facade behind that demo
+repo also serves an anonymous, single-domain check at
+[docs/reference/demo-api.md](docs/reference/demo-api.md) — type a domain,
+get a real result, one run at a time (strictly rate-limited; see
+[docs/how-to/demo-run.md](docs/how-to/demo-run.md)).
+
 ## The rule
 
 **Only measure hosts you operate or have explicit permission to test.**

@@ -8,6 +8,40 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- An opt-in, anonymous demo route family on the `netnl` facade
+  (`openspec/changes/add-demo-run`): `POST /demo/requests` accepts exactly
+  `{"domain": "example.nl"}` (pydantic `extra="forbid"` makes a list or a
+  `type` field structurally impossible), `GET /demo/requests/{id}` and
+  `.../results` mirror the authenticated shape, owner-scoped to one
+  operator-issued credential row (`NETNL_DEMO_TENANT`) that nobody ever
+  authenticates as — revoking or never issuing it is the entire kill
+  switch (503 `demo-unavailable`). Never touches authentication: no
+  `Authorization` header is read and no password-hashing computation is
+  ever invoked on this path. Bounded three ways: the demo tenant's own
+  rate/concurrency limit via the facade's existing atomic
+  `limits.reserve_submission` (so there is exactly one rate-limiting
+  mechanism, not two), a per-IP-bucket hourly cap (client IP from a
+  configurable header, `/32`/`/64`-generalised, one shared bucket for
+  anything unparseable), and a per-domain cooldown that never returns an
+  existing `request_id`. CORS is scoped to exactly one configured origin
+  (never echoed, never combined with credentials), with explicit `OPTIONS`
+  routes answering 204 so a browser preflight does not hit the 501
+  catch-all. A successful demo submission writes exactly one audit row,
+  shaped identically to a tenant submission (`event=submit`,
+  `credential=<demo tenant>`, `domain_count=1`) — no visitor IP, `Origin`,
+  or submitted domain is ever written to disk or a log line, on any path,
+  accepted or rejected, proven by grepping the raw database file and
+  captured logs across every rejection reason. Its own retention window
+  (`NETNL_DEMO_RETENTION_HOURS`, default 24h) is applied on the existing
+  `netnl-admin prune` pass, reported separately from the tenant retention
+  counters. New docs:
+  [`docs/how-to/demo-run.md`](docs/how-to/demo-run.md) (enabling,
+  issuing/discarding the borrowed credential, the smoke check, the kill
+  switch) and
+  [`docs/reference/demo-api.md`](docs/reference/demo-api.md) (the page
+  contract the dark-launched demo page relies on). The BMC-bridge that
+  would turn a demo visitor into a real tenant is a separate, later
+  change and is not built or stubbed here.
 - `action.yml`: a composite GitHub Action wrapping `internetnl submit`,
   installed from the same ref as the action itself (`uses:
   MWest2020/internetnl-cli@<ref>`). Inputs cover `hosts`/`file`, `type`,

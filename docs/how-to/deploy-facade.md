@@ -106,6 +106,52 @@ time. That is the edge's job, and it differs by topology:
   topology 2 needs to make deliberately; it is not part of the
   `deploy/compose.yaml` recipe as shipped.
 
+## The `/demo/*` family at the edge
+
+`openspec/changes/add-demo-run` adds an opt-in, anonymous route family
+(`/demo/*`, see [how-to/demo-run.md](demo-run.md)) with no credential in
+front of it at all. Everything above about the *auth-bearing* paths does
+not apply to it the same way — there is no `Authorization` header to
+guess, so a Cloudflare rule or `caddy-ratelimit`/`fail2ban` config scoped to
+"the auth-bearing paths" (as written above) simply does not cover
+`/demo/*`, and should not be extended to it naively either: the demo's own
+in-process bounds (the demo tenant's hourly/concurrency cap, a per-IP
+hourly cap, and a per-domain cooldown — see `design.md`, D3–D5) are already
+the load-bearing limits for this surface, not a backstop behind an
+edge-level one the way `netnl.auth`'s scrypt cap is for the authenticated
+paths. Two things worth doing at the edge anyway, both optional:
+
+- **A separate, generous rate-limiting rule scoped to `/demo/*` only**, if
+  the edge already has the machinery from the section above — high enough
+  not to fight the demo's own per-IP cap (`NETNL_DEMO_PER_IP_PER_HOUR`) for
+  a legitimate visitor, low enough to blunt a volumetric flood before it
+  reaches the process at all. Not required: the demo's own bounds hold
+  without it.
+- **A CDN/edge cache rule that never caches `/demo/*` responses.** Every
+  demo reply already carries `Cache-Control: no-store` (design.md, D7), so
+  a compliant cache will not store them regardless — this is belt-and-
+  braces for an edge that might not honour that header for every response
+  shape.
+
+**The Tailscale Funnel gap (see above) applies to `/demo/*` too, and in one
+way more sharply.** If the demo is enabled and the facade is reachable via
+both the Cloudflare Tunnel and the Funnel fallback (topology 1), a
+`/demo/*`-scoped Cloudflare rule (if added per the bullet above) covers only
+the Cloudflare Tunnel hostname — the exact same gap the authenticated
+surface has. Unlike the authenticated surface, there is no credential at
+all standing between an anonymous caller and an upstream submission on this
+path, so while the Funnel stays up, the demo's own in-process bounds are
+the *only* thing standing between the Funnel hostname and the shared
+upstream instance's capacity. Read `NETNL_DEMO_ALLOWED_ORIGIN` in this
+light too: it only rejects a **browser** carrying a mismatched `Origin`
+header (D6) — it does nothing against a non-browser caller hitting the
+Funnel hostname directly with no `Origin` header at all, since an absent
+`Origin` is allowed through by design (see
+[reference/demo-api.md](../reference/demo-api.md)). The same two options
+from the section above apply: turn the Funnel off outside of an active
+fallback need, or accept the gap and rely on the demo's own bounds while it
+stays up.
+
 ## Prerequisites
 
 - A batch instance already running, on a machine with a **fixed public
