@@ -1,0 +1,129 @@
+name: 'internetnl-cli scan'
+description: >-
+  Submit hosts to an internet.nl-compatible batch API (the hosted instance,
+  a self-hosted one, or the netnl facade) and gate CI on scored subtest
+  failures.
+author: 'MWest2020'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  hosts:
+    description: >-
+      Space-separated hostnames to test. Provide exactly one of `hosts` or
+      `file`.
+    required: false
+  file:
+    description: >-
+      Path to a file with one hostname per line. Provide exactly one of
+      `hosts` or `file`.
+    required: false
+  type:
+    description: 'Test type: web or mail.'
+    required: false
+    default: 'web'
+  fail-on-scored:
+    description: >-
+      Exit non-zero (exit code 3) when a scored subtest failed. Set to
+      "false" to only report, never gate.
+    required: false
+    default: 'true'
+  name:
+    description: 'Free-form label for the request (INTERNETNL_NAME).'
+    required: false
+  endpoint:
+    description: 'Batch API v2 base URL (INTERNETNL_ENDPOINT).'
+    required: true
+  username:
+    description: 'Batch API username (INTERNETNL_USERNAME).'
+    required: true
+  password:
+    description: >-
+      Batch API password (INTERNETNL_PASSWORD). Pass this from a repository
+      or organisation secret (e.g. `${{ secrets.INTERNETNL_PASSWORD }}`) —
+      never hardcode it in the workflow file.
+    required: true
+
+outputs:
+  results-path:
+    description: 'Path to the JSON results file written by this run.'
+    value: ${{ steps.run.outputs.results-path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate hosts/file input
+      shell: bash
+      env:
+        HOSTS_INPUT: ${{ inputs.hosts }}
+        FILE_INPUT: ${{ inputs.file }}
+      run: |
+        set -eu
+        if [ -n "$HOSTS_INPUT" ] && [ -n "$FILE_INPUT" ]; then
+          echo "::error::internetnl-cli action: set exactly one of 'hosts' or 'file' inputs, not both." >&2
+          exit 1
+        fi
+        if [ -z "$HOSTS_INPUT" ] && [ -z "$FILE_INPUT" ]; then
+          echo "::error::internetnl-cli action: set one of 'hosts' or 'file' inputs." >&2
+          exit 1
+        fi
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+    - name: Install internetnl-cli from this action's own ref
+      shell: bash
+      env:
+        # github.action_repository / github.action_ref are only populated
+        # when the action is consumed from another repo via `uses:
+        # owner/repo@ref`; fall back to this repo's default branch so a
+        # local `uses: ./` (e.g. dogfooding this action from its own repo)
+        # still resolves to something installable.
+        ACTION_REPOSITORY: ${{ github.action_repository }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -eu
+        repo="${ACTION_REPOSITORY:-MWest2020/internetnl-cli}"
+        ref="${ACTION_REF:-main}"
+        uv tool install "git+https://github.com/${repo}@${ref}"
+        uv tool dir --bin >> "$GITHUB_PATH"
+
+    - name: Run internetnl submit
+      id: run
+      shell: bash
+      env:
+        INTERNETNL_ENDPOINT: ${{ inputs.endpoint }}
+        INTERNETNL_USERNAME: ${{ inputs.username }}
+        INTERNETNL_PASSWORD: ${{ inputs.password }}
+        HOSTS_INPUT: ${{ inputs.hosts }}
+        FILE_INPUT: ${{ inputs.file }}
+        TYPE_INPUT: ${{ inputs.type }}
+        NAME_INPUT: ${{ inputs.name }}
+        FAIL_ON_SCORED_INPUT: ${{ inputs.fail-on-scored }}
+      run: |
+        set -eu
+        results_path="${RUNNER_TEMP}/internetnl-results.json"
+        echo "results-path=${results_path}" >> "$GITHUB_OUTPUT"
+
+        args=(submit --type "$TYPE_INPUT" --json)
+        if [ "$FAIL_ON_SCORED_INPUT" = "true" ]; then
+          args+=(--fail-on-scored)
+        fi
+        if [ -n "$NAME_INPUT" ]; then
+          args+=(--name "$NAME_INPUT")
+        fi
+        if [ -n "$FILE_INPUT" ]; then
+          args+=(--file "$FILE_INPUT")
+        else
+          # HOSTS_INPUT is intentionally word-split: it is a space-separated
+          # list of hostnames, not a single argument.
+          # shellcheck disable=SC2206
+          hosts_array=($HOSTS_INPUT)
+          args+=("${hosts_array[@]}")
+        fi
+
+        # internetnl's own exit code (0/1/2/3/4 — see docs/how-to/ci.md)
+        # becomes this step's exit code, and therefore the job's, since it
+        # is the last command in the script and `set -e` is active.
+        internetnl "${args[@]}" > "$results_path"

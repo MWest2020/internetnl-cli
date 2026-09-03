@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-08-31
+last_reviewed: 2026-09-03
 ---
 
 # Running the netnl private beta
@@ -177,6 +177,13 @@ a public docs page stating the endpoint, terms, limits and retention
 handover package complete enough to run without the original operators
 (task 5.3). This page is deliberately narrower — a short-lived runbook
 for a handful of known users, not the public-facing story.
+
+One candidate for task 5.2's self-serve runbook is documented ahead of
+time in [Supporter keys](supporter-key.md): a lifetime tenant
+credential issued after a small donation, still subject to the same
+per-tenant rate limits described above as its fair-use mechanism. It
+is explicitly a **draft plan**, not a live process — see that page's
+"Open TODO" for what is still missing before it can open.
 
 ## Not an SLA
 

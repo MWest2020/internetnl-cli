@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `action.yml`: a composite GitHub Action wrapping `internetnl submit`,
+  installed from the same ref as the action itself (`uses:
+  MWest2020/internetnl-cli@<ref>`). Inputs cover `hosts`/`file`, `type`,
+  `fail-on-scored`, `name` and the `INTERNETNL_*` credential trio; the
+  password only ever reaches the process via an environment variable,
+  never interpolated into a `run:` line. The CLI's own exit code decides
+  the step's outcome, and the `--json` output path is exposed as the
+  `results-path` output. See [`docs/how-to/ci.md`](docs/how-to/ci.md) for
+  the GitHub Actions and plain-CLI (GitLab CI et al.) recipes and the
+  gate's exit-code semantics.
+- [`docs/how-to/supporter-key.md`](docs/how-to/supporter-key.md): the
+  planned issuance model for a lifetime `netnl` tenant credential after a
+  small donation — beta, best-effort, no SLA, with the existing
+  per-tenant rate limit as the fair-use mechanism. Draft: the donation
+  link itself does not exist yet.
+
 ### Fixed
 
 - The CLI now sends a `User-Agent: internetnl-cli/<version>` header on every
