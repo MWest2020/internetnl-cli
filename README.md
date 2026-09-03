@@ -71,6 +71,26 @@ for the full table (`INTERNETNL_ENDPOINT`, `INTERNETNL_USERNAME`,
 config path). Credentials come from the environment only — never from
 command-line arguments, and they never appear in output or logs.
 
+## Use in CI
+
+`internetnl` is meant to run in someone else's pipeline: `--json`,
+stable exit codes (`0` ok, `1` config, `2` transport/API, `3`
+`--fail-on-scored` gate, `4` poll timeout) and a bundled GitHub Action
+([`action.yml`](action.yml)):
+
+```yaml
+- uses: MWest2020/internetnl-cli@main
+  with:
+    hosts: example.org
+    endpoint: https://api.westerweel.work
+    username: ${{ secrets.INTERNETNL_USERNAME }}
+    password: ${{ secrets.INTERNETNL_PASSWORD }}
+```
+
+See [docs/how-to/ci.md](docs/how-to/ci.md) for the full input
+reference, a plain-CLI recipe for other CI systems (GitLab CI et al.),
+and the gate's exit-code semantics.
+
 ## Self-hosting
 
 If you cannot get an account on the hosted batch instance, you can run your

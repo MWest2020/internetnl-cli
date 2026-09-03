@@ -1,0 +1,82 @@
+name: action-smoke
+
+# Minimal, no-network-measurement evidence that action.yml's own input
+# validation still fails closed. Only exercises paths that never reach
+# the real internet.nl-compatible API: this repo has no credential for
+# one, and none is provisioned here. `endpoint`/`username`/`password`
+# below are throwaway placeholders, never used because both scenarios
+# are meant to fail in action.yml's "Validate inputs" step, before the
+# "Install uv" / install step ever runs.
+#
+# The "step failed" assert alone would not distinguish that from a
+# later failure (e.g. a transport error reaching `endpoint`, which
+# also fails the step) since we cannot inspect the composite action's
+# own step-by-step log from here. Each job therefore adds a second
+# assert: `command -v internetnl` must find nothing, which is only
+# true if the run never reached "Install uv"/the install step —
+# proving the failure happened in (or before) input validation, not
+# somewhere on a network path.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-hosts-no-file:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Run action with neither hosts nor file set
+        id: run
+        continue-on-error: true
+        uses: ./
+        with:
+          endpoint: https://example.invalid
+          username: smoke
+          password: smoke
+
+      - name: Assert the hosts/file validation step failed
+        if: steps.run.outcome != 'failure'
+        run: |
+          echo "::error::expected the action to fail (neither hosts nor file set), but it did not"
+          exit 1
+
+      - name: Assert the failure happened before install (validation, not a network path)
+        run: |
+          if command -v internetnl >/dev/null 2>&1; then
+            echo "::error::internetnl is on PATH — the run got past 'Install uv'/install, so the failing step was not (only) input validation"
+            exit 1
+          fi
+
+  invalid-fail-on-scored:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Run action with an invalid fail-on-scored value
+        id: run
+        continue-on-error: true
+        uses: ./
+        with:
+          hosts: example.org
+          fail-on-scored: 'yes'
+          endpoint: https://example.invalid
+          username: smoke
+          password: smoke
+
+      - name: Assert the fail-on-scored validation failed
+        if: steps.run.outcome != 'failure'
+        run: |
+          echo "::error::expected the action to fail (fail-on-scored: 'yes' is not 'true'/'false'), but it did not"
+          exit 1
+
+      - name: Assert the failure happened before install (validation, not a network path)
+        run: |
+          if command -v internetnl >/dev/null 2>&1; then
+            echo "::error::internetnl is on PATH — the run got past 'Install uv'/install, so the failing step was not (only) input validation"
+            exit 1
+          fi
