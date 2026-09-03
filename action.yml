@@ -42,15 +42,27 @@ inputs:
   endpoint:
     description: 'Batch API v2 base URL (INTERNETNL_ENDPOINT).'
     required: true
+  credential:
+    description: >-
+      Preferred way to pass the batch API credential: a single
+      'username:password' string (INTERNETNL_CREDENTIAL), split on the
+      first colon so a password containing one still works. Pass this
+      from a single repository or organisation secret — never hardcode
+      it in the workflow file. Provide either `credential`, or both
+      `username` and `password`, never a mix of the two.
+    required: false
   username:
-    description: 'Batch API username (INTERNETNL_USERNAME).'
-    required: true
+    description: >-
+      Batch API username (INTERNETNL_USERNAME). Alternative to
+      `credential`; must be paired with `password`.
+    required: false
   password:
     description: >-
-      Batch API password (INTERNETNL_PASSWORD). Pass this from a repository
-      or organisation secret (in your workflow: `secrets.INTERNETNL_PASSWORD`)
-      — never hardcode it in the workflow file.
-    required: true
+      Batch API password (INTERNETNL_PASSWORD). Alternative to
+      `credential`; must be paired with `username`. Pass this from a
+      repository or organisation secret — never hardcode it in the
+      workflow file.
+    required: false
 
 outputs:
   results-path:
@@ -66,6 +78,9 @@ runs:
         HOSTS_INPUT: ${{ inputs.hosts }}
         FILE_INPUT: ${{ inputs.file }}
         FAIL_ON_SCORED_INPUT: ${{ inputs.fail-on-scored }}
+        CREDENTIAL_INPUT: ${{ inputs.credential }}
+        USERNAME_INPUT: ${{ inputs.username }}
+        PASSWORD_INPUT: ${{ inputs.password }}
       run: |
         set -eu
         if [ -n "$HOSTS_INPUT" ] && [ -n "$FILE_INPUT" ]; then
@@ -84,9 +99,30 @@ runs:
             exit 1
             ;;
         esac
+        # Exactly one credential form: the single 'credential' input, or
+        # both 'username' and 'password' (never a mix of the two, never
+        # neither).
+        if [ -n "$CREDENTIAL_INPUT" ] && { [ -n "$USERNAME_INPUT" ] || [ -n "$PASSWORD_INPUT" ]; }; then
+          echo "::error::internetnl-cli action: set either 'credential', or both 'username' and 'password' — not both forms." >&2
+          exit 1
+        fi
+        if [ -z "$CREDENTIAL_INPUT" ] && { [ -z "$USERNAME_INPUT" ] || [ -z "$PASSWORD_INPUT" ]; }; then
+          echo "::error::internetnl-cli action: set 'credential', or both 'username' and 'password'." >&2
+          exit 1
+        fi
 
     - name: Install uv
       uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      with:
+        # This action never checks anything out (no actions/checkout step
+        # runs here), so there is no lockfile/project directory to look
+        # for; without this, setup-uv warns on every run. Caching is
+        # similarly pointless here: nothing this step installs is reused
+        # across runs of a one-shot `uv tool install`, and the measured
+        # cache footprint is ~1MB — not worth the warning or the cache
+        # I/O.
+        ignore-empty-workdir: true
+        enable-cache: false
 
     - name: Install internetnl-cli from this action's own ref
       shell: bash
@@ -110,8 +146,9 @@ runs:
       shell: bash
       env:
         INTERNETNL_ENDPOINT: ${{ inputs.endpoint }}
-        INTERNETNL_USERNAME: ${{ inputs.username }}
-        INTERNETNL_PASSWORD: ${{ inputs.password }}
+        CREDENTIAL_INPUT: ${{ inputs.credential }}
+        USERNAME_INPUT: ${{ inputs.username }}
+        PASSWORD_INPUT: ${{ inputs.password }}
         HOSTS_INPUT: ${{ inputs.hosts }}
         FILE_INPUT: ${{ inputs.file }}
         TYPE_INPUT: ${{ inputs.type }}
@@ -120,6 +157,20 @@ runs:
         ALLOWLIST_INPUT: ${{ inputs.allowlist }}
       run: |
         set -eu
+        # Exactly one of the two credential forms reaches the CLI's own
+        # environment: a composite action's `env:` mapping always sets a
+        # variable (to '' when the input is unset), so mapping both
+        # INTERNETNL_CREDENTIAL and INTERNETNL_USERNAME/INTERNETNL_PASSWORD
+        # unconditionally would make config.py see an empty-but-present
+        # INTERNETNL_CREDENTIAL even in username/password mode, tripping
+        # its own format check. The "Validate inputs" step already proved
+        # exactly one form was given, so branching here is safe.
+        if [ -n "$CREDENTIAL_INPUT" ]; then
+          export INTERNETNL_CREDENTIAL="$CREDENTIAL_INPUT"
+        else
+          export INTERNETNL_USERNAME="$USERNAME_INPUT"
+          export INTERNETNL_PASSWORD="$PASSWORD_INPUT"
+        fi
         results_path="${RUNNER_TEMP}/internetnl-results.json"
         echo "results-path=${results_path}" >> "$GITHUB_OUTPUT"
 

@@ -143,6 +143,105 @@ def test_credentials_only_from_environment(tmp_path):
     assert cfg.password == "secret"
 
 
+# --- INTERNETNL_CREDENTIAL: single-secret alternative to USERNAME/PASSWORD --
+
+
+def test_credential_env_var_is_split_on_first_colon(tmp_path):
+    cfg = resolve(
+        _env(
+            tmp_path,
+            INTERNETNL_ENDPOINT="https://batch.example/api/batch/v2",
+            INTERNETNL_CREDENTIAL="alice:secret",
+        )
+    )
+    assert cfg.username == "alice"
+    assert cfg.password == "secret"
+
+
+def test_credential_env_var_password_with_colon_is_kept_whole(tmp_path):
+    cfg = resolve(
+        _env(
+            tmp_path,
+            INTERNETNL_ENDPOINT="https://batch.example/api/batch/v2",
+            INTERNETNL_CREDENTIAL="alice:sec:ret",
+        )
+    )
+    assert cfg.username == "alice"
+    assert cfg.password == "sec:ret"
+
+
+def test_credential_and_username_together_is_config_error(tmp_path):
+    with pytest.raises(ConfigError) as excinfo:
+        resolve(
+            _env(
+                tmp_path,
+                INTERNETNL_ENDPOINT="https://batch.example/api/batch/v2",
+                INTERNETNL_CREDENTIAL="alice:secret",
+                INTERNETNL_USERNAME="alice",
+            )
+        )
+    message = str(excinfo.value)
+    assert "INTERNETNL_CREDENTIAL" in message
+    assert "INTERNETNL_USERNAME" in message
+
+
+def test_credential_and_password_together_is_config_error(tmp_path):
+    with pytest.raises(ConfigError) as excinfo:
+        resolve(
+            _env(
+                tmp_path,
+                INTERNETNL_ENDPOINT="https://batch.example/api/batch/v2",
+                INTERNETNL_CREDENTIAL="alice:secret",
+                INTERNETNL_PASSWORD="secret",
+            )
+        )
+    message = str(excinfo.value)
+    assert "INTERNETNL_CREDENTIAL" in message
+    assert "INTERNETNL_PASSWORD" in message
+
+
+def test_credential_without_colon_is_config_error_and_does_not_echo_value(tmp_path):
+    secret_looking_value = "not-a-valid-credential-format"
+    with pytest.raises(ConfigError) as excinfo:
+        resolve(
+            _env(
+                tmp_path,
+                INTERNETNL_ENDPOINT="https://batch.example/api/batch/v2",
+                INTERNETNL_CREDENTIAL=secret_looking_value,
+            )
+        )
+    message = str(excinfo.value)
+    assert secret_looking_value not in message
+    assert "username:password" in message
+
+
+def test_credential_not_set_falls_back_to_username_password_unchanged(tmp_path):
+    cfg = resolve(
+        _env(
+            tmp_path,
+            INTERNETNL_ENDPOINT="https://batch.example/api/batch/v2",
+            INTERNETNL_USERNAME="alice",
+            INTERNETNL_PASSWORD="secret",
+        )
+    )
+    assert cfg.username == "alice"
+    assert cfg.password == "secret"
+
+
+def test_credential_key_in_ini_is_also_rejected_and_secret_not_echoed(tmp_path):
+    config_dir = tmp_path / ".config" / "internetnl"
+    config_dir.mkdir(parents=True)
+    secret = "s3cr3t-should-not-appear"
+    (config_dir / "config.ini").write_text(
+        f"[internetnl]\nendpoint = https://from-file.example/api/batch/v2\ncredential = alice:{secret}\n"
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        resolve(_env(tmp_path))
+    message = str(excinfo.value)
+    assert secret not in message
+    assert "credential" in message
+
+
 def test_unknown_ini_keys_are_ignored(tmp_path):
     config_dir = tmp_path / ".config" / "internetnl"
     config_dir.mkdir(parents=True)

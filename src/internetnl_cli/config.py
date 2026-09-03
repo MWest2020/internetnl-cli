@@ -15,7 +15,7 @@ from typing import Mapping
 
 from internetnl_cli.errors import ConfigError
 
-_FORBIDDEN_KEYS = {"username", "password", "passwd", "token", "secret"}
+_FORBIDDEN_KEYS = {"username", "password", "passwd", "token", "secret", "credential"}
 
 _NUMERIC_DEFAULTS = {
     "INTERNETNL_TIMEOUT": ("timeout", 30.0),
@@ -118,6 +118,37 @@ def _resolve_numeric(env: Mapping[str, str], var: str, attr: str, default):
     return value
 
 
+def _resolve_credential(env: Mapping[str, str]) -> tuple[str, str]:
+    """Resolve username/password from either the single-credential env var
+    or the pair of legacy env vars — never both.
+
+    `INTERNETNL_CREDENTIAL` is `username:password`, split on the *first*
+    colon: passwords may contain one, the existing username charset never
+    does, so this split is unambiguous. When set, `INTERNETNL_USERNAME`/
+    `INTERNETNL_PASSWORD` must not also be set — silently preferring one
+    over the other would mask a misconfiguration instead of surfacing it.
+    """
+    credential = env.get("INTERNETNL_CREDENTIAL")
+    username_set = "INTERNETNL_USERNAME" in env
+    password_set = "INTERNETNL_PASSWORD" in env
+
+    if credential is not None:
+        if username_set or password_set:
+            raise ConfigError(
+                "set either INTERNETNL_CREDENTIAL or INTERNETNL_USERNAME/"
+                "INTERNETNL_PASSWORD, not both"
+            )
+        if ":" not in credential:
+            raise ConfigError(
+                "INTERNETNL_CREDENTIAL must be 'username:password' "
+                "(split on the first ':')"
+            )
+        username, password = credential.split(":", 1)
+        return username, password
+
+    return env.get("INTERNETNL_USERNAME", ""), env.get("INTERNETNL_PASSWORD", "")
+
+
 def resolve(env: Mapping[str, str] | None = None) -> Config:
     if env is None:
         env = os.environ
@@ -139,8 +170,7 @@ def resolve(env: Mapping[str, str] | None = None) -> Config:
 
     endpoint = _validate_endpoint(endpoint, env)
 
-    username = env.get("INTERNETNL_USERNAME", "")
-    password = env.get("INTERNETNL_PASSWORD", "")
+    username, password = _resolve_credential(env)
 
     kwargs = {}
     for var, (attr, default) in _NUMERIC_DEFAULTS.items():
