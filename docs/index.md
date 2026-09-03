@@ -25,9 +25,9 @@ until the implementation lands.
   revoking tenant credentials, onboarding a handful of known beta
   users, what to observe against the default limits, and the
   acceptance script that gates going live.
-- [Supporter keys](how-to/supporter-key.md) — the planned lifetime
-  credential issued for a small donation: beta, best-effort, no SLA,
-  with the per-tenant rate limit as the fair-use mechanism.
+- [Supporter keys](how-to/supporter-key.md) — the lifetime credential
+  issued for a small donation: beta, best-effort, no SLA, with the
+  per-tenant rate limit as the fair-use mechanism.
 - [Use in CI](how-to/ci.md) — the bundled GitHub Action, a plain-CLI
   recipe for other CI systems, and the gate's exit-code semantics.
 

@@ -30,7 +30,14 @@ inputs:
     required: false
     default: 'true'
   name:
-    description: 'Free-form label for the request (INTERNETNL_NAME).'
+    description: 'Free-form label for the request.'
+    required: false
+  allowlist:
+    description: >-
+      Path (workspace-relative) to an allowlist file of accepted
+      failures, one `host testname` pair per line (`#` comments
+      allowed). Maps to `--allowlist`. Requires `actions/checkout` to
+      have run first so the file exists in the workspace.
     required: false
   endpoint:
     description: 'Batch API v2 base URL (INTERNETNL_ENDPOINT).'
@@ -53,11 +60,12 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Validate hosts/file input
+    - name: Validate inputs
       shell: bash
       env:
         HOSTS_INPUT: ${{ inputs.hosts }}
         FILE_INPUT: ${{ inputs.file }}
+        FAIL_ON_SCORED_INPUT: ${{ inputs.fail-on-scored }}
       run: |
         set -eu
         if [ -n "$HOSTS_INPUT" ] && [ -n "$FILE_INPUT" ]; then
@@ -68,6 +76,14 @@ runs:
           echo "::error::internetnl-cli action: set one of 'hosts' or 'file' inputs." >&2
           exit 1
         fi
+        case "$FAIL_ON_SCORED_INPUT" in
+          true|false)
+            ;;
+          *)
+            echo "::error::fail-on-scored must be 'true' or 'false'" >&2
+            exit 1
+            ;;
+        esac
 
     - name: Install uv
       uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -101,25 +117,43 @@ runs:
         TYPE_INPUT: ${{ inputs.type }}
         NAME_INPUT: ${{ inputs.name }}
         FAIL_ON_SCORED_INPUT: ${{ inputs.fail-on-scored }}
+        ALLOWLIST_INPUT: ${{ inputs.allowlist }}
       run: |
         set -eu
         results_path="${RUNNER_TEMP}/internetnl-results.json"
         echo "results-path=${results_path}" >> "$GITHUB_OUTPUT"
 
         args=(submit --type "$TYPE_INPUT" --json)
+        # fail-on-scored is validated (must be 'true' or 'false') by the
+        # earlier "Validate inputs" step.
         if [ "$FAIL_ON_SCORED_INPUT" = "true" ]; then
           args+=(--fail-on-scored)
         fi
         if [ -n "$NAME_INPUT" ]; then
           args+=(--name "$NAME_INPUT")
         fi
+        if [ -n "$ALLOWLIST_INPUT" ]; then
+          args+=(--allowlist "$ALLOWLIST_INPUT")
+        fi
+
         if [ -n "$FILE_INPUT" ]; then
           args+=(--file "$FILE_INPUT")
         else
+          # `--` marks the end of options: without it, a host that starts
+          # with `-` (e.g. a stray `--no-poll` typo in the hosts input)
+          # would be parsed by argparse as a flag instead of a positional
+          # hostname. It must go right before the positional hosts, not
+          # before `--file` above (which is itself an option, not a
+          # positional).
+          args+=(--)
           # HOSTS_INPUT is intentionally word-split: it is a space-separated
-          # list of hostnames, not a single argument.
+          # list of hostnames, not a single argument. `set -f` disables
+          # glob expansion for the split so a hostname containing `*` or
+          # `?` is not silently expanded against the filesystem.
+          set -f
           # shellcheck disable=SC2206
           hosts_array=($HOSTS_INPUT)
+          set +f
           args+=("${hosts_array[@]}")
         fi
 

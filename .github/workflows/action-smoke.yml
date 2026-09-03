@@ -1,0 +1,58 @@
+name: action-smoke
+
+# Minimal, no-network-measurement evidence that action.yml's own input
+# validation still fails closed. Only exercises paths that never reach
+# the real internet.nl-compatible API: this repo has no credential for
+# one, and none is provisioned here. `endpoint`/`username`/`password`
+# below are throwaway placeholders, never used because both scenarios
+# fail before the action gets that far.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-hosts-no-file:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Run action with neither hosts nor file set
+        id: run
+        continue-on-error: true
+        uses: ./
+        with:
+          endpoint: https://example.invalid
+          username: smoke
+          password: smoke
+
+      - name: Assert the hosts/file validation step failed
+        if: steps.run.outcome != 'failure'
+        run: |
+          echo "::error::expected the action to fail (neither hosts nor file set), but it did not"
+          exit 1
+
+  invalid-fail-on-scored:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Run action with an invalid fail-on-scored value
+        id: run
+        continue-on-error: true
+        uses: ./
+        with:
+          hosts: example.org
+          fail-on-scored: 'yes'
+          endpoint: https://example.invalid
+          username: smoke
+          password: smoke
+
+      - name: Assert the fail-on-scored validation failed
+        if: steps.run.outcome != 'failure'
+        run: |
+          echo "::error::expected the action to fail (fail-on-scored: 'yes' is not 'true'/'false'), but it did not"
+          exit 1

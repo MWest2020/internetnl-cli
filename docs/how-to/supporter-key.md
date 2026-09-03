@@ -1,18 +1,18 @@
 ---
-status: draft
+status: current
 last_reviewed: 2026-09-03
 ---
 
 # Supporter keys: a lifetime credential for a small donation
 
-This page describes the intended issuance model for opening the
-`netnl` facade beyond the handful of known users in
+This page describes the issuance model for opening the `netnl` facade
+beyond the handful of known users in
 [Running the netnl private beta](beta.md) — task 5 of
-`openspec/changes/add-measurement-api` ("community opening"). It is
-**draft**, not yet the live process: the donation link it depends on
-does not exist yet (see "Open TODO" below). Treat this page as the
-documented plan, and `beta.md` as the process that is actually live
-today.
+`openspec/changes/add-measurement-api` ("community opening"). The
+donation link now exists (see "Getting a supporter key" below), but
+issuance itself is still a manual, out-of-band process, the same as
+onboarding a beta user — there is no self-serve automation tying a
+donation to a credential.
 
 ## The model, in one paragraph
 
@@ -100,14 +100,14 @@ measuring hosts without permission, or the operator discontinuing the
 service are all still grounds to revoke, same as for a beta
 credential.
 
-## Open TODO: the donation link
+## Getting a supporter key
 
-<!-- TODO: replace with the real donation link once it exists. -->
-**Donation link — volgt.** No payment page exists yet; this page
-intentionally does not invent one. Until a real link is in place,
-"supporter key" is a documented model, not a self-serve flow —
-issuance still goes through the same manual, out-of-band `netnl-admin`
-process as a beta credential.
+Donate via [Buy Me a Coffee](https://buymeacoffee.com/mark.westerweel).
+There is no automated link between the donation page and credential
+issuance — "supporter key" is a documented model with a real payment
+link, not a self-serve flow; issuance still goes through the same
+manual, out-of-band `netnl-admin` process (see "Issuing a supporter
+key" above) as a beta credential.
 
 ## See also
 
