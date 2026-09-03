@@ -60,6 +60,29 @@ time. That is the edge's job, and it differs by topology:
   challenged long before it can run through any meaningful password space.
   This is configured in the Cloudflare dashboard/API for the tunnel's
   hostname, not in this repo.
+
+  **Topology 1 has a second public ingress this rule does not cover
+  (reviewer-M7).** Per `design.md`, "Two supported topologies", the same
+  facade is also reachable via the **Tailscale Funnel** `*.ts.net`
+  hostname kept up in parallel as a fallback (see `docs/how-to/beta.md`).
+  A Cloudflare rate-limiting rule is scoped to the Cloudflare Tunnel's own
+  hostname — it does nothing at all for traffic that goes straight to the
+  Funnel hostname instead, which serves the exact same facade over a
+  completely separate public path. Two honest options, pick one
+  deliberately rather than assuming the Cloudflare rule alone covers this
+  topology:
+  - **Turn the Funnel off** except when actually needed for a specific
+    fallback test or incident, so there is only one public ingress to rate
+    limit at any given time; or
+  - **Accept it as a known gap**: while the Funnel stays up, the facade's
+    own in-process scrypt-concurrency cap (`netnl.auth`, bounded wait +
+    503 `overloaded` on sustained saturation — see "Authentication cost is
+    bounded" in design.md) is the *only* backstop against credential
+    guessing over that path, since nothing at the edge is rate-limiting
+    it. That backstop protects this process's own CPU/memory; it is not a
+    rate limit and does not slow down a sustained, low-concurrency
+    guessing campaign the way the Cloudflare rule does for the primary
+    hostname.
 - **Topology 2 (Caddy at the edge, the compose recipe on this page).**
   Vanilla Caddy, as shipped in `deploy/Caddyfile`, has **no built-in rate
   limiting** — being honest about that rather than implying protection

@@ -151,6 +151,90 @@ def test_pruning_a_stranded_reservation_audits_it_with_facade_id(app, settings, 
     assert row["detail"] == stale_submitted_at
 
 
+def test_stranded_reservation_older_than_result_retention_is_still_audited(
+    app, settings, conn, tenant
+):
+    """Round-3 fix (security-L3): a `reserving` row stranded for *longer*
+    than the (much longer) result-retention window used to be deleted by
+    the main retention delete before the stranded-reservation audit below
+    it ever ran — silently losing the one thing that could reconstruct it.
+    The main delete is now scoped to `upstream_id IS NOT NULL`, so a
+    `reserving` row is only ever removed by the dedicated stranded-
+    reservation path, always preceded by its audit, regardless of how far
+    past even the result-retention cutoff it is.
+    """
+    cred = store.find_credential(conn, tenant["username"])
+    now = datetime.now(timezone.utc)
+    very_stale_submitted_at = store.utcnow_iso(
+        lambda: now - timedelta(days=settings.result_retention_days + 1)
+    )
+    store.insert_reserving_request(
+        conn,
+        facade_id="v" * 32,
+        credential_id=cred["id"],
+        request_type="web",
+        domain_count=2,
+        submitted_at=very_stale_submitted_at,
+    )
+
+    counts = retention.prune(conn, settings, now)
+
+    assert counts["requests_deleted"] == 0  # never touched by the main delete
+    assert counts["reserving_deleted"] == 1  # removed by the dedicated path instead
+    assert store.get_request(conn, "v" * 32) is None
+
+    row = conn.execute(
+        "SELECT * FROM audit WHERE event = 'reserving-pruned' AND facade_id = ?",
+        ("v" * 32,),
+    ).fetchone()
+    assert row is not None  # the audit trail survived, not silently skipped
+    assert row["credential"] == tenant["username"]
+    assert row["domain_count"] == 2
+    assert row["detail"] == very_stale_submitted_at
+
+
+def test_stranded_reservation_audit_survives_a_missing_credential_row(app, settings, conn):
+    """Round-3 fix (reviewer-m12): the stranded-reservation lookup
+    `LEFT JOIN`s `credentials` with `COALESCE(..., '<unknown>')` — a
+    missing `credentials` row must not silently drop that request from the
+    audit trail the way an inner `JOIN` would.
+    """
+    cred = store.add_credential(
+        conn,
+        username="temp-owner",
+        password_hash="h",
+        salt="s",
+        created_at=store.utcnow_iso(lambda: datetime.now(timezone.utc)),
+    )
+    now = datetime.now(timezone.utc)
+    stale_submitted_at = store.utcnow_iso(
+        lambda: now - timedelta(seconds=settings.reserving_grace_seconds + 1)
+    )
+    store.insert_reserving_request(
+        conn,
+        facade_id="m" * 32,
+        credential_id=cred,
+        request_type="web",
+        domain_count=1,
+        submitted_at=stale_submitted_at,
+    )
+    # Simulate the `credentials` row having gone missing by the time prune
+    # runs (foreign-key enforcement is not the point under test here).
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("DELETE FROM credentials WHERE id = ?", (cred,))
+
+    counts = retention.prune(conn, settings, now)
+    assert counts["reserving_deleted"] == 1
+
+    row = conn.execute(
+        "SELECT * FROM audit WHERE event = 'reserving-pruned' AND facade_id = ?",
+        ("m" * 32,),
+    ).fetchone()
+    assert row is not None  # not silently dropped by an inner JOIN
+    assert row["credential"] == "<unknown>"
+    assert row["domain_count"] == 1
+
+
 def test_reservation_within_grace_is_not_pruned(app, settings, conn, tenant):
     cred = store.find_credential(conn, tenant["username"])
     now = datetime.now(timezone.utc)

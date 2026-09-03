@@ -22,6 +22,7 @@ LABEL_STATUS = {
     "upstream-unreachable": 502,
     "upstream-error": 502,
     "server-error": 500,
+    "overloaded": 503,
 }
 
 

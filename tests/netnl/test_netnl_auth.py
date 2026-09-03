@@ -7,12 +7,14 @@ on concurrent scrypt verifications, 503 on saturation) and finding 2
 from __future__ import annotations
 
 import base64
+import logging
+import sqlite3
 import threading
 import time
 
-from conftest import basic_auth_header
+from conftest import basic_auth_header, queue_json
 
-from netnl import auth
+from netnl import auth, store
 
 
 def test_missing_authorization_header_is_401_without_scrypt(client, monkeypatch):
@@ -134,6 +136,14 @@ def test_scrypt_semaphore_caps_concurrency_and_503s_when_saturated(
     deadline = time.monotonic() + 5
     while in_flight < auth._MAX_CONCURRENT_SCRYPT and time.monotonic() < deadline:
         time.sleep(0.01)
+    # Round-3 fix (security-M1): the semaphore now waits up to
+    # `_SCRYPT_ACQUIRE_TIMEOUT` for a slot before giving up, so an
+    # over-cap thread only 503s once saturation has *lasted* longer than
+    # that bounded wait — hold the cap saturated past it before releasing,
+    # so this test still exercises genuine sustained saturation rather
+    # than a burst that clears within the wait (which the round-3 fix
+    # deliberately no longer 503s).
+    time.sleep(auth._SCRYPT_ACQUIRE_TIMEOUT + 0.5)
     release_event.set()
     for t in threads:
         t.join(timeout=5)
@@ -172,9 +182,16 @@ def test_failed_auth_is_audited_aggregated_per_minute(client, conn, tenant, cloc
     rows = conn.execute("SELECT * FROM audit WHERE event = 'auth-failure'").fetchall()
     assert len(rows) == 1  # one summarising row, not five
     assert rows[0]["credential"] == tenant["username"]
-    assert rows[0]["domain_count"] == 5  # the aggregated count from the first window
-    assert rows[0]["detail"] == "/metadata/report"
+    # Round-3 fix (security-H1 / reviewer-L4): the count lives in `detail`,
+    # not `domain_count` — that column means "domains in a submission" and
+    # must not be repurposed as a failure tally.
+    assert rows[0]["domain_count"] is None
+    assert rows[0]["detail"] == "/metadata/report failures=5"
     assert rows[0]["facade_id"] is None
+    # Round-3 fix (security-H1c): `at` is the failure window's own minute
+    # (the clock's value when the failures happened), not the later moment
+    # the flush actually ran (61+ seconds after).
+    assert rows[0]["at"] == "2026-01-01T00:00:00+00:00"
 
 
 def _trigger_sweep(client, fake_opener, tenant):
@@ -203,8 +220,8 @@ def test_missing_header_failure_is_audited_with_null_credential(
     rows = conn.execute("SELECT * FROM audit WHERE event = 'auth-failure'").fetchall()
     assert len(rows) == 1
     assert rows[0]["credential"] is None
-    assert rows[0]["domain_count"] == 3
-    assert rows[0]["detail"] == "/metadata/report"
+    assert rows[0]["domain_count"] is None
+    assert rows[0]["detail"] == "/metadata/report failures=3"
 
 
 def test_password_never_appears_in_audit_row(client, fake_opener, conn, tenant, clock):
@@ -240,3 +257,152 @@ def test_username_is_sanitized_before_audit(client, app, fake_opener, conn, tena
     assert "\x01" not in row["credential"]
     assert "\x02" not in row["credential"]
     assert len(row["credential"]) <= auth._MAX_LOGGED_USERNAME_LEN
+
+
+def test_basic_scheme_is_case_insensitive(client, tenant, fake_opener):
+    """Round-3 fix (reviewer-m8): RFC 7617 defines the `Basic` auth-scheme
+    token as case-insensitive."""
+    from fakes import METADATA_REPLY
+
+    token = base64.b64encode(f"{tenant['username']}:{tenant['password']}".encode()).decode()
+    for scheme in ("basic", "BASIC", "Basic", "BaSiC"):
+        queue_json(fake_opener, METADATA_REPLY)
+        resp = client.get(
+            "/metadata/report", headers={"Authorization": f"{scheme} {token}"}
+        )
+        assert resp.status_code == 200, (scheme, resp.text)
+
+
+# --- round-3: the auth-failure aggregator is bounded, fast and resilient --
+
+
+def test_bucket_count_is_capped_regardless_of_unique_usernames(conn, clock):
+    """Round-3 fix (security-H1a): 3000 distinct usernames failing within
+    the same one-minute window must not mint 3000 buckets (and, once
+    flushed, 3000 audit rows) — the dict, and what it can ever flush, is
+    bounded by `_MAX_BUCKETS` plus the (here: one) distinct route hit.
+    """
+    for i in range(3000):
+        auth._record_auth_failure(conn, clock(), f"user-{i}", "/metadata/report")
+
+    assert len(auth._auth_failure_buckets) <= auth._MAX_BUCKETS + 1
+
+    clock.advance(61)
+    auth._sweep_stale_auth_failure_buckets(conn, clock())
+
+    rows = conn.execute("SELECT * FROM audit WHERE event = 'auth-failure'").fetchall()
+    assert 0 < len(rows) <= auth._MAX_BUCKETS + 1
+    assert len(rows) < 3000
+
+    overflow_rows = [r for r in rows if r["credential"] == auth._OVERFLOW_USERNAME]
+    assert len(overflow_rows) == 1
+    assert "failures=" in overflow_rows[0]["detail"]
+
+
+class _LockCheckingConnection:
+    """Forwards every call to a real connection, recording any `execute`/
+    `executemany` that happens while `lock` is held by *this* thread — used
+    to prove the aggregator's DB write runs outside `_auth_failure_lock`
+    (round-3 fix, security-H1b)."""
+
+    def __init__(self, real, lock, held_during):
+        self._real = real
+        self._lock = lock
+        self._held_during = held_during
+
+    def _check(self, sql):
+        if not self._lock.acquire(blocking=False):
+            self._held_during.append(sql)
+        else:
+            self._lock.release()
+
+    def execute(self, sql, *args, **kwargs):
+        self._check(sql)
+        return self._real.execute(sql, *args, **kwargs)
+
+    def executemany(self, sql, *args, **kwargs):
+        self._check(sql)
+        return self._real.executemany(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_flush_of_many_buckets_is_one_fast_transaction_outside_the_lock(conn, clock):
+    """Round-3 fix (security-H1b): flushing 10k stale buckets must (a) run
+    as a single transaction, not one autocommit INSERT per bucket
+    (measured before the fix: ~5.5s for 10k; batched: well under 100ms),
+    and (b) never touch the database while `_auth_failure_lock` is held.
+    """
+    old_minute = auth._current_minute(clock()) - 5
+    auth._auth_failure_buckets.update(
+        {(f"user-{i}", "/metadata/report"): (old_minute, 1) for i in range(10_000)}
+    )
+
+    held_during: list = []
+    proxy = _LockCheckingConnection(conn, auth._auth_failure_lock, held_during)
+
+    start = time.perf_counter()
+    auth._sweep_stale_auth_failure_buckets(proxy, clock())
+    elapsed = time.perf_counter() - start
+
+    assert held_during == [], "a DB statement ran while the aggregator lock was held"
+    assert elapsed < 0.1, f"flushing 10k buckets took {elapsed:.3f}s (expected one transaction)"
+
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM audit WHERE event = 'auth-failure'"
+    ).fetchone()["n"]
+    assert n == 10_000
+
+
+def test_failing_auth_failure_flush_does_not_fail_the_request(app, client, fake_opener, tenant, clock, caplog):
+    """Round-3 fix (security-H1d): a failing aggregator write (simulated
+    here as `executemany` raising, standing in for e.g. a concurrent
+    `BEGIN IMMEDIATE` from `prune`) must never turn a legitimate,
+    successfully-authenticated request into a 500 — it is logged and the
+    window's tally is dropped instead.
+    """
+    from fakes import METADATA_REPLY
+
+    resp = client.get(
+        "/metadata/report", headers=basic_auth_header(tenant["username"], "wrong-password")
+    )
+    assert resp.status_code == 401
+    clock.advance(61)
+
+    class _FailingExecuteMany:
+        def __init__(self, real):
+            self._real = real
+
+        def executemany(self, *args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def override_conn():
+        real = store.connect(app.state.settings.db)
+        try:
+            yield _FailingExecuteMany(real)
+        finally:
+            real.close()
+
+    app.dependency_overrides[store.get_conn] = override_conn
+    try:
+        queue_json(fake_opener, METADATA_REPLY)
+        with caplog.at_level(logging.WARNING, logger="netnl.auth"):
+            resp2 = client.get("/metadata/report", headers=tenant["headers"])
+        assert resp2.status_code == 200, resp2.text
+    finally:
+        app.dependency_overrides.pop(store.get_conn, None)
+
+    assert any("failed to persist" in message for message in caplog.messages)
+
+    real_conn = store.connect(app.state.settings.db)
+    try:
+        rows = real_conn.execute(
+            "SELECT * FROM audit WHERE event = 'auth-failure'"
+        ).fetchall()
+        assert rows == []  # the tally was dropped, not silently retried later
+    finally:
+        real_conn.close()

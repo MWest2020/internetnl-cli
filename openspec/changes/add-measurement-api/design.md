@@ -146,6 +146,17 @@ sequentially.
   the upstream instance's own dashboard to correlate it back to a tenant
   and a submission time and follow up manually. Actually reclaiming or
   cancelling such a run is out of scope for this build.
+  **Round-3 fix (security-L3):** the main result-retention delete only
+  ever removes rows with `upstream_id IS NOT NULL` — without that scope, a
+  `reserving` row stranded *longer* than the (much longer) result-retention
+  window would be deleted there before the stranded-reservation audit ever
+  ran, silently losing the one thing that could reconstruct it; a
+  `reserving` row is now only ever removed by the dedicated
+  stranded-reservation delete, always preceded by its audit. The
+  stranded-reservation lookup also `LEFT JOIN`s `credentials` with
+  `COALESCE(..., '<unknown>')` (round-3, reviewer-m12), so a request row
+  whose `credentials` row is somehow missing is still audited (as
+  `<unknown>`) rather than silently skipped by an inner join.
 
 ## Tenancy and identity
 
@@ -169,14 +180,38 @@ sequentially.
     amplifier for an unauthenticated caller, the exact cheap-DoS shape the
     review flagged.
   - **Across requests:** `netnl.auth` bounds how many scrypt verifications
-    may run *concurrently* to a small, fixed cap (8), enforced with a
-    non-blocking semaphore — a caller that cannot get a slot immediately
-    gets 503 `overloaded`, not a queue, so an unbounded number of parallel
-    bad-credential requests cannot pin every worker thread in scrypt at
-    once. This is a backstop inside the process; sustained brute-force or
-    volumetric abuse is expected to be absorbed at the edge before it
-    reaches this bound — see `docs/how-to/deploy-facade.md`'s
-    brute-force/rate-limiting note per topology.
+    may run *concurrently* to a small cap derived from the host's CPU
+    count (`max(4, min(8, os.cpu_count() or 4))` — floored at 4 so a
+    single-core-ish container does not make every legitimate concurrent
+    login queue, capped at 8), enforced with a semaphore. **Round-3 fix
+    (security-M1):** the semaphore used to fail fast (non-blocking) the
+    instant it saturated — measured, this produced 23 spurious 503s on
+    this project's own legitimate concurrent-request tests, since a
+    threadpool of ~40 sync handlers can easily have more requests reach
+    `authenticate` at the same instant than the cap without anything
+    being wrong. It now waits up to a short, fixed timeout (1.0s) for a
+    slot before giving up. This bounded wait is safe *because* it is
+    bounded: the only callers that can ever queue on it are requests
+    already admitted into the ASGI server's own worker threadpool (tens of
+    threads, not an unbounded number of TCP connections), so the worst
+    case is every worker thread waiting ~1s, not unboundedly many callers
+    piling up. 503 `overloaded` (`Retry-After: 1`; listed in
+    `netnl.replies.LABEL_STATUS`) now means *sustained* saturation — the
+    cap still full after the wait — not an ordinary burst that clears
+    within it. This cap is a **single-process** quota: each `netnl-serve`
+    process gets its own semaphore, so N worker processes/replicas
+    multiply the effective cap by N — an operator sizing the edge rate
+    limit (below) should account for that rather than treat this number as
+    a cluster-wide ceiling. This is a backstop inside the process;
+    sustained brute-force or volumetric abuse is expected to be absorbed
+    at the edge before it reaches this bound — see
+    `docs/how-to/deploy-facade.md`'s brute-force/rate-limiting note per
+    topology, including the note that topology 1's Tailscale Funnel
+    fallback is a second public ingress a Cloudflare edge rule does not
+    cover.
+  - The `Basic` auth-scheme token is matched case-insensitively
+    (`basic`/`BASIC`/`Basic`/…), per RFC 7617 — only the scheme token is
+    case-folded, not the credentials that follow it.
 - Table `requests(facade_id UNIQUE, upstream_id NULL, credential_id,
   request_type, domain_count, submitted_at, last_status, finished_at NULL)`.
   `upstream_id` is NULL only while a row is `reserving` (see the atomic-limit
@@ -229,6 +264,22 @@ from one credential cannot each read a stale count.
   credential; at the limit → 429 with label `rate-limited` and a msg naming
   concurrency. Refreshing stale non-terminal rows from upstream is a separate
   concern kept out of the write transaction.
+  - **Round-2 fix, finding 3, and its upper bound (round-3, reviewer-
+    M5/M6):** a single row's upstream status-refresh call failing must not
+    fail the whole submit with 502 — the row is skipped (conservatively
+    still counted as non-terminal) and the submit proceeds. Stated
+    explicitly: if refresh fails *permanently* for a credential (a
+    sustained upstream outage, or upstream that never marks these rows
+    terminal), every one of that credential's `max_concurrent` rows stays
+    non-terminal indefinitely from this facade's point of view, and every
+    further submit from that credential answers 429 — never a crash, never
+    a silent bypass of the limit. That block's *maximum* duration is
+    bounded, not open-ended: the tenant is unblocked once those rows fall
+    out of non-terminal either because upstream itself later reports a
+    terminal status, or because `prune` removes them once they pass
+    `NETNL_RESULT_RETENTION_DAYS` — so the deploy's retention window and
+    prune cadence is the real upper bound on how long a persistent upstream
+    problem can block one tenant.
 
 ## Audit
 
@@ -236,12 +287,14 @@ from one credential cannot each read a stale count.
   domain_count, detail)` — events: `submit`, `user-add`, `user-revoke`,
   `prune`, `auth-failure` (round-2, finding 2), `reserving-pruned`
   (round-2, finding 5). `detail` is free-form, event-specific context (the
-  HTTP route for `auth-failure`; the original `submitted_at` for
+  HTTP route plus the aggregated failure count, `"<route> failures=<n>"`,
+  for `auth-failure` — round-3, see below; the original `submitted_at` for
   `reserving-pruned`) added in round 2 rather than a new column per event
   type; it never holds a password or any other credential secret. A
   database created before round 2 gets the column added in place by
-  `store.migrate` (`ALTER TABLE ... ADD COLUMN`), so upgrading needs no
-  manual migration step.
+  `store.migrate` (`ALTER TABLE ... ADD COLUMN`), tolerant of a
+  concurrent-startup race on that same `ALTER` (round-3, security-L2), so
+  upgrading needs no manual migration step.
 - Append-only enforced in the schema: `BEFORE UPDATE` and `BEFORE DELETE`
   triggers that `RAISE(ABORT)`; `prune` removes (a) `requests` rows past
   `NETNL_RESULT_RETENTION_DAYS`, (b) **stale `reserving` rows** older than a
@@ -254,23 +307,67 @@ from one credential cannot each read a stale count.
   the append-only triggers inside one transaction, and writes a `prune` audit
   record stating how many rows went.
 - Domain **lists** are not stored anywhere in the facade; only counts.
-- **Failed authentication is audited (round-2, finding 2).** Every rejected
-  `Authorization` — missing/unparseable header, unknown username, wrong
-  password, or a revoked credential — is a detection signal worth keeping,
-  but writing one row per failed attempt would make `audit` itself an
-  unbounded write sink for the exact kind of flood finding 1 bounds on the
-  CPU/memory side. `netnl.auth` aggregates failures **in memory**, keyed on
+- **Failed authentication is audited (round-2, finding 2; hardened
+  round-3, security-H1).** Every rejected `Authorization` —
+  missing/unparseable header, unknown username, wrong password, or a
+  revoked credential — is a detection signal worth keeping, but writing
+  one row per failed attempt would make `audit` itself an unbounded write
+  sink for the exact kind of flood finding 1 bounds on the CPU/memory
+  side. `netnl.auth` aggregates failures **in memory**, keyed on
   (sanitised username or `NULL`, route) per wall-clock minute, and writes
-  **one summarising row** (`event = auth-failure`, `domain_count` = the
-  count for that window, `detail` = the route) per key per minute,
-  regardless of how many failures actually occurred in that window. The
-  aggregator itself is bounded the same way: every authenticated request
-  (success or failure) sweeps out and flushes any bucket whose minute has
-  passed, so its size is capped at "distinct keys seen in the current
-  minute", not "distinct usernames ever tried". The username is sanitised
-  (printable characters only, capped length) before it is used as a key or
-  written anywhere — never trusted verbatim from an attacker-controlled
-  header. The password is never recorded, in any form.
+  **one summarising row** (`event = auth-failure`, `detail` =
+  `"<route> failures=<n>"`, `domain_count` left `NULL`) per key per
+  minute, regardless of how many failures actually occurred in that
+  window. The count intentionally lives in `detail`, not `domain_count` —
+  that column means "domains in a submission", an unrelated concept an
+  `auth-failure` row must not repurpose (round-3, reviewer-L4).
+  - **The aggregator's own size is genuinely bounded (round-3, security-
+    H1a — the round-2 version was not):** a bucket-per-(username, route)
+    scheme with no cap on the number of *distinct* keys grows exactly as
+    fast as an attacker can invent unique, throwaway usernames — measured
+    at ~5.5M audit rows/day for that pattern, the opposite of "bounded". A
+    hard cap (`_MAX_BUCKETS = 512`) limits the number of live buckets; once
+    reached, a *new* key for a route that already has buckets collapses
+    into a single per-route overflow bucket (`credential = "<other>"`)
+    with its own running count, instead of minting another bucket. Both
+    the in-memory dict and the audit rows a single minute can ever produce
+    are therefore bounded by `_MAX_BUCKETS` plus this facade's (small,
+    fixed) number of routes — never by how many distinct usernames an
+    attacker tries. The sweep that flushes stale buckets still runs on
+    every authenticated request (success or failure), so its size is also
+    capped at "distinct keys seen in the current minute", now doubly
+    bounded by the cap above.
+  - **The flush is one transaction, never held under the aggregator's own
+    lock, and never fails a request (round-3, security-H1b/H1d):** the
+    round-2 version ran one fsync'd, autocommit `INSERT` per stale bucket
+    *while holding the aggregator's lock* — measured at ~5.5s of total
+    auth-processing stall for 10k buckets, repeatable every minute the
+    lock was held that long. The lock now guards only the (cheap) pop of
+    stale entries from the dict; every popped entry is written in a single
+    `BEGIN IMMEDIATE` + `executemany` transaction outside the lock
+    (measured: <100ms for 10k rows), wrapped in `try`/`except` — a failing
+    write (e.g. racing `prune`'s own `BEGIN IMMEDIATE`) is logged with the
+    aggregated counts and the window's tally is dropped, never re-raised,
+    since this runs unconditionally on every request including a
+    perfectly valid, successfully-authenticated one.
+  - **The timestamp is the failure window's own time, not the flush's
+    (round-3, security-H1c):** a bucket flushed minutes or hours late
+    (only a later failure or authenticated call triggers a flush)
+    previously back-dated its `at` to whenever that trigger happened; it
+    is now `datetime.fromtimestamp(minute * 60, timezone.utc)`, the
+    bucket's own minute.
+  - The username is sanitised (printable characters only, capped length)
+    before it is used as a key or written anywhere — never trusted
+    verbatim from an attacker-controlled header; the same sanitizer/cap
+    also applies to the route-path fallback used when routing metadata is
+    unavailable (round-3, security-L1), since that fallback is just as
+    attacker-influenced. The password is never recorded, in any form.
+  - **Attribution caveat, worth restating for whoever reads this table:**
+    an `auth-failure` row's `credential` value — including the literal
+    `"<other>"` overflow marker — is attacker-supplied input from a
+    request that, by definition, failed to authenticate. An operator must
+    never read it as trustworthy tenant behaviour; it is a detection
+    signal about the *route*, not a verified claim about *who* sent it.
 
 ## Deployment (section 4.1)
 

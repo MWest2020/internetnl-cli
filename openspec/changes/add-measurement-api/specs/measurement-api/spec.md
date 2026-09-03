@@ -104,6 +104,15 @@ appropriate status codes (429 for rate, 400 for size).
 - THEN after the reserving grace the prune job clears the stale reservation,
   and the credential's concurrency slot is available again
 
+#### Scenario: Persistently failing upstream refresh caps concurrency, not availability
+
+- WHEN every one of a credential's non-terminal runs can never be refreshed
+  from upstream (a sustained upstream outage or persistent upstream error)
+- THEN each further submission from that credential answers 429 rather than
+  crashing, and the credential is blocked for at most as long as those rows
+  remain non-terminal — bounded by the result-retention window and the
+  deployment's prune schedule, not indefinitely
+
 ### Requirement: Authenticated surface
 
 The facade SHALL require valid HTTP Basic credentials on every route in the
@@ -148,13 +157,15 @@ not-implemented catch-all as any other unrecognised path.
 ### Requirement: Authentication cost is bounded
 
 The facade SHALL reject a request whose `Authorization` header is missing or
-does not parse as `Basic base64(username:password)` without performing a
+does not parse as `Basic base64(username:password)` (the `Basic` scheme
+token matched case-insensitively, per RFC 7617) without performing a
 password-hash computation, since no username is present to protect against
 enumeration in that case. The facade SHALL cap the number of password-hash
-verifications it performs concurrently to a small, fixed limit, and SHALL
-answer a request that cannot obtain a verification slot with a 503
-v2-shaped error rather than queueing it or performing the computation
-regardless of the limit.
+verifications it performs concurrently to a small limit, and SHALL answer a
+request that cannot obtain a verification slot within a short, bounded wait
+with a 503 v2-shaped error carrying a `Retry-After` header, rather than
+performing the computation regardless of the limit or queueing it
+unboundedly.
 
 #### Scenario: Missing or malformed credentials fail fast
 
@@ -163,13 +174,21 @@ regardless of the limit.
   colon after decoding)
 - THEN the facade answers 401 without computing a password hash
 
+#### Scenario: The Basic scheme token is case-insensitive
+
+- WHEN a request's `Authorization` header uses any casing of the `Basic`
+  scheme token (e.g. `basic`, `BASIC`, `Basic`) with otherwise valid
+  credentials
+- THEN the facade authenticates it exactly as it would `Basic`
+
 #### Scenario: Concurrent authentication is bounded
 
-- WHEN more authentication attempts arrive concurrently than the facade's
-  fixed verification-concurrency limit
-- THEN attempts beyond the limit receive a 503 v2-shaped error immediately,
-  and at no point does the number of password-hash computations running at
-  once exceed that limit
+- WHEN more authentication attempts arrive concurrently, and stay
+  concurrent for longer than the facade's short bounded wait, than the
+  facade's verification-concurrency limit
+- THEN attempts that cannot obtain a slot within that wait receive a 503
+  v2-shaped error with a `Retry-After` header, and at no point does the
+  number of password-hash computations running at once exceed that limit
 
 ### Requirement: Append-only audit trail
 
@@ -180,9 +199,14 @@ state the retention period for audit records and result bodies. The facade
 SHALL also record failed authentication attempts (a sanitised username or
 its absence, and the route) in the same append-only store, aggregated over
 a bounded time window per distinct username-and-route pair rather than one
-record per attempt, so that a large volume of failed attempts cannot itself
-grow the audit store without bound; the password SHALL NOT appear in any
-audit record under any circumstance.
+record per attempt; the total number of distinct username-and-route pairs
+tracked at once SHALL itself be capped, with any pair beyond that cap
+collapsed into a per-route overflow record, so that neither the number of
+distinct pairs an attacker can generate nor the volume of failed attempts
+can grow the audit store without bound; the password SHALL NOT appear in
+any audit record under any circumstance. A credential value recorded on a
+failed-authentication record is attacker-supplied and SHALL NOT be treated
+by an operator as verified tenant attribution.
 
 #### Scenario: Submission is audited
 
@@ -198,6 +222,23 @@ audit record under any circumstance.
 - THEN at most one audit record summarising that window's failure count
   exists for that username-and-route pair, not one record per attempt, and
   none of those records contains the attempted password
+
+#### Scenario: The failed-authentication aggregator stays bounded under an unbounded-username attack
+
+- WHEN a large number of distinct, never-repeated usernames fail
+  authentication against the same route within the same bounded time window
+- THEN the number of failed-authentication audit records produced for that
+  window is bounded by the facade's fixed cap plus one overflow record, not
+  by how many distinct usernames were attempted
+
+#### Scenario: A failing aggregator write never fails the request that triggered it
+
+- WHEN the facade attempts to persist an aggregated batch of
+  failed-authentication records and that write itself fails
+- THEN the request that triggered the flush completes according to its own
+  outcome (success or its own rejection reason), the failure is logged, and
+  the unwritten window's tally is not silently retried as if it had
+  succeeded
 
 #### Scenario: Reader checks retention
 

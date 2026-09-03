@@ -177,6 +177,20 @@ def refresh_stale_non_terminal(
     concurrency count an over-estimate, never an under-estimate that would
     let a tenant slip past its own limit. The skip is logged so an operator
     can see when upstream refreshes are failing.
+
+    Round-3 fix (reviewer-M5/M6): the accepted trade-off's own upper bound,
+    stated explicitly — if upstream refresh fails *permanently* for a
+    credential (a sustained outage, or an upstream that never marks these
+    rows terminal), every one of that credential's `max_concurrent` rows
+    stays counted as non-terminal forever from this function's point of
+    view, and every further submit answers 429 — never a crash, never a
+    silent bypass of the limit. The tenant is unblocked again only once
+    those rows fall out of `non_terminal_requests` some other way: either
+    upstream itself later reports a terminal status, or `prune` removes the
+    rows once they pass `NETNL_RESULT_RETENTION_DAYS` (see design.md,
+    "Limits") — so the *maximum* duration of this self-inflicted-looking
+    but upstream-caused block is bounded by that retention window and the
+    deploy's prune cadence, not unbounded.
     """
     from netnl.api import call_upstream  # local import: avoids a cycle at module load
 

@@ -148,10 +148,25 @@ def _ensure_audit_detail_column(conn: sqlite3.Connection) -> None:
     created before the `detail` column existed — this adds it to an
     existing `audit` table, once, so an operator upgrading in place does
     not need a manual migration step.
+
+    Round-3 fix (security-L2): `migrate()` runs on every process startup
+    (see `api.py`), so two processes starting at once can both see
+    `detail` missing and both attempt the `ALTER`; SQLite lets only one
+    through and raises `OperationalError` (typically "duplicate column
+    name") for the other. Re-checking `PRAGMA table_info` after a caught
+    `OperationalError` distinguishes that harmless race (the column is now
+    there — someone else's `ALTER` won) from a genuine failure (the column
+    is still missing — re-raise).
     """
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit)")}
-    if "detail" not in columns:
+    if "detail" in columns:
+        return
+    try:
         conn.execute("ALTER TABLE audit ADD COLUMN detail TEXT")
+    except sqlite3.OperationalError:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit)")}
+        if "detail" not in columns:
+            raise
 
 
 # --- audit -------------------------------------------------------------
@@ -166,10 +181,14 @@ def record_audit(
     domain_count: int | None = None,
     detail: str | None = None,
 ) -> None:
-    """The only place in this package that writes to `audit`.
+    """The single-row path for writing to `audit`.
 
     (The prune path in `retention.py` deletes old rows via a dedicated,
-    trigger-suspending transaction — see design.md's audit section.)
+    trigger-suspending transaction — see design.md's audit section.
+    `netnl.auth._write_auth_failure_batch` is the one other sanctioned
+    writer: it batches many aggregated auth-failure rows into a single
+    `executemany` INSERT rather than one call per row here, for the same
+    column set and append-only guarantees — see design.md, "Audit".)
     """
     conn.execute(
         "INSERT INTO audit (at, credential, event, facade_id, domain_count, detail) "

@@ -214,8 +214,18 @@ def create_app(settings: Settings, *, opener: Opener | None = None, now: Callabl
 
     @app.exception_handler(NetnlHTTPError)
     async def handle_netnl_http_error(request: Request, exc: NetnlHTTPError) -> JSONResponse:
-        headers = {"WWW-Authenticate": 'Basic realm="netnl"'} if exc.status == 401 else None
-        return JSONResponse(error_body(exc.label, exc.msg), status_code=exc.status, headers=headers)
+        # Round-3 fix: `exc.headers` (e.g. `Retry-After` on 503
+        # `overloaded` — see `netnl.auth._overloaded`) is merged in on top
+        # of the fixed 401 `WWW-Authenticate` header, so a raising site's
+        # own headers are never silently dropped.
+        headers: dict[str, str] = {}
+        if exc.status == 401:
+            headers["WWW-Authenticate"] = 'Basic realm="netnl"'
+        if exc.headers:
+            headers.update(exc.headers)
+        return JSONResponse(
+            error_body(exc.label, exc.msg), status_code=exc.status, headers=headers or None
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:

@@ -43,7 +43,17 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
 
     conn.execute("BEGIN IMMEDIATE")
     try:
-        cur = conn.execute("DELETE FROM requests WHERE submitted_at < ?", (result_cutoff,))
+        # Round-3 fix (security-L3): scoped to `upstream_id IS NOT NULL` —
+        # without this, a `reserving` row stranded *longer* than the
+        # (much longer) result-retention window would be deleted here,
+        # before the stranded-reservation audit below ever runs, silently
+        # losing the one thing that could reconstruct it. Rows still
+        # `reserving` are only ever removed by the dedicated stranded-
+        # reservation delete further down, always preceded by its audit.
+        cur = conn.execute(
+            "DELETE FROM requests WHERE submitted_at < ? AND upstream_id IS NOT NULL",
+            (result_cutoff,),
+        )
         requests_deleted = cur.rowcount if cur.rowcount >= 0 else 0
 
         # Round-2 fix (finding 5, accepted restrisico — see design.md,
@@ -61,9 +71,17 @@ def prune(conn: sqlite3.Connection, settings: Settings, now: datetime) -> dict:
         # its original `submitted_at` in `detail` — enough for an operator
         # who spots an unexplained run on the upstream instance's own
         # dashboard to correlate it back to a tenant and a submission time.
+        #
+        # Round-3 fix (reviewer-m12): `LEFT JOIN` + `COALESCE`, not an
+        # inner `JOIN` — a missing `credentials` row (should never happen,
+        # but `ON DELETE` semantics for `credential_id`'s foreign key are
+        # not enforced by a cascade here) must not silently drop that row
+        # from this audit trail; it is named `<unknown>` instead of
+        # vanishing.
         stranded = conn.execute(
-            "SELECT r.facade_id, r.domain_count, r.submitted_at, c.username "
-            "FROM requests r JOIN credentials c ON c.id = r.credential_id "
+            "SELECT r.facade_id, r.domain_count, r.submitted_at, "
+            "COALESCE(c.username, '<unknown>') AS username "
+            "FROM requests r LEFT JOIN credentials c ON c.id = r.credential_id "
             "WHERE r.upstream_id IS NULL AND r.submitted_at < ?",
             (reserving_cutoff,),
         ).fetchall()

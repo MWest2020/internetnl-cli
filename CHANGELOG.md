@@ -51,6 +51,45 @@ All notable changes to this project are documented here. The format follows
   to load entirely with "Unrecognized named-value: 'secrets'". Loading
   the action locally via `uses: ./` does not exercise this validation
   path, which is why the smoke workflow missed it.
+- `netnl` facade hardening from two rounds of post-build review:
+  - Unauthenticated scrypt DoS: a missing/unparseable `Authorization`
+    header now fails fast with 401 and never touches scrypt; concurrent
+    scrypt verifications are capped (`max(4, min(8, cpu_count))`,
+    process-local) by a semaphore that waits briefly for a slot before
+    answering 503 `overloaded` (with `Retry-After: 1`) on *sustained*
+    saturation — a non-blocking version of this cap measured 23 spurious
+    503s on the project's own legitimate concurrent-request tests, since
+    fixed. `overloaded` is now listed in `netnl.replies.LABEL_STATUS`.
+  - Failed authentication is audited (sanitised username, never the
+    password, plus the route), aggregated per minute per
+    (username, route) with a hard cap (512 buckets, plus one overflow
+    bucket per route beyond that) so neither the in-memory aggregator nor
+    the audit table it flushes to can grow past a bounded size regardless
+    of how many distinct usernames an attacker cycles through. The flush
+    itself is a single transaction per sweep (not one autocommit `INSERT`
+    per bucket — measured ~5.5s of auth-processing stall for 10k buckets
+    before this fix, <100ms after), never raises (a failing flush is
+    logged and the window's tally is dropped, never turned into a 500 on
+    a legitimate request), and timestamps each row with the failure
+    window's own time rather than whenever the flush happened to run. The
+    failure count now lives in `detail` (`"<route> failures=<n>"`), not
+    `domain_count`. A database created before the `audit.detail` column
+    existed is upgraded in place by `store.migrate`'s
+    `ALTER TABLE audit ADD COLUMN detail TEXT`, now tolerant of a
+    concurrent-startup race on that same `ALTER`.
+  - `refresh_stale_non_terminal` no longer fails a submit with 502 when a
+    row's upstream status call errors; a credential whose refreshes fail
+    *permanently* is blocked with 429 (never a crash) for at most as long
+    as `NETNL_RESULT_RETENTION_DAYS` and the deploy's prune cadence allow.
+  - `retention.prune`'s stranded-reservation audit now runs against rows
+    the main retention delete can no longer have already removed out from
+    under it, and tolerates a missing `credentials` row instead of
+    silently dropping that entry.
+  - The `Basic` auth scheme is matched case-insensitively per RFC 7617.
+  - `docs/how-to/deploy-facade.md` and `docs/how-to/beta.md` document the
+    503 `overloaded` status and note that topology 1's Tailscale Funnel
+    fallback is a second public ingress a Cloudflare edge rate-limiting
+    rule does not cover.
 
 ### Added
 

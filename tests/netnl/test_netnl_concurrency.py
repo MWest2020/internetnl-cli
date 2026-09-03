@@ -5,6 +5,18 @@ These tests drive the facade with real OS threads through `TestClient`
 (itself backed by FastAPI's threadpool for sync route handlers, exactly the
 production execution model design.md describes) — not sequential calls
 dressed up as a concurrency test.
+
+Round-3 fix (security-M1): these tests used to retry a 503 `overloaded`
+from `netnl.auth`'s (then non-blocking) scrypt-concurrency cap, on the
+theory that firing more truly concurrent authenticated requests than the
+cap was expected to spuriously saturate it. Measured: 23 such spurious
+503s on this project's own legitimate concurrent traffic — the cap itself
+was the bug, not these tests. `netnl.auth._guarded_scrypt` now waits a
+short, bounded time for a slot before giving up (see its module
+docstring), so ordinary concurrent traffic at these thread counts no
+longer needs a retry-on-503 workaround at all; the retry helper is gone,
+and every assertion below (`accepted == 2`, etc.) holds with zero 503s —
+asserted explicitly where relevant.
 """
 
 from __future__ import annotations
@@ -25,26 +37,6 @@ from netnl.api import create_app
 from netnl.settings import load
 
 _UPSTREAM_ID_RE = re.compile(r"/requests/([0-9a-f]{32})")
-
-
-def _post_retrying_on_overload(client, path, json_body, headers, max_attempts=20):
-    """Round-2 fix (finding 1b) changed what these B1/B2 races are racing
-    against: `netnl.auth` now bounds concurrent scrypt verifications to a
-    small, fixed cap (8) and answers 503 `overloaded` — not a queue — the
-    moment that cap is saturated. These tests deliberately fire more than 8
-    truly concurrent authenticated requests (that is the point of a real
-    concurrency test), so hitting the auth-capacity cap here is expected,
-    not a bug in the rate/concurrency logic these tests actually assert on.
-    A well-behaved client retries a 503 shortly; scrypt itself only takes
-    tens of milliseconds, so the cap clears almost immediately.
-    """
-    resp = None
-    for _ in range(max_attempts):
-        resp = client.post(path, json=json_body, headers=headers)
-        if resp.status_code != 503:
-            return resp
-        time.sleep(0.02)
-    return resp
 
 
 class TaggingOpener:
@@ -195,11 +187,10 @@ def test_isolation_holds_under_concurrent_submits(settings_env, tmp_path):
     def worker(i: int) -> None:
         thread_client = TestClient(app, raise_server_exceptions=False)
         tag = f"submit-tenant-{i}.example"
-        resp = _post_retrying_on_overload(
-            thread_client,
+        resp = thread_client.post(
             "/requests",
-            {"type": "web", "domains": [tag]},
-            basic_auth_header(*creds[i]),
+            json={"type": "web", "domains": [tag]},
+            headers=basic_auth_header(*creds[i]),
         )
         with results_lock:
             results[i] = (resp.status_code, resp.json())
@@ -211,6 +202,9 @@ def test_isolation_holds_under_concurrent_submits(settings_env, tmp_path):
         t.join(timeout=30)
 
     assert len(results) == n_tenants
+    # Round-3 fix (security-M1): zero 503s, not "retried until non-503" —
+    # see the module docstring.
+    assert all(code != 503 for code, _body in results.values()), results
     facade_ids = set()
     conn = store.connect(app.state.settings.db)
     try:
@@ -263,8 +257,8 @@ def test_concurrent_submits_cannot_exceed_rate_limit(settings_env, tmp_path):
 
     def worker(i: int) -> None:
         thread_client = TestClient(app, raise_server_exceptions=False)
-        resp = _post_retrying_on_overload(
-            thread_client, "/requests", {"type": "web", "domains": [f"race-{i}.example"]}, headers
+        resp = thread_client.post(
+            "/requests", json={"type": "web", "domains": [f"race-{i}.example"]}, headers=headers
         )
         with lock:
             status_codes.append(resp.status_code)
@@ -276,6 +270,8 @@ def test_concurrent_submits_cannot_exceed_rate_limit(settings_env, tmp_path):
         t.join(timeout=30)
 
     assert len(status_codes) == n
+    # Round-3 fix (security-M1): zero 503s, not "retried until non-503".
+    assert status_codes.count(503) == 0, status_codes
     accepted = status_codes.count(200)
     rejected = status_codes.count(429)
     assert accepted == 2, status_codes
@@ -317,8 +313,8 @@ def test_concurrent_submits_cannot_exceed_concurrency_limit(settings_env, tmp_pa
 
     def worker(i: int) -> None:
         thread_client = TestClient(app, raise_server_exceptions=False)
-        resp = _post_retrying_on_overload(
-            thread_client, "/requests", {"type": "web", "domains": [f"conc-{i}.example"]}, headers
+        resp = thread_client.post(
+            "/requests", json={"type": "web", "domains": [f"conc-{i}.example"]}, headers=headers
         )
         with lock:
             status_codes.append(resp.status_code)
@@ -330,6 +326,8 @@ def test_concurrent_submits_cannot_exceed_concurrency_limit(settings_env, tmp_pa
         t.join(timeout=30)
 
     assert len(status_codes) == n
+    # Round-3 fix (security-M1): zero 503s, not "retried until non-503".
+    assert status_codes.count(503) == 0, status_codes
     accepted = status_codes.count(200)
     rejected = status_codes.count(429)
     assert accepted == 2, status_codes
