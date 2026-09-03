@@ -43,6 +43,14 @@ All notable changes to this project are documented here. The format follows
   `Python-urllib/x.y` string — Cloudflare's bot protection in front of the
   primary batch endpoint was blocking the CLI's default `urllib`
   `User-Agent` with an HTTP 403.
+- `action.yml`: the `password` input's description no longer contains a
+  `${{ secrets.INTERNETNL_PASSWORD }}` example. GitHub's manifest
+  validator parses `${{ }}` expressions inside description strings too
+  when a remote action is loaded (`uses: MWest2020/internetnl-cli@<ref>`),
+  and `secrets` is not a valid context there — this made the action fail
+  to load entirely with "Unrecognized named-value: 'secrets'". Loading
+  the action locally via `uses: ./` does not exercise this validation
+  path, which is why the smoke workflow missed it.
 
 ### Added
 

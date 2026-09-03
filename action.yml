@@ -48,8 +48,8 @@ inputs:
   password:
     description: >-
       Batch API password (INTERNETNL_PASSWORD). Pass this from a repository
-      or organisation secret (e.g. `${{ secrets.INTERNETNL_PASSWORD }}`) —
-      never hardcode it in the workflow file.
+      or organisation secret (in your workflow: `secrets.INTERNETNL_PASSWORD`)
+      — never hardcode it in the workflow file.
     required: true
 
 outputs:
