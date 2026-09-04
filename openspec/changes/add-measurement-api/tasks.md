@@ -2,10 +2,14 @@
 
 ## 0. Prerequisites — the facade fronts nothing until these hold
 
-- [ ] 0.1 Self-hosted batch instance deployed (`add-internetnl-cli` task 4.2)
-      on a machine with a fixed public IPv4 + IPv6
-- [ ] 0.2 CLI acceptance test against that instance passes unchanged
-      (`add-internetnl-cli` task 4.4)
+- [x] 0.1 Self-hosted batch instance deployed (`add-internetnl-cli` task 4.2)
+      on a machine with a fixed public IPv4 + IPv6 — `netnl-instance`
+      (Hetzner, fixed v4 + v6) live since 2026-08-30; see
+      `docs/how-to/deploy-instance-vps.md`
+- [x] 0.2 CLI acceptance test against that instance passes unchanged
+      (`add-internetnl-cli` task 4.4) — green 2026-08-31 via
+      `scripts/acceptance.sh` (evidence under 4.2 below); the daily demo
+      measurement has run the unmodified CLI against it since
 - [ ] 0.3 Owner decisions recorded: service name — **`netnl`** (decided
       2026-08-22; keeps the reference to the mission: an opinion on how the
       internet should work, according to NL); public hostname — decided

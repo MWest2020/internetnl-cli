@@ -2,8 +2,9 @@
 
 Pins the buildable surface for sections 1–3 of `tasks.md` — the facade code
 and its tests, which need no live instance (the upstream client is faked at
-the same opener seam the CLI uses). Sections 0, 4 and 5 need real
-infrastructure and stay open. The public hostname is decided (2026-08-31,
+the same opener seam the CLI uses). Sections 0, 4 and 5 needed real
+infrastructure; 0, 4.1 and 4.2 have since been met (2026-08-30/31), 4.3
+and 5 stay open. The public hostname is decided (2026-08-31,
 owner Mark): `https://api.westerweel.work`, a Cloudflare Tunnel, primary,
 with the Tailscale Funnel hostname kept up in parallel as a fallback — see
 "Two supported topologies" below. Final retention and limit values are
