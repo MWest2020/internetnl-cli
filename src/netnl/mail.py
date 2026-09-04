@@ -3,8 +3,11 @@
 The first thing in this facade that sends mail. Kept small and deliberately
 paranoid about what ever reaches a mail header, an SMTP envelope, or an
 error message: `build_credential_mail` interpolates only the generated
-username/password/public endpoint — nothing BMC sent — into the mail body,
-which removes the injection surface entirely rather than escaping it.
+username/password (combined into a single `username:password` credential
+string) and the public endpoint — nothing BMC sent — into the mail body,
+which removes the injection surface entirely rather than escaping it. The
+two doc/demo URLs in the template are static constants, not
+provider-supplied strings, so they do not widen that surface.
 """
 
 from __future__ import annotations
@@ -44,34 +47,71 @@ Sender = Callable[[Mail], None]
 
 _CREDENTIAL_SUBJECT = "Your netnl supporter key"
 
+# Static — not provider-supplied — pointers into this repo's own docs and
+# demo. Safe to interpolate unconditionally alongside username/password/
+# public_endpoint: see the module docstring.
+_DOCS_URL = "https://github.com/MWest2020/internetnl-cli/blob/main/docs/how-to/ci.md"
+_DEMO_URL = "https://mwest2020.github.io/internetnl-cli-demo/"
+_INSTALL_URL = "git+https://github.com/MWest2020/internetnl-cli"
+
 _CREDENTIAL_BODY_TEMPLATE = """\
 Thank you for supporting netnl.
 
-Here is your tenant credential for the batch measurement facade:
+Here is your credential for the batch measurement facade — a single
+"username:password" string:
 
-  Endpoint: {public_endpoint}
-  Username: {username}
-  Password: {password}
+  INTERNETNL_CREDENTIAL={credential}
 
 This credential does not expire, but it is issued on a best-effort,
-no-SLA basis — see the supporter-key documentation for what that means
+no-SLA basis -- see the supporter-key documentation for what that means
 and the fair-use rate limit that applies to every credential, donor or
 not.
 
-Keep this password safe: it is shown to you exactly once, in this mail,
-and is never stored anywhere in a recoverable form. If you lose it, ask
-the operator to reissue your credential.
+Keep it safe: it is shown to you exactly once, in this mail, and is
+never stored anywhere in a recoverable form. If you lose it, ask the
+operator to reissue your credential.
+
+How to use it
+-------------
+
+GitHub Actions -- add the credential above as a repository secret
+named INTERNETNL_CREDENTIAL, then:
+
+  - uses: MWest2020/internetnl-cli@main
+    with:
+      hosts: your-domain.nl
+      endpoint: {public_endpoint}
+      credential: ${{{{ secrets.INTERNETNL_CREDENTIAL }}}}
+
+Terminal / any other CI:
+
+  uv tool install {install_url}
+  export INTERNETNL_ENDPOINT={public_endpoint}
+  export INTERNETNL_CREDENTIAL=<the credential above>
+
+Full guide (CI gate, exit codes, allowlists): {docs_url}
+Live demo: {demo_url}
 """
 
 
 def build_credential_mail(*, to: str, username: str, password: str, public_endpoint: str) -> Mail:
     """Interpolates **only** `username`/`password`/`public_endpoint` — no
     other field from the triggering webhook delivery (donor name, email,
-    note, ...) is ever placed in this mail. There is nothing
-    attacker-influenced left in the template to escape.
+    note, ...) is ever placed in this mail. `username` and `password` are
+    combined into a single `username:password` credential string (the same
+    shape `INTERNETNL_CREDENTIAL`/the action's `credential` input expect)
+    and that combined string is shown exactly once, in the "how to use it"
+    line — the CLI/CI copy-paste blocks below it reference "the credential
+    above" rather than interpolating the password a second time. There is
+    nothing attacker-influenced left in the template to escape.
     """
+    credential = f"{username}:{password}"
     body = _CREDENTIAL_BODY_TEMPLATE.format(
-        public_endpoint=public_endpoint, username=username, password=password
+        credential=credential,
+        public_endpoint=public_endpoint,
+        install_url=_INSTALL_URL,
+        docs_url=_DOCS_URL,
+        demo_url=_DEMO_URL,
     )
     return Mail(to=to, subject=_CREDENTIAL_SUBJECT, body=body)
 

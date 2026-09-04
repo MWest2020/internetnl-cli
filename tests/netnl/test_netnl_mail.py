@@ -92,6 +92,43 @@ def test_build_credential_mail_interpolates_only_the_three_fields():
     assert "https://facade.example.org" in m.body
 
 
+def test_build_credential_mail_shows_a_single_credential_string_once():
+    # Owner feedback: the password used to appear on its own line, next to
+    # a separate username line. It must now appear exactly once, as one
+    # "username:password" credential string — not twice (e.g. once in a
+    # combined string and again in a copy-paste block).
+    m = mail.build_credential_mail(
+        to="donor@example.org",
+        username="supporter-aaaa1111",
+        password="s3cr3t-pw",
+        public_endpoint="https://facade.example.org",
+    )
+    assert "supporter-aaaa1111:s3cr3t-pw" in m.body
+    assert m.body.count("s3cr3t-pw") == 1
+    assert m.body.count("supporter-aaaa1111") == 1
+    assert "INTERNETNL_CREDENTIAL=supporter-aaaa1111:s3cr3t-pw" in m.body
+
+
+def test_build_credential_mail_includes_action_and_cli_usage_and_docs_link():
+    m = mail.build_credential_mail(
+        to="donor@example.org",
+        username="supporter-aaaa1111",
+        password="s3cr3t-pw",
+        public_endpoint="https://facade.example.org",
+    )
+    # GitHub Actions copy-paste block.
+    assert "uses: MWest2020/internetnl-cli@main" in m.body
+    assert "endpoint: https://facade.example.org" in m.body
+    assert "credential: ${{ secrets.INTERNETNL_CREDENTIAL }}" in m.body
+    assert "INTERNETNL_CREDENTIAL" in m.body  # named as the repo secret to add
+    # Terminal/CLI copy-paste block — endpoint repeated, password is not.
+    assert "uv tool install git+https://github.com/MWest2020/internetnl-cli" in m.body
+    assert "export INTERNETNL_ENDPOINT=https://facade.example.org" in m.body
+    # Docs/demo pointer.
+    assert "https://github.com/MWest2020/internetnl-cli/blob/main/docs/how-to/ci.md" in m.body
+    assert "https://mwest2020.github.io/internetnl-cli-demo/" in m.body
+
+
 def test_build_credential_mail_never_echoes_a_donor_supplied_field():
     # There is no parameter for it at all — this is a structural guarantee,
     # asserted here for documentation: passing extra kwargs is a TypeError.

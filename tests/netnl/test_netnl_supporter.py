@@ -243,14 +243,16 @@ def test_issued_credential_authenticates_on_the_real_authenticated_surface(
     mail_sent = recording_sender.sent[0]
     assert mail_sent.to == "supporter@example.org"
 
-    # Pull the generated username/password out of the mail body (there is
-    # no other channel to get them from — this mirrors how a real donor
-    # would).
-    lines = {line.split(":", 1)[0].strip(): line.split(":", 1)[1].strip() for line in mail_sent.body.splitlines() if ":" in line}
-    username = lines["Username"]
-    password = lines["Password"]
+    # Pull the generated credential out of the mail body (there is no
+    # other channel to get it from — this mirrors how a real donor would).
+    credential_line = next(
+        line.strip()
+        for line in mail_sent.body.splitlines()
+        if line.strip().startswith("INTERNETNL_CREDENTIAL=")
+    )
+    credential = credential_line.split("=", 1)[1]
 
-    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    token = base64.b64encode(credential.encode()).decode()
     queue_json(fake_opener, REGISTER_REPLY)
     submit_resp = supporter_client.post(
         "/requests",
