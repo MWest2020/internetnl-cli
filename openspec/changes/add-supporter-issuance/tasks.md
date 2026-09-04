@@ -11,8 +11,9 @@
 - [ ] O2 Final `NETNL_SUPPORTER_MAX_PER_HOUR`/`NETNL_SUPPORTER_MAX_ATTEMPTS`
       values once real donation volume exists — the defaults here are a
       starting point.
-- [ ] O3 Whether `NETNL_SUPPORTER_MIN_AMOUNT=0` (every donation mints a key)
-      remains the policy once volume is non-trivial.
+- [x] O3 Whether `NETNL_SUPPORTER_MIN_AMOUNT=0` (every donation mints a key)
+      remains the policy once volume is non-trivial. Resolved 2026-09-04:
+      the default becomes `2` — see `openspec/changes/polish-supporter-mail`.
 - [ ] O4 SMTP provider/account to use in production (host, from-address,
       auth) — out of band, never in this repo.
 
