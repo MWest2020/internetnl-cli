@@ -152,11 +152,14 @@ def test_supporter_issuance_never_leaks_secrets_or_pii(settings_env, tmp_path, c
     resp = post_webhook(client, payload, secret=_WEBHOOK_SECRET)
     assert resp.status_code == 200
     assert len(sent) == 1
-    issued_password = next(
-        line.split(":", 1)[1].strip()
+    credential_line = next(
+        line.strip()
         for line in sent[0].body.splitlines()
-        if line.strip().startswith("Password:")
+        if line.strip().startswith("INTERNETNL_CREDENTIAL=")
     )
+    # `INTERNETNL_CREDENTIAL=username:password`, split on the first `:`
+    # after the `=` — same convention the CLI itself uses.
+    issued_password = credential_line.split("=", 1)[1].split(":", 1)[1]
     _assert_supporter_no_leak(resp, caplog, tmp_path / "leak-supporter.sqlite3", issued_password=issued_password)
     # The mail itself legitimately carries the address and password — this
     # only proves neither reaches the reply, the log, or the database.

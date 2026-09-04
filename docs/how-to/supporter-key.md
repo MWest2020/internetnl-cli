@@ -21,8 +21,12 @@ unavailable.
 ## The model, in one paragraph
 
 Someone makes a small, one-off donation and gets back a `netnl`
-tenant credential (`INTERNETNL_USERNAME`/`INTERNETNL_PASSWORD`) that
-does not expire. There is no subscription, no recurring billing, and
+tenant credential that does not expire — the automatic mail (see
+[Automatic supporter-key issuance](supporter-webhook.md)) presents it
+as a single `INTERNETNL_CREDENTIAL=username:password` string, plus
+copy-paste GitHub Actions and CLI snippets and a link to the CI guide,
+because CI/CD only ever needs the one API key, not two loose fields.
+There is no subscription, no recurring billing, and
 no tiered plans — one donation, one lifetime key. What keeps that
 sustainable is not a metered quota tied to the donation; it is the
 same per-tenant rate limit every credential already gets (see "Fair
