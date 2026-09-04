@@ -8,10 +8,9 @@
 - [x] O2 Currency pinning: not now — `NETNL_SUPPORTER_CURRENCY` stays
       optional and unset (the BMC account has one currency; pinning it is
       an operator choice, not a default).
-- [ ] O3 (after merge, operator) If the live deployment should enforce the
-      floor *before* the next rollout, set `NETNL_SUPPORTER_MIN_AMOUNT=2`
-      in the homelab config now; the code default makes that redundant
-      afterwards.
+- [x] O3 Live deployment enforces the floor already: `NETNL_SUPPORTER_MIN_AMOUNT: "2"`
+      in the homelab GitOps configmap (MWest2020/homelab a9d764d, synced and
+      rolled out 2026-09-04). The code default makes that redundant afterwards.
 
 ## T1. OpenSpec change
 
