@@ -113,10 +113,14 @@ confirm a mail arrived with a fresh credential. **Afterwards:**
 ## 5. Live
 
 Once the above holds, real donations mint keys with no further operator
-action. Every donation on the account qualifies by default
-(`NETNL_SUPPORTER_MIN_AMOUNT=0`) — raise it, or set
-`NETNL_SUPPORTER_CURRENCY`, if that default does not fit; see
-`deploy/.env.example` for both.
+action. A donation qualifies by default once it is **2.00 or more** in the
+account's currency (`NETNL_SUPPORTER_MIN_AMOUNT=2`) — raise it, lower it, or
+set `NETNL_SUPPORTER_CURRENCY`, if that default does not fit; see
+`deploy/.env.example` for all three. The credential mail is sent as
+plaintext with an HTML alternative (`multipart/alternative`) — the HTML
+part loads no image, font, or stylesheet, and makes no network request of
+any kind; a client that renders only plaintext sees exactly the same
+credential.
 
 ## Troubleshooting
 

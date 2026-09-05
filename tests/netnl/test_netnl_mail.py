@@ -5,12 +5,17 @@
 
 from __future__ import annotations
 
+import email
+import re
 import smtplib
 import ssl
 
 import pytest
 
 from netnl import mail
+
+_URL_RE = re.compile(r"https?://\S+?(?=[\"'<\s])")
+_FORBIDDEN_RE = re.compile(r"<script|<img|<link|<form|@import|url\(|\son[a-z]+=", re.IGNORECASE)
 
 
 class _FakeSMTP:
@@ -142,12 +147,113 @@ def test_build_credential_mail_never_echoes_a_donor_supplied_field():
         )
 
 
+# --- Mail / build_credential_mail HTML alternative -------------------------
+
+
+def test_credential_mail_html_contains_credential_and_password_exactly_once():
+    m = mail.build_credential_mail(
+        to="donor@example.org",
+        username="supporter-aaaa1111",
+        password="s3cr3t-pw",
+        public_endpoint="https://facade.example.org",
+    )
+    assert m.html is not None
+    assert m.html.count("supporter-aaaa1111:s3cr3t-pw") == 1
+    assert m.html.count("s3cr3t-pw") == 1
+
+
+def test_credential_mail_html_never_echoes_the_recipient_address():
+    # Mirrors the plaintext "never echoes a donor-supplied field" guarantee
+    # (structurally enforced there by the absence of a parameter): the
+    # recipient address is used only for the envelope `to`, never
+    # interpolated into either part.
+    m = mail.build_credential_mail(
+        to="donor-address-should-not-appear@example.org",
+        username="supporter-aaaa1111",
+        password="s3cr3t-pw",
+        public_endpoint="https://facade.example.org",
+    )
+    assert "donor-address-should-not-appear@example.org" not in m.html
+    assert "donor-address-should-not-appear@example.org" not in m.body
+
+
+def test_credential_mail_html_has_no_network_triggering_markup():
+    m = mail.build_credential_mail(
+        to="donor@example.org",
+        username="supporter-aaaa1111",
+        password="s3cr3t-pw",
+        public_endpoint="https://facade.example.org",
+    )
+    assert _FORBIDDEN_RE.search(m.html) is None
+
+
+def test_credential_mail_html_urls_are_all_allowlisted():
+    m = mail.build_credential_mail(
+        to="donor@example.org",
+        username="supporter-aaaa1111",
+        password="s3cr3t-pw",
+        public_endpoint="https://facade.example.org/hook?a=1",
+    )
+    allowed = {
+        "https://github.com/MWest2020/internetnl-cli/blob/main/docs/how-to/ci.md",
+        "https://mwest2020.github.io/internetnl-cli-demo/",
+        "https://github.com/MWest2020/internetnl-cli",  # from git+https://...
+        "https://facade.example.org/hook?a=1",
+    }
+    for url in _URL_RE.findall(m.html):
+        assert url in allowed, url
+
+
+def test_credential_mail_html_escapes_markup_characters_plaintext_stays_raw():
+    m = mail.build_credential_mail(
+        to="donor@example.org",
+        username="supporter-aaaa1111",
+        password="s3cr3t-pw",
+        public_endpoint="https://x.example/?a=1&b=<2>",
+    )
+    assert "https://x.example/?a=1&amp;b=&lt;2&gt;" in m.html
+    assert "https://x.example/?a=1&b=<2>" not in m.html
+    assert "https://x.example/?a=1&b=<2>" in m.body
+
+
 def test_build_notify_mail_has_no_password():
     m = mail.build_notify_mail(to="operator@example.org", username="supporter-aaaa1111", txn_id="txn-1")
     assert m.to == "operator@example.org"
     assert "supporter-aaaa1111" in m.body
     assert "txn-1" in m.body
     assert "password" not in m.body.lower()
+
+
+# --- smtp_sender: MIME shape ------------------------------------------------
+
+
+def test_mail_without_html_is_sent_as_single_part_text_plain(fake_smtp):
+    send = _sender(fake_smtp)
+    send(mail.Mail(to="donor@example.org", subject="s", body="b"))
+
+    conn = fake_smtp.instances[0]
+    sent = email.message_from_string(conn.sent)
+    assert not sent.is_multipart()
+    assert sent.get_content_type() == "text/plain"
+
+
+def test_credential_mail_is_sent_as_multipart_alternative_plain_then_html(fake_smtp):
+    send = _sender(fake_smtp)
+    m = mail.build_credential_mail(
+        to="donor@example.org",
+        username="supporter-aaaa1111",
+        password="s3cr3t-pw",
+        public_endpoint="https://facade.example.org",
+    )
+    send(m)
+
+    conn = fake_smtp.instances[0]
+    sent = email.message_from_string(conn.sent)
+    assert sent.is_multipart()
+    parts = sent.get_payload()
+    assert [p.get_content_type() for p in parts] == ["text/plain", "text/html"]
+    plain_payload = parts[0].get_payload(decode=True).decode(parts[0].get_content_charset() or "utf-8")
+    assert plain_payload == m.body
 
 
 # --- smtp_sender: connection shape -----------------------------------------

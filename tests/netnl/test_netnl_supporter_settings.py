@@ -67,7 +67,7 @@ def test_defaults_match_design(settings_env):
     assert cfg.signature_header == "X-Signature-Sha256"
     assert cfg.max_body_bytes == 65536
     assert cfg.accept_test_mode is False
-    assert cfg.min_amount == Decimal("0")
+    assert cfg.min_amount == Decimal("2")
     assert cfg.currency is None
     assert cfg.max_per_hour == 20
     assert cfg.max_attempts == 3
@@ -359,3 +359,48 @@ def test_lease_seconds_rejects_non_finite_values(settings_env):
     env = _supporter_env(settings_env, NETNL_SUPPORTER_LEASE_SECONDS="inf")
     with pytest.raises(SettingsError, match="NETNL_SUPPORTER_LEASE_SECONDS"):
         load(env)
+
+
+# --- polish-supporter-mail: the default floor actually reaches `qualifies` -
+
+
+@pytest.mark.parametrize("amount", ["1.99", 1.99])
+def test_default_min_amount_below_floor_is_ignored_through_qualifies(settings_env, amount):
+    from netnl import bmc
+
+    s = load(_supporter_env(settings_env))
+    cfg = bmc.QualifyConfig(
+        accept_test_mode=s.supporter.accept_test_mode,
+        min_amount=s.supporter.min_amount,
+        currency=s.supporter.currency,
+    )
+    delivery = bmc.Delivery(
+        event="donation.created",
+        live_mode=True,
+        transaction_id="txn-default-floor",
+        amount=Decimal(str(amount)),
+        currency="EUR",
+        email="donor@example.org",
+    )
+    assert bmc.qualifies(delivery, cfg) == bmc.Decision.IGNORE_AMOUNT
+
+
+@pytest.mark.parametrize("amount", ["2.00", "2", 2])
+def test_default_min_amount_at_floor_is_issued_through_qualifies(settings_env, amount):
+    from netnl import bmc
+
+    s = load(_supporter_env(settings_env))
+    cfg = bmc.QualifyConfig(
+        accept_test_mode=s.supporter.accept_test_mode,
+        min_amount=s.supporter.min_amount,
+        currency=s.supporter.currency,
+    )
+    delivery = bmc.Delivery(
+        event="donation.created",
+        live_mode=True,
+        transaction_id="txn-default-floor",
+        amount=Decimal(str(amount)),
+        currency="EUR",
+        email="donor@example.org",
+    )
+    assert bmc.qualifies(delivery, cfg) == bmc.Decision.ISSUE

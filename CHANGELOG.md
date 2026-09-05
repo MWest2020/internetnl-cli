@@ -26,6 +26,17 @@ and exit codes — is the one pinned in
   unmodified `internetnl_cli.client.BatchClient`; `internetnl_cli` itself
   is untouched.
 
+- The credential mail (`openspec/changes/polish-supporter-mail`) is now sent
+  as `multipart/alternative`: the existing plaintext body stays the source
+  of truth, byte-for-byte unchanged, and a new HTML alternative renders the
+  same content — same three interpolated values (credential, public
+  endpoint, static doc/demo/install links), same single, non-wrapping
+  appearance of the credential, HTML-escaped regardless. Mail-client HTML,
+  not web HTML: no image, font, stylesheet, script, form, or other
+  network-triggering reference of any kind, inline CSS with one dark-mode
+  `<style>` block, table layout, single column ≤ 600px. The operator
+  notification mail is unaffected (still plaintext-only).
+
 ### Changed
 
 - Known tenants keep their own failed-authentication bucket past the
@@ -40,6 +51,15 @@ and exit codes — is the one pinned in
   up to a second, separately bounded cap (`_MAX_TENANT_BUCKETS = 256`).
   An unknown username is unaffected: it still folds into the overflow
   record exactly as before once the general cap is full.
+
+
+- `NETNL_SUPPORTER_MIN_AMOUNT`'s default
+  (`openspec/changes/polish-supporter-mail`) changes from `0` to `2`: a
+  donation now mints a credential only at or above 2.00 in the account's
+  currency, resolving the owner input parked as O3 in
+  `add-supporter-issuance/tasks.md`. Operators who set the variable
+  explicitly see no change; the live homelab deployment already enforces
+  this floor via its own configmap.
 
 ### Added
 

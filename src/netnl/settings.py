@@ -373,7 +373,7 @@ def _load_supporter(env: Mapping[str, str]) -> SupporterSettings | None:
 
     signature_header = env.get("NETNL_BMC_SIGNATURE_HEADER", "X-Signature-Sha256")
     accept_test_mode = env.get("NETNL_BMC_ACCEPT_TEST_MODE") == "1"
-    min_amount = _resolve_decimal(env, "NETNL_SUPPORTER_MIN_AMOUNT", Decimal("0"))
+    min_amount = _resolve_decimal(env, "NETNL_SUPPORTER_MIN_AMOUNT", Decimal("2"))
     raw_currency = env.get("NETNL_SUPPORTER_CURRENCY")
     currency = raw_currency.upper() if raw_currency else None
     username_prefix = env.get("NETNL_SUPPORTER_USERNAME_PREFIX", "supporter-")
