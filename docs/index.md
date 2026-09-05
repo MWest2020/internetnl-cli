@@ -25,6 +25,11 @@ until the implementation lands.
 - [Deploying the upstream instance on a VPS, reached over a tailnet](how-to/deploy-instance-vps.md) —
   the batch instance on a fixed-public-IP VPS, joined to a Tailscale
   tailnet so a homelab facade can reach it privately.
+- [Self-hosting: four traps](how-to/self-hosting-pitfalls.md) — the places
+  where following the upstream batch documentation literally still leaves you
+  with a broken instance: the public-IP setting that kills all container
+  egress, the certbot that cannot start so certificates never renew, the
+  compose wrapper that needs a TTY, and the stranded-network race.
 - [Running the netnl private beta](how-to/beta.md) — issuing and
   revoking tenant credentials, onboarding a handful of known beta
   users, what to observe against the default limits, and the

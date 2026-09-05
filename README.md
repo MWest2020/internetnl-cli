@@ -129,9 +129,11 @@ Read [docs/reference/self-hosted.md](docs/reference/self-hosted.md)
 first: it needs a server with a **fixed public IPv4 address and IPv6** — not
 something you run behind NAT — and it is a maintained service, not a script.
 [docs/how-to/deploy-instance-vps.md](docs/how-to/deploy-instance-vps.md) walks
-the whole deployment, including the two upstream traps that cost this project
-days: a documented setting that silently kills all container egress, and a
-broken certbot in the webserver image.
+the whole deployment, and
+[docs/how-to/self-hosting-pitfalls.md](docs/how-to/self-hosting-pitfalls.md)
+collects the four traps that cost this project days — including a documented
+setting that silently kills all container egress, and a certbot in the
+webserver image that cannot start, so certificates never renew.
 
 ## Development
 
