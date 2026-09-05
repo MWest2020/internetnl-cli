@@ -46,6 +46,9 @@ until the implementation lands.
 
 ## Reference
 
+- [The netnl service](reference/service.md) — what a tenant of the hosted
+  facade can count on: endpoint, terms, how to get a credential, the
+  published limits and retention windows, and the no-SLA statement.
 - [Self-hosting a batch instance](reference/self-hosted.md) — requirements,
   the fixed-public-IP caveat, deployment notes, running costs, and how batch
   results differ from the website's.

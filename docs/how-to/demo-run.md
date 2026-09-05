@@ -134,9 +134,52 @@ change. `reissue` also prints a generated password once, to stdout — throw
 it away exactly like `user add`'s: the demo never authenticates as this
 credential either way (design.md, D9).
 
-This is the operator's entire abuse-response lever for the demo surface —
-see `tasks.md`, owner input O5, for the (not-yet-written) runbook on when to
-pull it.
+This is the operator's entire abuse-response lever for the demo surface.
+When to pull it is below.
+
+## Abuse response: who pulls it, and on what signal
+
+Decided 2026-09-05 (owner Mark): **one human revoker, one written
+threshold.** No automatic revocation — a false positive would take the
+public demo offline unattended, and this surface is not load-bearing enough
+to justify that. Mark revokes; nobody else has `netnl-admin` on the pod.
+
+Pull the switch when any of these holds:
+
+- **Sustained saturation.** The demo hits `NETNL_DEMO_MAX_PER_HOUR` for
+  three consecutive hours *and* tenant submissions are visibly queueing
+  behind it. One busy hour is the cap doing its job; three in a row with
+  tenant impact is the demo crowding out the people it was meant to
+  advertise to.
+- **Single-source flooding.** One IP burns the per-IP cap every hour for
+  three consecutive hours — the per-IP bound is holding, but somebody is
+  clearly automating against it rather than trying the demo.
+- **Targeting.** Submitted domains are plainly not the submitter's own
+  (a run of unrelated third-party domains, or anything on a well-known
+  target list). The terms permit measuring hosts you operate; the demo
+  cannot verify that, so this is the one signal that is judged by eye.
+
+What to look at, on the pod:
+
+```sh
+netnl-admin user list          # is the demo row still active?
+
+# demo submissions per hour over the last day
+sqlite3 "$NETNL_DB" \
+  "SELECT substr(at,1,13) AS hour, count(*), sum(domain_count)
+     FROM audit WHERE credential='netnl-demo' AND event='submit'
+       AND at > datetime('now','-1 day')
+   GROUP BY hour ORDER BY hour;"
+```
+
+The audit table is append-only and `submit` rows carry the credential and
+the domain count, so this is the whole picture for the demo surface — there
+is no separate metrics stack to consult.
+
+After revoking: say so on the demo page (it already renders
+`demo-unavailable` as a plain message), and note the reason and the hour
+range in the change's `tasks.md` or a handover note, so the eventual
+decision to raise the caps has evidence under it rather than a memory.
 
 ## Smoke check
 

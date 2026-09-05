@@ -10,13 +10,19 @@
       (`add-internetnl-cli` task 4.4) — green 2026-08-31 via
       `scripts/acceptance.sh` (evidence under 4.2 below); the daily demo
       measurement has run the unmodified CLI against it since
-- [ ] 0.3 Owner decisions recorded: service name — **`netnl`** (decided
+- [x] 0.3 Owner decisions recorded: service name — **`netnl`** (decided
       2026-08-22; keeps the reference to the mission: an opinion on how the
       internet should work, according to NL); public hostname — decided
       2026-08-31 (owner Mark): `https://api.westerweel.work` primary
       (Cloudflare Tunnel), the Tailscale Funnel `*.ts.net` hostname kept up
-      in parallel as a fallback; still open: retention periods, initial
-      limits (rate, max domains, max concurrent runs)
+      in parallel as a fallback; retention and initial limits — decided
+      2026-09-05 (owner Mark): **ratify the code's defaults as the
+      published policy**, so docs and behaviour cannot drift (results 7
+      days, demo results 24 hours, audit 90 days; 500 domains per request,
+      2 concurrent runs; demo 6/hour, 2 concurrent, 2 per IP/hour). The
+      private beta exists to test whether they are right, and every one is
+      an environment variable — changing one needs a restart, not a
+      release. Published in `docs/reference/service.md`.
 
 ## 1. Skeleton
 
@@ -96,8 +102,12 @@
 
 ## 5. Community opening
 
-- [ ] 5.1 Docs page: endpoint, terms (only measure hosts you operate),
-      limits, retention, batch-vs-website differences, no-SLA statement
-- [ ] 5.2 Credential-request runbook published
+- [x] 5.1 Docs page: endpoint, terms (only measure hosts you operate),
+      limits, retention, batch-vs-website differences, no-SLA statement —
+      `docs/reference/service.md` (2026-09-05), linked from the docs index.
+- [x] 5.2 Credential-request runbook published — both sides documented:
+      the requester's path in `docs/reference/service.md` ("Getting a
+      credential": ask, or donate) and the operator's in
+      `docs/how-to/beta.md` (issue, reissue, revoke, list).
 - [ ] 5.3 Handover package: deploy recipe + issuance runbook complete enough
       to run without us; revisit repo split at this point

@@ -14,8 +14,14 @@
 - [x] O3 Whether `NETNL_SUPPORTER_MIN_AMOUNT=0` (every donation mints a key)
       remains the policy once volume is non-trivial. Resolved 2026-09-04:
       the default becomes `2` — see `openspec/changes/polish-supporter-mail`.
-- [ ] O4 SMTP provider/account to use in production (host, from-address,
-      auth) — out of band, never in this repo.
+- [x] O4 SMTP provider/account to use in production. Decided 2026-09-05
+      (owner Mark): **a transactional email provider on a dedicated
+      subdomain** (e.g. `mail.westerweel.work`) with its own SPF/DKIM/
+      DMARC, kept separate from personal mail so a bounce or spam
+      complaint from netnl cannot touch that reputation — and independent
+      of Hetzner's blocked port 25. The account itself, host, from-address
+      and credentials stay out of band: they are deployment configuration
+      (`NETNL_SMTP_*`), never committed here.
 
 ## T1. OpenSpec change
 
