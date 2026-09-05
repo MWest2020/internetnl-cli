@@ -1,8 +1,7 @@
 name: 'internetnl-cli scan'
-description: >-
-  Submit hosts to an internet.nl-compatible batch API (the hosted instance,
-  a self-hosted one, or the netnl facade) and gate CI on scored subtest
-  failures.
+# Max 125 characters: the GitHub Marketplace rejects anything longer, and it
+# is the one line shown on the listing card and in search results.
+description: 'Measure domains for IPv6, DNSSEC, RPKI and TLS via an Internet.nl batch API; gate CI on scored failures.'
 author: 'MWest2020'
 branding:
   icon: 'shield'
