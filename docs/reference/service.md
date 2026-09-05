@@ -78,6 +78,21 @@ facade: your neighbour's busy hour does not spend your budget.
 | Supporter keys minted per hour | 20 | `NETNL_SUPPORTER_MAX_PER_HOUR` |
 | Delivery attempts per supporter key | 3 | `NETNL_SUPPORTER_MAX_ATTEMPTS` |
 
+### How much runs at once, in total
+
+There is **no facade-wide ceiling**: the limits above are per credential, so
+the total work in flight is `2 × active tenants`, plus at most 2 for the
+demo. One facade process (a single replica over one SQLite file) serialises
+the bookkeeping, but not the measurements themselves.
+
+Behind it all sits **one upstream batch instance**, and its own capacity has
+never been measured under load — that measurement is the point of the
+private beta (`add-measurement-api`, task 4.3). Until it exists, the honest
+statement is: a handful of tenants is fine, and nobody knows where the knee
+is. If the beta shows the instance saturating before the per-tenant caps
+bite, the fix is a facade-wide ceiling on top of the per-tenant ones, not
+lower per-tenant numbers.
+
 The concurrency ceiling is the one that matters: there is a single upstream
 batch instance behind this facade, and it is the scarce resource. Everything
 else is a fair-use bound so one tenant — or the anonymous demo — cannot take
