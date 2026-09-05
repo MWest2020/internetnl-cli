@@ -63,10 +63,14 @@ tenant's use is clearly outside what one homelab instance can carry.
 
 ## Limits
 
+All tenant limits below are **per credential**, not shared across the
+facade: your neighbour's busy hour does not spend your budget.
+
 | What | Value | Variable |
 |---|---|---|
+| Submissions per hour, per tenant | 10 | `NETNL_RATE_LIMIT` |
 | Domains per request | 500 | `NETNL_MAX_DOMAINS` |
-| Concurrent runs (whole facade) | 2 | `NETNL_MAX_CONCURRENT` |
+| Concurrent runs, per tenant | 2 | `NETNL_MAX_CONCURRENT` |
 | Demo: requests per hour | 6 | `NETNL_DEMO_MAX_PER_HOUR` |
 | Demo: concurrent runs | 2 | `NETNL_DEMO_MAX_CONCURRENT` |
 | Demo: requests per IP per hour | 2 | `NETNL_DEMO_PER_IP_PER_HOUR` |
@@ -78,6 +82,26 @@ The concurrency ceiling is the one that matters: there is a single upstream
 batch instance behind this facade, and it is the scarce resource. Everything
 else is a fair-use bound so one tenant — or the anonymous demo — cannot take
 it all.
+
+### What happens when you hit one
+
+**Nothing queues.** A submission over any of these bounds is refused
+immediately with `429` and a machine-readable `rate-limited` code; the body
+says which bound and what the limit is (`"2 runs already in progress; the
+limit is 2"`). There is no waiting room, no retry-after scheduling on our
+side, and no partial acceptance — the request simply did not happen, and
+retrying is the caller's decision.
+
+That is deliberate. A queue on a facade in front of a single batch instance
+would hide the scarcity rather than communicate it: submissions would sit in
+a buffer the caller cannot see, time out somewhere in the middle, and turn a
+crisp "not now" into an unbounded wait. Refusing fast keeps the caller in
+control of their own retry policy, and keeps the facade stateless about work
+it has not accepted.
+
+Before refusing on concurrency, the facade first refreshes your non-terminal
+runs against upstream — so a slot freed by a run that finished a minute ago
+is noticed, and you are not refused on stale bookkeeping.
 
 ## Retention
 
