@@ -51,7 +51,7 @@ Every endpoint needs one, and there are three routes:
 
 1. **A supporter key for `api.westerweel.work`** — the netnl facade in front
    of an instance run by this project's author. A one-off donation via
-   [Buy Me a Coffee](https://buymeacoffee.com/mark.westerweel) of €2 or more
+   [Buy Me a Coffee](https://buymeacoffee.com/mark.westerweel) of $2 or more
    mints a lifetime credential and mails it to you automatically, usually
    within a minute. It is a beta service on a best-effort, no-SLA basis, with
    the same fair-use rate limit for everyone — read
