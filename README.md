@@ -45,6 +45,27 @@ There is **no default endpoint**: you configure where you measure — the
 hosted instance (account required) or [your own](docs/reference/self-hosted.md).
 Switching between them is a change of `INTERNETNL_ENDPOINT`, nothing else.
 
+## Getting a credential
+
+Every endpoint needs one, and there are three routes:
+
+1. **A supporter key for `api.westerweel.work`** — the netnl facade in front
+   of an instance run by this project's author. A one-off donation via
+   [Buy Me a Coffee](https://buymeacoffee.com/mark.westerweel) of €2 or more
+   mints a lifetime credential and mails it to you automatically, usually
+   within a minute. It is a beta service on a best-effort, no-SLA basis, with
+   the same fair-use rate limit for everyone — read
+   [docs/how-to/supporter-key.md](docs/how-to/supporter-key.md) for exactly
+   what that promises and what it does not.
+2. **An account on the hosted batch API** at
+   [Internet.nl](https://batch.internet.nl), if your organisation qualifies
+   for one.
+3. **Your own instance** — see [Self-hosting](#self-hosting) below.
+
+No credential at all is needed to try the tool: the
+[live demo](https://mwest2020.github.io/internetnl-cli-demo/) runs one domain
+at a time against the same facade, anonymously.
+
 ## What it is, and is not
 
 - **A client.** The tests, the scoring and the verdicts belong to
@@ -102,10 +123,15 @@ and the gate's exit-code semantics.
 
 ## Self-hosting
 
-If you cannot get an account on the hosted batch instance, you can run your
-own. Read [docs/reference/self-hosted.md](docs/reference/self-hosted.md)
+If you cannot get an account on the hosted batch instance, and a
+[supporter key](#getting-a-credential) does not fit, you can run your own.
+Read [docs/reference/self-hosted.md](docs/reference/self-hosted.md)
 first: it needs a server with a **fixed public IPv4 address and IPv6** — not
 something you run behind NAT — and it is a maintained service, not a script.
+[docs/how-to/deploy-instance-vps.md](docs/how-to/deploy-instance-vps.md) walks
+the whole deployment, including the two upstream traps that cost this project
+days: a documented setting that silently kills all container egress, and a
+broken certbot in the webserver image.
 
 ## Development
 
