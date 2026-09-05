@@ -17,7 +17,7 @@ The repository root ships [`action.yml`](../../action.yml), a composite
 action. Minimal use:
 
 ```yaml
-- uses: MWest2020/internetnl-cli@main
+- uses: MWest2020/internetnl-cli@v1
   with:
     hosts: example.org example.com
     endpoint: https://api.westerweel.work
@@ -36,7 +36,7 @@ pass a credential to the action: one secret instead of two.
 have the credential split that way:
 
 ```yaml
-- uses: MWest2020/internetnl-cli@main
+- uses: MWest2020/internetnl-cli@v1
   with:
     hosts: example.org example.com
     endpoint: https://api.westerweel.work
@@ -137,7 +137,7 @@ scan:
     INTERNETNL_USERNAME: $INTERNETNL_USERNAME   # CI/CD variable, masked
     INTERNETNL_PASSWORD: $INTERNETNL_PASSWORD   # CI/CD variable, masked+protected
   script:
-    - pip install "git+https://github.com/MWest2020/internetnl-cli@main"
+    - pip install "git+https://github.com/MWest2020/internetnl-cli@v1.0.0"
     - internetnl submit --file hosts.txt --fail-on-scored --json > results.json
   artifacts:
     when: always
@@ -180,7 +180,7 @@ setting `INTERNETNL_POLL_MAX` (raise the timeout), `INTERNETNL_POLL_INTERVAL`
 (poll less often), or `INTERNETNL_BATCH_SIZE` (cap how many hosts one
 request may contain, forcing you to split a large host list across
 multiple `submit` calls/jobs) on the job that calls `uses:
-MWest2020/internetnl-cli@main` reaches the action's own `internetnl`
+MWest2020/internetnl-cli@v1` reaches the action's own `internetnl`
 invocation:
 
 ```yaml
@@ -190,7 +190,7 @@ jobs:
     env:
       INTERNETNL_POLL_MAX: "7200"
     steps:
-      - uses: MWest2020/internetnl-cli@main
+      - uses: MWest2020/internetnl-cli@v1
         with: { ... }
 ```
 

@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-05
+
+First tagged release, cut so the bundled GitHub Action can be published to
+the GitHub Marketplace and referenced by a stable tag (`@v1`) instead of
+`@main`. The user-visible surface — commands, flags, environment variables
+and exit codes — is the one pinned in
+`openspec/changes/add-internetnl-cli/design.md` and stays stable within 1.x.
+
 ### Added
 
 - `INTERNETNL_CREDENTIAL` (`openspec/changes/add-single-credential`), a

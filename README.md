@@ -110,7 +110,7 @@ stable exit codes (`0` ok, `1` config, `2` transport/API, `3`
 ([`action.yml`](action.yml)):
 
 ```yaml
-- uses: MWest2020/internetnl-cli@main
+- uses: MWest2020/internetnl-cli@v1
   with:
     hosts: example.org
     endpoint: https://api.westerweel.work
