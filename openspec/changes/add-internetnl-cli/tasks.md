@@ -52,8 +52,13 @@ If 0.1 is granted, section 4 becomes optional rather than blocking.
       recommended, Ubuntu 22.04, root, fixed public IPv4 on the primary
       interface, IPv6), and what it costs to keep running
       (`docs/reference/self-hosted.md`)
-- [ ] 4.2 Compose/deploy notes following upstream's batch deployment guide,
-      including creating a batch user with their `user_manage.sh`
+- [x] 4.2 Compose/deploy notes following upstream's batch deployment guide,
+      including creating a batch user with their `user_manage.sh` —
+      `docs/how-to/deploy-instance-vps.md` §2 "Deploy the Internet.nl batch
+      stack" (with the `user_manage.sh` step) and
+      `docs/reference/self-hosted.md`; the four places where following the
+      upstream guide literally still breaks are in
+      `docs/how-to/self-hosting-pitfalls.md`.
 - [x] 4.3 Document the batch-vs-website differences on the same page: no
       connection test, DNSSEC without registrar lookup, no A/AAAA prechecks
 - [ ] 4.4 Run the CLI against the own instance unchanged, with only the

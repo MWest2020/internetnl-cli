@@ -19,8 +19,13 @@
       (currently 2) would halve tenant capacity for a surface nobody is
       pointed at yet. Revisit together with O1 when the beta says what the
       headroom actually is.
-- [ ] O4 Timing/scope of the BMC-bridge (supporter-key issuance from a demo
-      visitor) — explicitly not designed or stubbed in this change
+- [x] O4 Timing/scope of the BMC-bridge (supporter-key issuance from a demo
+      visitor). Resolved by what shipped: the bridge landed as
+      `add-supporter-issuance` (`POST /webhooks/bmc`, gated entirely by
+      `NETNL_BMC_WEBHOOK_SECRET`), and the demo page carries the donation
+      button. The demo route family itself stayed uncoupled from it, which
+      is exactly the scope this item asked to keep open — a visitor
+      converts by donating, not by anything the `/demo/*` routes do.
 - [x] O5 Abuse-response runbook specific to an anonymous surface. Decided
       and written 2026-09-05 (owner Mark): one human revoker (Mark), no
       automatic revocation, and three written thresholds — sustained
