@@ -200,6 +200,14 @@ def test_supporter_issuance_never_leaks_secrets_or_pii(settings_env, tmp_path, c
     # The mail itself legitimately carries the address and password — this
     # only proves neither reaches the reply, the log, or the database.
     assert sent[0].to == _SUPPORTER_EMAIL
+    # The HTML alternative is a second copy of the same mail — the secrets
+    # that must never reach it (webhook secret, SMTP password, the
+    # supporter's own address, which lives only in the envelope `to`, never
+    # the body) must not leak there either.
+    assert sent[0].html is not None
+    assert _WEBHOOK_SECRET not in sent[0].html
+    assert _SMTP_PASSWORD not in sent[0].html
+    assert _SUPPORTER_EMAIL not in sent[0].html
 
     # Duplicate replay.
     resp_dup = post_webhook(client, payload, secret=_WEBHOOK_SECRET)

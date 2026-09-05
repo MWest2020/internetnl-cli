@@ -3,7 +3,7 @@ status: current
 last_reviewed: 2026-09-03
 ---
 
-# Supporter keys: a lifetime credential for a small donation
+# Supporter keys: a lifetime credential for a 2.00-or-more donation
 
 This page describes the issuance model for opening the `netnl` facade
 beyond the handful of known users in
@@ -20,8 +20,10 @@ unavailable.
 
 ## The model, in one paragraph
 
-Someone makes a small, one-off donation and gets back a `netnl`
-tenant credential that does not expire — the automatic mail (see
+Someone makes a one-off donation of 2.00 or more (in the account's
+currency, the default floor — see
+[Automatic supporter-key issuance](supporter-webhook.md)) and gets back a
+`netnl` tenant credential that does not expire — the automatic mail (see
 [Automatic supporter-key issuance](supporter-webhook.md)) presents it
 as a single `INTERNETNL_CREDENTIAL=username:password` string, plus
 copy-paste GitHub Actions and CLI snippets and a link to the CI guide,
