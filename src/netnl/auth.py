@@ -226,8 +226,10 @@ def _route_path(request: Request) -> str:
 # count, instead of minting bucket number `_MAX_BUCKETS + 1`. The number of
 # overflow buckets is bounded by this facade's (small, fixed) number of
 # routes, so both the dict's size and the audit rows a single minute can
-# ever produce are bounded by `_MAX_BUCKETS` plus that route count —
-# never by how many distinct usernames an attacker tries. An operator
+# ever produce are bounded by `_MAX_BUCKETS + _MAX_TENANT_BUCKETS` plus
+# that route count (facade-followups adds the known-tenant reservation
+# below) — never by how many distinct usernames an attacker tries. An
+# operator
 # reading an overflow row must not read its `credential` value
 # (`_OVERFLOW_USERNAME`) as a real username, and more generally must never
 # read *any* `auth-failure` row's `credential` as trustworthy tenant
@@ -279,6 +281,19 @@ _auth_failure_buckets: dict[tuple[str | None, str], tuple[int, int]] = {}
 # Round-3 fix (security-H1a): see the block comment above.
 _MAX_BUCKETS = 512
 _OVERFLOW_USERNAME = "<other>"
+
+# facade-followups: a burst that first burns through `_MAX_BUCKETS`
+# throwaway, unknown usernames would otherwise force every subsequent
+# failure — including one against a *real* tenant's username — into the
+# same unattributed overflow bucket. `_MAX_TENANT_BUCKETS` reserves extra,
+# separately bounded room that only a known tenant's username (one that
+# matches an existing `credentials` row, revoked or not) can occupy past
+# the general cap, so a burst aimed at a real tenant stays attributed in
+# the audit trail instead of hiding inside `<other>`. The dict's total
+# size is therefore bounded by `_MAX_BUCKETS + _MAX_TENANT_BUCKETS` plus
+# one overflow bucket per route — still a single dict, one lock, one
+# sweep, one flush path; only the cap check itself is two-tier.
+_MAX_TENANT_BUCKETS = 256
 
 
 def _current_minute(now: datetime) -> int:
@@ -361,21 +376,37 @@ def _sweep_stale_auth_failure_buckets(conn: sqlite3.Connection, now: datetime) -
 
 
 def _record_auth_failure(
-    conn: sqlite3.Connection, now: datetime, username: str | None, path: str
+    conn: sqlite3.Connection,
+    now: datetime,
+    username: str | None,
+    path: str,
+    *,
+    known_tenant: bool = False,
 ) -> None:
+    """`known_tenant=True` (facade-followups) means `username` is the
+    Authorization header's own value for a request that matched an
+    existing credential row — wrong password, or a revoked credential —
+    as opposed to no username at all, or one with no matching row. It
+    widens the cap this one call may push the bucket dict past (design.md
+    D3); it does not change how the row is sanitised, stored or later
+    read (still attacker-supplied input, still no verified attribution).
+    """
     sanitized = _sanitize_username(username) if username is not None else None
     key = (sanitized, path)
     current_minute = _current_minute(now)
+    limit = _MAX_BUCKETS + (_MAX_TENANT_BUCKETS if known_tenant else 0)
     with _auth_failure_lock:
         # Defensive re-sweep: harmless (and cheap — the dict is normally
         # already clean from the unconditional sweep at the top of
         # `authenticate`) but keeps this function correct even if ever
         # called from somewhere that skipped that sweep.
         popped = _pop_stale_auth_failure_buckets_locked(current_minute)
-        if key not in _auth_failure_buckets and len(_auth_failure_buckets) >= _MAX_BUCKETS:
-            # Round-3 fix (security-H1a): the cap is reached and this is a
-            # brand new key — fold it into this route's overflow bucket
-            # rather than growing the dict further.
+        if key not in _auth_failure_buckets and len(_auth_failure_buckets) >= limit:
+            # Round-3 fix (security-H1a); facade-followups widens the cap a
+            # known tenant's own failure may push past (see the module
+            # docstring above `_MAX_TENANT_BUCKETS`) — the cap is reached
+            # regardless and this is a brand new key, so fold it into this
+            # route's overflow bucket rather than growing the dict further.
             key = (_OVERFLOW_USERNAME, path)
         existing = _auth_failure_buckets.get(key)
         if existing is None or existing[0] != current_minute:
@@ -427,7 +458,11 @@ def authenticate(request: Request, conn: sqlite3.Connection = Depends(store.get_
     salt = bytes.fromhex(credential["salt"])
     ok = _guarded_scrypt(verify, credential["password_hash"], salt, password)
     if not ok or credential["revoked_at"] is not None:
-        _record_auth_failure(conn, now, username, path)
+        # facade-followups: `username` matched an existing credential row
+        # (wrong password, or a revoked one) — known to `store`, so this
+        # failure gets the reserved tenant bucket room past the general
+        # cap (design.md D3/D4) instead of folding into `<other>`.
+        _record_auth_failure(conn, now, username, path, known_tenant=True)
         raise _unauthorized()
 
     return credential

@@ -103,3 +103,26 @@ def test_invalid_submit_body_is_400(client, tenant):
     resp = client.post("/requests", json={"type": "web", "domains": []}, headers=tenant["headers"])
     assert resp.status_code == 400
     assert resp.json()["error"]["label"] == "bad-request"
+
+
+def test_upstream_calls_carry_the_facade_user_agent(client, fake_opener, tenant):
+    """openspec/changes/facade-followups: every call the facade makes
+    upstream must be distinguishable from a directly-run CLI in the
+    upstream instance's own logs, without changing anything else the
+    unmodified `BatchClient` would have sent."""
+    from fakes import REGISTER_REPLY
+
+    queue_json(fake_opener, REGISTER_REPLY)
+    resp = client.post(
+        "/requests", json={"type": "web", "domains": ["example.nl"]}, headers=tenant["headers"]
+    )
+    assert resp.status_code == 200
+
+    assert len(fake_opener.calls) == 1
+    _method, _url, _body, headers, _timeout = fake_opener.calls[0]
+    user_agent = headers["User-Agent"]
+    assert user_agent.startswith("netnl/")
+    assert "internetnl-cli/" in user_agent
+    assert headers["Content-Type"] == "application/json"
+    assert headers["Accept"] == "application/json"
+    assert "Authorization" in headers
