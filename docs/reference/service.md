@@ -1,0 +1,112 @@
+---
+status: current
+last_reviewed: 2026-09-05
+---
+
+# The netnl service: endpoint, terms, limits, retention
+
+What a tenant of the hosted `netnl` facade can count on. These are the
+published values behind the deployment Mark runs; anyone self-hosting the
+facade sets their own (every value below is an environment variable — see
+[deploy-facade.md](../how-to/deploy-facade.md)).
+
+Ratified 2026-09-05: the published policy is exactly what the code defaults
+to, so documentation and behaviour cannot drift. The private beta exists to
+test whether these numbers are right, and any of them can be changed with an
+environment variable and a pod restart — no release needed.
+
+## Endpoint
+
+`https://api.westerweel.work` — the primary public hostname, fronted by a
+Cloudflare Tunnel. A Tailscale Funnel `*.ts.net` hostname is kept up in
+parallel as a fallback; the beta runbook hands out the primary.
+
+The facade serves the Batch API v2 routes at the root, so this bare base URL
+is what goes in `INTERNETNL_ENDPOINT` — the CLI appends `/requests`,
+`/requests/{id}`, `/requests/{id}/results` and `/metadata/report` itself. Do
+not append `/api/batch/v2`: that prefix belongs to a bare upstream instance,
+not to this facade.
+
+## Terms
+
+**Only measure hosts you operate, or have explicit permission to test.** A
+measurement makes the upstream instance connect to the target from the
+outside; running it against someone else's domain is scanning a system you
+do not own. This is the single condition every credential is issued under,
+and the ground for revoking one.
+
+Credentials are per tenant, issued by hand (`netnl-admin user add`) or
+automatically on a qualifying donation (see
+[supporter-key.md](../how-to/supporter-key.md)). They are not transferable.
+
+## Getting a credential
+
+Two routes, both ending in the same kind of credential:
+
+1. **Ask.** Mail the operator with the domains you intend to measure and
+   who you are. Beta credentials are issued by hand, to people whose
+   ownership of those domains is plausible — the terms above are the whole
+   admission test. The operator's side of this is
+   [beta.md](../how-to/beta.md#issuing-revoking-and-listing-credentials).
+2. **Donate.** A qualifying donation mints a lifetime credential
+   automatically and mails it to the donor; see
+   [supporter-key.md](../how-to/supporter-key.md). This is self-service and
+   needs no correspondence.
+
+Either way you receive one `INTERNETNL_CREDENTIAL` string
+(`username:password`) plus this endpoint, and the credential mail contains
+nothing else. A lost credential is reissued, not recovered: the operator
+runs `netnl-admin user reissue <name>` and the old password stops working.
+
+Credentials are revoked when the terms are broken, on request, or when a
+tenant's use is clearly outside what one homelab instance can carry.
+
+## Limits
+
+| What | Value | Variable |
+|---|---|---|
+| Domains per request | 500 | `NETNL_MAX_DOMAINS` |
+| Concurrent runs (whole facade) | 2 | `NETNL_MAX_CONCURRENT` |
+| Demo: requests per hour | 6 | `NETNL_DEMO_MAX_PER_HOUR` |
+| Demo: concurrent runs | 2 | `NETNL_DEMO_MAX_CONCURRENT` |
+| Demo: requests per IP per hour | 2 | `NETNL_DEMO_PER_IP_PER_HOUR` |
+| Demo: polls per IP per hour | 120 | `NETNL_DEMO_POLLS_PER_IP_PER_HOUR` |
+| Supporter keys minted per hour | 20 | `NETNL_SUPPORTER_MAX_PER_HOUR` |
+| Delivery attempts per supporter key | 3 | `NETNL_SUPPORTER_MAX_ATTEMPTS` |
+
+The concurrency ceiling is the one that matters: there is a single upstream
+batch instance behind this facade, and it is the scarce resource. Everything
+else is a fair-use bound so one tenant — or the anonymous demo — cannot take
+it all.
+
+## Retention
+
+| What | Window | Variable |
+|---|---|---|
+| Tenant results | 7 days | `NETNL_RESULT_RETENTION_DAYS` |
+| Demo results | 24 hours | `NETNL_DEMO_RETENTION_HOURS` |
+| Audit records | 90 days | `NETNL_AUDIT_RETENTION_DAYS` |
+
+Windows are applied by `netnl-admin prune`, which runs on a cron; the cron
+cadence is what actually bounds these in practice (see
+[deploy-facade.md](../how-to/deploy-facade.md#6-schedule-prune)). The audit
+trail is append-only — a database trigger refuses `UPDATE` and `DELETE`, so
+only the prune pass's own retention window removes rows.
+
+Fetch your results before the window closes. The facade stores what the
+upstream instance returned; it is not an archive.
+
+## Batch results are not website results
+
+A score from this API will not always match what internet.nl's website shows
+for the same domain: the batch API skips the connection test, does DNSSEC
+without the registrar lookup, and does no A/AAAA prechecks. The full list of
+differences is in
+[self-hosted.md](self-hosted.md#batch-results-are-not-website-results).
+
+## Not an SLA
+
+Homelab-grade, best-effort, no managed-service guarantee: one upstream
+instance, one facade, one operator, no on-call. It can be down while Mark is
+asleep. Free tenants and supporter keys get the same treatment — a donation
+buys a lifetime credential, not a support contract.

@@ -2,19 +2,32 @@
 
 ## Owner inputs — not this build's call
 
-- [ ] O1 When to flip the dark-launched demo page from private preview to
-      publicly linked (README, demo-repo landing) — capacity headroom
-      observation needed first
+- [x] O1 When to flip the dark-launched demo page from private preview to
+      publicly linked (README, demo-repo landing). Decided 2026-09-05
+      (owner Mark): **stays dark-launched until the private beta has
+      produced a headroom observation** (task 4.3 of
+      `add-measurement-api`). Linking it publicly before we know what
+      tenants consume would put the single upstream instance under an
+      anonymous surface first.
 - [ ] O2 Final `NETNL_DEMO_MAX_PER_HOUR` / `NETNL_DEMO_MAX_CONCURRENT` /
       `NETNL_DEMO_PER_IP_PER_HOUR` values once real demo traffic exists —
       the defaults in `design.md` are a starting point, not a measurement
-- [ ] O3 Whether the demo needs its own upstream capacity reservation
-      (a slice of `NETNL_MAX_CONCURRENT` on the batch instance) once it is
-      publicly linked, or shares headroom with tenants unmanaged
+- [x] O3 Whether the demo needs its own upstream capacity reservation.
+      Decided 2026-09-05 (owner Mark): **no reservation for now** — it
+      follows from O1. With the demo dark-launched there is nothing to
+      reserve against, and carving a slice out of `NETNL_MAX_CONCURRENT`
+      (currently 2) would halve tenant capacity for a surface nobody is
+      pointed at yet. Revisit together with O1 when the beta says what the
+      headroom actually is.
 - [ ] O4 Timing/scope of the BMC-bridge (supporter-key issuance from a demo
       visitor) — explicitly not designed or stubbed in this change
-- [ ] O5 Abuse-response runbook specific to an anonymous surface (who
-      revokes `NETNL_DEMO_TENANT`, and under what observed condition)
+- [x] O5 Abuse-response runbook specific to an anonymous surface. Decided
+      and written 2026-09-05 (owner Mark): one human revoker (Mark), no
+      automatic revocation, and three written thresholds — sustained
+      saturation with tenant impact, single-source flooding, and plainly
+      third-party targets. See `docs/how-to/demo-run.md`, "Abuse response:
+      who pulls it, and on what signal", including the audit query that
+      produces the signal (verified against the real schema).
 - [ ] O6 Whether `NETNL_DEMO_ALLOWED_ORIGIN` ever needs to be a list rather
       than one origin (e.g. a staging + production demo page) — the current
       design deliberately supports exactly one
