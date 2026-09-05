@@ -381,12 +381,17 @@ class _LockCheckingConnection:
     """Forwards every call to a real connection, recording any `execute`/
     `executemany` that happens while `lock` is held by *this* thread — used
     to prove the aggregator's DB write runs outside `_auth_failure_lock`
-    (round-3 fix, security-H1b)."""
+    (round-3 fix, security-H1b).
+
+    Also records every statement in order, so a test can assert on *how
+    many* statements a flush issues rather than on how long it took.
+    """
 
     def __init__(self, real, lock, held_during):
         self._real = real
         self._lock = lock
         self._held_during = held_during
+        self.statements: list[tuple[str, str]] = []
 
     def _check(self, sql):
         if not self._lock.acquire(blocking=False):
@@ -396,41 +401,59 @@ class _LockCheckingConnection:
 
     def execute(self, sql, *args, **kwargs):
         self._check(sql)
+        self.statements.append(("execute", sql))
         return self._real.execute(sql, *args, **kwargs)
 
     def executemany(self, sql, *args, **kwargs):
         self._check(sql)
+        self.statements.append(("executemany", sql))
         return self._real.executemany(sql, *args, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._real, name)
 
 
-def test_flush_of_many_buckets_is_one_fast_transaction_outside_the_lock(conn, clock):
+def test_flush_of_many_buckets_is_one_transaction_outside_the_lock(conn, clock):
     """Round-3 fix (security-H1b): flushing 10k stale buckets must (a) run
-    as a single transaction, not one autocommit INSERT per bucket
-    (measured before the fix: ~5.5s for 10k; batched: well under 100ms),
-    and (b) never touch the database while `_auth_failure_lock` is held.
+    as a single transaction, not one autocommit INSERT per bucket, and
+    (b) never touch the database while `_auth_failure_lock` is held.
+
+    Asserted on the *statements issued*, not on wall-clock time. The
+    original version of this test allowed 0.1s for the flush, which is a
+    proxy for "batched" that a loaded CI runner can miss for reasons that
+    have nothing to do with the code (observed: 0.195s on a green run).
+    Statement count measures the property directly and cannot flake: a
+    correct flush is exactly `BEGIN IMMEDIATE`, one `executemany`, and
+    `COMMIT` — three statements whether there are ten buckets or ten
+    thousand. The regression this guards against (one autocommit INSERT
+    per bucket) would show up here as 10k statements, not as a slow clock.
     """
+    bucket_count = 10_000
     old_minute = auth._current_minute(clock()) - 5
     auth._auth_failure_buckets.update(
-        {(f"user-{i}", "/metadata/report"): (old_minute, 1) for i in range(10_000)}
+        {(f"user-{i}", "/metadata/report"): (old_minute, 1) for i in range(bucket_count)}
     )
 
     held_during: list = []
     proxy = _LockCheckingConnection(conn, auth._auth_failure_lock, held_during)
 
-    start = time.perf_counter()
     auth._sweep_stale_auth_failure_buckets(proxy, clock())
-    elapsed = time.perf_counter() - start
 
     assert held_during == [], "a DB statement ran while the aggregator lock was held"
-    assert elapsed < 0.1, f"flushing 10k buckets took {elapsed:.3f}s (expected one transaction)"
+
+    kinds = [kind for kind, _sql in proxy.statements]
+    assert kinds == ["execute", "executemany", "execute"], (
+        f"expected BEGIN/executemany/COMMIT, got {len(proxy.statements)} statements: "
+        f"{[(k, s.split()[0]) for k, s in proxy.statements]}"
+    )
+    assert proxy.statements[0][1].strip().upper().startswith("BEGIN IMMEDIATE")
+    assert proxy.statements[1][1].strip().upper().startswith("INSERT INTO AUDIT")
+    assert proxy.statements[2][1].strip().upper().startswith("COMMIT")
 
     n = conn.execute(
         "SELECT COUNT(*) AS n FROM audit WHERE event = 'auth-failure'"
     ).fetchone()["n"]
-    assert n == 10_000
+    assert n == bucket_count
 
 
 def test_failing_auth_failure_flush_does_not_fail_the_request(app, client, fake_opener, tenant, clock, caplog):
