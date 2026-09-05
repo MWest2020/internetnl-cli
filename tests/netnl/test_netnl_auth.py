@@ -302,6 +302,81 @@ def test_bucket_count_is_capped_regardless_of_unique_usernames(conn, clock):
     assert "failures=" in overflow_rows[0]["detail"]
 
 
+# --- facade-followups: known tenants keep their own bucket past the cap ---
+
+
+def test_known_tenant_gets_own_bucket_once_the_general_cap_is_reached(conn, clock):
+    """A burst that first burns through `_MAX_BUCKETS` throwaway, unknown
+    usernames must not be able to hide a subsequent failure against a real
+    tenant inside the per-route overflow bucket."""
+    for i in range(auth._MAX_BUCKETS):
+        auth._record_auth_failure(conn, clock(), f"user-{i}", "/metadata/report")
+    assert len(auth._auth_failure_buckets) == auth._MAX_BUCKETS
+
+    # the general cap is now full: one more *unknown* username still folds
+    # into the route's overflow bucket, exactly as before this change.
+    auth._record_auth_failure(conn, clock(), "user-overflow", "/metadata/report")
+    assert len(auth._auth_failure_buckets) == auth._MAX_BUCKETS + 1
+    assert (auth._OVERFLOW_USERNAME, "/metadata/report") in auth._auth_failure_buckets
+
+    # a known tenant's failure still gets its own bucket, on top of the cap.
+    auth._record_auth_failure(
+        conn, clock(), "real-tenant", "/metadata/report", known_tenant=True
+    )
+    assert ("real-tenant", "/metadata/report") in auth._auth_failure_buckets
+    assert len(auth._auth_failure_buckets) == auth._MAX_BUCKETS + 2
+
+    # and a further unknown username in the same window still collapses
+    # into the overflow record rather than minting yet another bucket.
+    auth._record_auth_failure(conn, clock(), "user-overflow-2", "/metadata/report")
+    assert len(auth._auth_failure_buckets) == auth._MAX_BUCKETS + 2
+
+    clock.advance(61)
+    auth._sweep_stale_auth_failure_buckets(conn, clock())
+    rows = conn.execute("SELECT * FROM audit WHERE event = 'auth-failure'").fetchall()
+    credentials = {r["credential"] for r in rows}
+    assert "real-tenant" in credentials
+    assert auth._OVERFLOW_USERNAME in credentials
+
+
+def test_revoked_credential_counts_as_known_tenant(client, conn, tenant, clock):
+    """A revoked credential's row still exists in `store` — `authenticate`
+    must treat its username as known (design.md D4) exactly like a wrong
+    password against a live one."""
+    store.revoke_credential(conn, tenant["username"], store.utcnow_iso(clock))
+
+    for i in range(auth._MAX_BUCKETS):
+        auth._record_auth_failure(conn, clock(), f"user-{i}", "/metadata/report")
+    assert len(auth._auth_failure_buckets) == auth._MAX_BUCKETS
+
+    resp = client.get("/metadata/report", headers=tenant["headers"])
+    assert resp.status_code == 401
+
+    assert (tenant["username"], "/metadata/report") in auth._auth_failure_buckets
+
+
+def test_known_tenant_reservation_is_itself_capped(conn, clock):
+    """The extra room `_MAX_TENANT_BUCKETS` reserves for known tenants is
+    itself bounded — an attacker (or a very large operator-controlled
+    tenant set) cannot use it to regrow the dict without limit."""
+    for i in range(auth._MAX_BUCKETS):
+        auth._record_auth_failure(conn, clock(), f"user-{i}", "/metadata/report")
+    for i in range(auth._MAX_TENANT_BUCKETS):
+        auth._record_auth_failure(
+            conn, clock(), f"tenant-{i}", "/metadata/report", known_tenant=True
+        )
+    assert len(auth._auth_failure_buckets) == auth._MAX_BUCKETS + auth._MAX_TENANT_BUCKETS
+
+    # the reserved room is exhausted too now: one more known tenant folds
+    # into the overflow record instead of growing the dict further.
+    auth._record_auth_failure(
+        conn, clock(), "tenant-overflow", "/metadata/report", known_tenant=True
+    )
+    assert len(auth._auth_failure_buckets) == auth._MAX_BUCKETS + auth._MAX_TENANT_BUCKETS + 1
+    assert (auth._OVERFLOW_USERNAME, "/metadata/report") in auth._auth_failure_buckets
+    assert ("tenant-overflow", "/metadata/report") not in auth._auth_failure_buckets
+
+
 class _LockCheckingConnection:
     """Forwards every call to a real connection, recording any `execute`/
     `executemany` that happens while `lock` is held by *this* thread — used

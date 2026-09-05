@@ -5,7 +5,7 @@ import logging
 
 from fakes import raising_opener
 
-from conftest import bmc_payload, post_webhook, queue_json
+from conftest import basic_auth_header, bmc_payload, post_webhook, queue_json
 from internetnl_cli.errors import TransportError
 from netnl import store
 
@@ -37,6 +37,42 @@ def test_upstream_401_never_leaks_credential(client, fake_opener, tenant, caplog
     # The upstream hostname is allowed to appear (it names the failure);
     # the credential must not.
     assert "batch.internal" in resp.json()["error"]["msg"]
+
+
+def test_revoked_known_tenant_auth_failure_never_leaks_password(client, conn, tenant, clock, caplog):
+    """facade-followups: a revoked tenant's failure is now recorded via the
+    known-tenant path (`netnl.auth._record_auth_failure(...,
+    known_tenant=True)`, its own reserved bucket room past the general
+    cap) instead of the plain unknown-username path — still must never
+    carry the attempted password into the response, the log, or the audit
+    row it eventually flushes to."""
+    caplog.set_level(logging.DEBUG, logger="netnl")
+    caplog.set_level(logging.DEBUG, logger="uvicorn")
+
+    store.revoke_credential(conn, tenant["username"], store.utcnow_iso(clock))
+    secret_password = "revoked-tenant-secret-do-not-log"
+
+    resp = client.get(
+        "/metadata/report", headers=basic_auth_header(tenant["username"], secret_password)
+    )
+    assert resp.status_code == 401
+
+    haystacks = [resp.text, str(dict(resp.headers)), caplog.text]
+    for haystack in haystacks:
+        assert secret_password not in haystack
+
+    from netnl import auth
+
+    clock.advance(61)
+    auth._sweep_stale_auth_failure_buckets(conn, clock())
+
+    row = conn.execute(
+        "SELECT * FROM audit WHERE event = 'auth-failure' AND credential = ?",
+        (tenant["username"],),
+    ).fetchone()
+    assert row is not None
+    for value in row.keys():
+        assert secret_password not in str(row[value])
 
 
 def test_upstream_transport_failure_never_leaks_credential(settings_env, tmp_path, caplog):

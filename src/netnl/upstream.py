@@ -7,12 +7,44 @@ request-id validation and leak-free error discipline.
 
 from __future__ import annotations
 
+from importlib.metadata import version
+
 from internetnl_cli import config as cli_config
-from internetnl_cli.client import BatchClient, Opener, urllib_opener
+from internetnl_cli.client import BatchClient, HttpResponse, Opener, urllib_opener
 from internetnl_cli.errors import ConfigError
 
 from netnl.errors import SettingsError
 from netnl.settings import Settings
+
+
+def _package_version() -> str:
+    """The installed distribution version, or a safe fallback.
+
+    Same distribution, same fallback as `internetnl_cli.client._package_
+    version` (not imported directly: that name is the CLI's private
+    implementation detail, not part of its public surface).
+    """
+    try:
+        return version("internetnl-cli")
+    except Exception:
+        return "unknown"
+
+
+_FACADE_USER_AGENT = f"netnl/{_package_version()} internetnl-cli/{_package_version()}"
+
+
+def _with_facade_user_agent(opener: Opener) -> Opener:
+    """Wrap an `Opener` so every call it makes carries the facade's own
+    `User-Agent` ahead of the CLI's, without touching anything else about
+    the request `BatchClient` builds (design.md D1).
+    """
+
+    def _opener(method, url, body, headers, timeout) -> HttpResponse:
+        wrapped_headers = dict(headers)
+        wrapped_headers["User-Agent"] = _FACADE_USER_AGENT
+        return opener(method, url, body, wrapped_headers, timeout)
+
+    return _opener
 
 
 def build_config(settings: Settings) -> cli_config.Config:
@@ -42,4 +74,6 @@ def build_config(settings: Settings) -> cli_config.Config:
 
 def build_client(settings: Settings, opener: Opener | None = None) -> BatchClient:
     """The only path into the upstream instance in this package."""
-    return BatchClient(build_config(settings), opener=opener or urllib_opener)
+    return BatchClient(
+        build_config(settings), opener=_with_facade_user_agent(opener or urllib_opener)
+    )

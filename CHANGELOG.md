@@ -16,6 +16,33 @@ and exit codes — is the one pinned in
 
 ### Added
 
+- The `netnl` facade now identifies itself to the upstream instance on
+  every call (`openspec/changes/facade-followups`): the `User-Agent` sent
+  by `netnl.upstream.build_client` now leads with `netnl/<version>`
+  before the client library's own `internetnl-cli/<version>` token, so
+  facade traffic is distinguishable from a directly-run CLI in the
+  upstream operator's logs. Nothing else about the request changes — same
+  body, `Authorization`, redirect refusal and error handling as the
+  unmodified `internetnl_cli.client.BatchClient`; `internetnl_cli` itself
+  is untouched.
+
+### Changed
+
+- Known tenants keep their own failed-authentication bucket past the
+  aggregator's general cap (`openspec/changes/facade-followups`, closes
+  `add-measurement-api`'s residual risk N2). The 512-bucket cap on
+  distinct username-and-route pairs previously let an attacker burn
+  through it with throwaway usernames and then brute-force a real
+  tenant's username unattributed inside the per-route overflow record.
+  `netnl.auth._record_auth_failure` now recognises a username that
+  matches an existing credential row (revoked or not) and, once the
+  general cap is reached, still tracks that username in its own bucket,
+  up to a second, separately bounded cap (`_MAX_TENANT_BUCKETS = 256`).
+  An unknown username is unaffected: it still folds into the overflow
+  record exactly as before once the general cap is full.
+
+### Added
+
 - `INTERNETNL_CREDENTIAL` (`openspec/changes/add-single-credential`), a
   single `username:password` alternative to
   `INTERNETNL_USERNAME`/`INTERNETNL_PASSWORD` (split on the first `:`,
