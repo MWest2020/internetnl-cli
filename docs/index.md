@@ -18,7 +18,7 @@ until the implementation lands.
   edge TLS, credential issuance and the prune cron for the public facade
   in front of a private batch instance; also covers the two supported
   topologies (co-located, and facade-in-K8s over a tailnet).
-- [Running the netnl demo](how-to/demo-run.md) — enabling the anonymous,
+- [Running the anonymous browser page](how-to/demo-run.md) — enabling the anonymous,
   single-domain `/demo/*` route family, issuing (and discarding the
   password of) its borrowed credential, the smoke check, and the kill
   switch.
@@ -52,6 +52,6 @@ until the implementation lands.
 - [Self-hosting a batch instance](reference/self-hosted.md) — requirements,
   the fixed-public-IP caveat, deployment notes, running costs, and how batch
   results differ from the website's.
-- [The demo API](reference/demo-api.md) — the page contract for `/demo/*`:
+- [The anonymous page API](reference/demo-api.md) — the page contract for `/demo/*`:
   endpoints, poll cadence, CORS requirements, id hygiene and the full error
   table with the literal, directly-showable visitor-facing messages.

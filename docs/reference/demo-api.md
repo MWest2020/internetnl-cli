@@ -3,7 +3,12 @@ status: current
 last_reviewed: 2026-09-03
 ---
 
-# The demo API
+# The anonymous page API
+
+> The browser page is not a demonstration version — it is this service at
+> v1.0.0, measuring for real. No reply below calls it a demo; the `/demo/*`
+> path and the `demo-unavailable` code are the historical spelling, kept on
+> the wire until the page and the facade are renamed in one release.
 
 This is the contract the dark-launched demo page (in the
 `internetnl-cli-demo` repo) relies on for the anonymous `/demo/*` route
@@ -155,11 +160,11 @@ Every error reply is shaped like the rest of the facade:
 | 400 | `bad-request` | The body has an extra/`type` field, `domain` is not a plain string, or the domain fails the shape/anti-SSRF check | `enter a bare domain like example.nl, not a URL` (one literal for every one of these — pydantic's own field-level errors are never reflected back) |
 | 403 | `forbidden-origin` | The request's `Origin` is present and does not match the configured one | `this origin is not allowed to use the demo` |
 | 404 | `unknown-request` | The id does not exist, is malformed, or belongs to a different credential (including a tenant's own id) | `this request_id does not exist for the user` |
-| 429 | `rate-limited` | The submitted domain was checked too recently (cooldown), **or** too many accepted runs from this network recently (per-IP cap) | `too many demo runs recently from this network; please try again later` — the same text for both, deliberately (see "Cooldown and the per-IP cap" below) |
+| 429 | `rate-limited` | The submitted domain was checked too recently (cooldown), **or** too many accepted runs from this network recently (per-IP cap) | `too many runs recently from this network; please try again later` — the same text for both, deliberately (see "Cooldown and the per-IP cap" below) |
 | 429 | `rate-limited` | Too many status/results requests from this network recently (the poll budget, `NETNL_DEMO_POLLS_PER_IP_PER_HOUR`) | `too many status checks from this network recently; please try again later` |
-| 429 | `rate-limited` | The demo's own hourly or concurrency cap is at its limit | `the demo is busy right now; please try again shortly` |
+| 429 | `rate-limited` | The demo's own hourly or concurrency cap is at its limit | `the service is busy right now; please try again shortly` |
 | 502 | `upstream-error` | The upstream instance answered, but not with something usable (any non-2xx status, or a malformed 2xx) | `the measurement instance is unreachable right now` — never the upstream's own status or hostname |
-| 503 | `demo-unavailable` | The borrowed demo credential is missing or revoked (the kill switch), **or** the upstream instance could not be reached at the network level at all | `the live demo is temporarily unavailable; please try again shortly` — both causes share this one outcome; the page cannot (and does not need to) tell them apart |
+| 503 | `demo-unavailable` | The borrowed demo credential is missing or revoked (the kill switch), **or** the upstream instance could not be reached at the network level at all | `the service is temporarily unavailable; please try again shortly` — both causes share this one outcome; the page cannot (and does not need to) tell them apart |
 | 501 | `not-implemented` | The demo is not enabled at all | `this batch API v2 path is not proxied by this instance` |
 | 500 | `server-error` | Something broke inside the facade itself, unrelated to the upstream instance (a bug, not an upstream failure — those are the 502/503 rows above) | `an unexpected error occurred` |
 

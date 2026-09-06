@@ -603,7 +603,8 @@ def test_tenant_cap_rejection_uses_a_visitor_literal_not_the_tenant_wording(
 ):
     """`limits.reserve_submission`'s own 429 names the operator-configured
     numbers ("rate limit of N submissions per hour reached") — that must
-    never reach a demo reply verbatim (D13)."""
+    never reach an anonymous reply verbatim (D13), and the visitor
+    literal never names the surface as a demonstration."""
     from starlette.testclient import TestClient
     from conftest import add_test_credential
     from netnl.api import create_app
@@ -635,7 +636,7 @@ def test_tenant_cap_rejection_uses_a_visitor_literal_not_the_tenant_wording(
     )
     assert second.status_code == 429
     msg = second.json()["error"]["msg"]
-    assert msg == "the demo is busy right now; please try again shortly"
+    assert msg == "the service is busy right now; please try again shortly"
     assert "rate limit of" not in msg
     assert "runs already in progress" not in msg
     assert "1" not in msg  # the configured number itself never leaks either

@@ -19,12 +19,13 @@ for pipelines.
 [**internetnl-cli-demo**](https://github.com/MWest2020/internetnl-cli-demo)
 (quickstart + example hosts + CI-gate example).
 
-**Try it live, no account needed:**
+**Try it in your browser, no account needed:**
 [**https://mwest2020.github.io/internetnl-cli-demo/**](https://mwest2020.github.io/internetnl-cli-demo/)
-— type a domain, get a real result, one run at a time (strictly
-rate-limited; see [docs/reference/demo-api.md](docs/reference/demo-api.md)
-for the contract that page relies on and
-[docs/how-to/demo-run.md](docs/how-to/demo-run.md) for how it is run).
+— type a domain, get a real result from the same v1.0.0 service every
+tenant uses, one run at a time (strictly rate-limited; see
+[docs/reference/demo-api.md](docs/reference/demo-api.md) for the contract
+that page relies on and [docs/how-to/demo-run.md](docs/how-to/demo-run.md)
+for how it is run).
 
 ## The rule
 
@@ -63,8 +64,9 @@ Every endpoint needs one, and there are three routes:
 3. **Your own instance** — see [Self-hosting](#self-hosting) below.
 
 No credential at all is needed to try the tool: the
-[live demo](https://mwest2020.github.io/internetnl-cli-demo/) runs one domain
-at a time against the same facade, anonymously.
+[browser page](https://mwest2020.github.io/internetnl-cli-demo/) runs one
+domain at a time against the same facade, anonymously — the same service,
+not a scaled-down imitation of it.
 
 ## What it is, and is not
 

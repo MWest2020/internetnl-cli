@@ -6,7 +6,7 @@ error message: `build_credential_mail` interpolates only the generated
 username/password (combined into a single `username:password` credential
 string) and the public endpoint — nothing BMC sent — into the mail body and
 its HTML alternative alike, which removes the injection surface entirely
-rather than escaping it. The two doc/demo URLs in the template are static
+rather than escaping it. The two URLs in the template are static
 constants, not provider-supplied strings, so they do not widen that
 surface. The HTML part additionally passes every interpolated value
 through `html.escape` — belt and braces, not a substitute for the
@@ -53,7 +53,7 @@ Sender = Callable[[Mail], None]
 _CREDENTIAL_SUBJECT = "Your netnl supporter key"
 
 # Static — not provider-supplied — pointers into this repo's own docs and
-# demo. Safe to interpolate unconditionally alongside username/password/
+# try-it page. Safe to interpolate unconditionally alongside username/password/
 # public_endpoint: see the module docstring.
 _DOCS_URL = "https://github.com/MWest2020/internetnl-cli/blob/main/docs/how-to/ci.md"
 _DEMO_URL = "https://mwest2020.github.io/internetnl-cli-demo/"
@@ -95,7 +95,7 @@ Terminal / any other CI:
   export INTERNETNL_CREDENTIAL=<the credential above>
 
 Full guide (CI gate, exit codes, allowlists): {docs_url}
-Live demo: {demo_url}
+Try it in your browser: {demo_url}
 """
 
 # Mail-client HTML, not web HTML (openspec/changes/polish-supporter-mail,
@@ -169,7 +169,7 @@ export INTERNETNL_ENDPOINT={public_endpoint}
 export INTERNETNL_CREDENTIAL=&lt;the credential above&gt;</pre>
 
             <p class="netnl-text" style="margin:0 0 4px 0; font-size:14px; line-height:1.5; color:#1a1a1a;">Full guide (CI gate, exit codes, allowlists): <a class="netnl-link" href="{docs_url}" style="color:#0a5cad;">{docs_url}</a></p>
-            <p class="netnl-text" style="margin:0; font-size:14px; line-height:1.5; color:#1a1a1a;">Live demo: <a class="netnl-link" href="{demo_url}" style="color:#0a5cad;">{demo_url}</a></p>
+            <p class="netnl-text" style="margin:0; font-size:14px; line-height:1.5; color:#1a1a1a;">Try it in your browser: <a class="netnl-link" href="{demo_url}" style="color:#0a5cad;">{demo_url}</a></p>
           </td>
         </tr>
       </table>
