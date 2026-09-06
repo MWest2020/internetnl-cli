@@ -88,12 +88,12 @@ DEMO_UPSTREAM_NAME = "netnl-demo"
 # consumer, unlike the tenant-facing wording in `limits.py`.
 _BAD_DOMAIN_MSG = "enter a bare domain like example.nl, not a URL"
 
-_UNAVAILABLE_MSG = "the live demo is temporarily unavailable; please try again shortly"
+_UNAVAILABLE_MSG = "the service is temporarily unavailable; please try again shortly"
 
 # Builder-review fix (S5): the per-IP cap and the per-domain cooldown now
 # share this one literal — before this fix they had distinct wording
 # (a per-domain-specific "this domain was checked recently..." vs. a
-# per-IP-specific "too many demo runs from this network..."), which let an
+# per-IP-specific "too many runs from this network..."), which let an
 # already over-quota IP learn whether an *unrelated* domain was on cooldown
 # by reading which message it got back. With one shared text, that channel
 # is closed regardless of check order — but the check order below (per-IP
@@ -101,16 +101,17 @@ _UNAVAILABLE_MSG = "the live demo is temporarily unavailable; please try again s
 # over-quota IP never even attempts the domain claim, so it can no longer
 # consume (and thus reveal, to a later prober, "hm, still on cooldown") a
 # cooldown slot for a domain it was never actually going to run.
-_TOO_MANY_RECENT_MSG = "too many demo runs recently from this network; please try again later"
+_TOO_MANY_RECENT_MSG = "too many runs recently from this network; please try again later"
 
 # Builder-review fix (S4=B2): `limits.reserve_submission`'s own 429 names
 # the operator-configured numbers ("rate limit of N submissions per hour
 # reached", "%d runs already in progress; the limit is %d") — written for
 # an authenticated tenant reading an API response, not for an anonymous
-# visitor filling in a form. That wording must never reach a demo reply
-# verbatim (D13); this is the one, separate, visitor-facing literal it is
-# rewritten to.
-_DEMO_BUSY_MSG = "the demo is busy right now; please try again shortly"
+# visitor filling in a form. That wording must never reach an anonymous
+# reply verbatim (D13); this is the one, separate, visitor-facing literal
+# it is rewritten to. It never names the surface: a visitor is using the
+# product, not a demonstration of it.
+_BUSY_MSG = "the service is busy right now; please try again shortly"
 
 # Builder-review fix (M3): `_translate_api_error` (api.py) and
 # `TransportError`'s own message both embed the upstream hostname — fine
@@ -595,7 +596,7 @@ def register_routes(app: FastAPI, settings: Settings, client, call_upstream: Cal
             # 30 upstream calls, per-IP bucket empty afterwards). The
             # failed attempt now costs the same per-IP/per-domain budget an
             # accepted one would.
-            raise NetnlHTTPError(429, "rate-limited", _DEMO_BUSY_MSG)
+            raise NetnlHTTPError(429, "rate-limited", _BUSY_MSG)
 
         try:
             reply = _demo_call_upstream(client.submit, [domain], "web", DEMO_UPSTREAM_NAME)
