@@ -1,3 +1,8 @@
+---
+status: current
+last_reviewed: 2026-09-06
+---
+
 # Self-hosting an Internet.nl batch instance: four traps
 
 Everything here was hit on a real deployment of the upstream Docker batch
