@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-09-05
+last_reviewed: 2026-09-08
 ---
 
 # The netnl service: endpoint, terms, limits, retention
@@ -29,11 +29,23 @@ not to this facade.
 
 ## Terms
 
-**Only measure hosts you operate, or have explicit permission to test.** A
-measurement makes the upstream instance connect to the target from the
-outside; running it against someone else's domain is scanning a system you
-do not own. This is the single condition every credential is issued under,
-and the ground for revoking one.
+**Measure your own hosts freely. Measure someone else's only where the
+measurement is one their operator already invites — and then only once.**
+
+A measurement makes the upstream instance connect to the target from the
+outside, from this operator's address. That is why the second half is
+narrower here than the tool's own rule: what a tenant does lands on
+infrastructure someone else pays for and answers for.
+
+"Already invites" means the domain sits in a category that is publicly and
+routinely measured this way — Dutch government domains, for instance, which
+the government measures twice a year and publishes per domain. It does not
+mean "is reachable over the internet".
+
+Repeated or scheduled measurement of a domain you do not operate is out of
+bounds regardless, as is presenting a batch verdict about someone else's
+domain as an audit finding. These are the conditions every credential is
+issued under, and the ground for revoking one.
 
 Credentials are per tenant, issued by hand (`netnl-admin user add`) or
 automatically on a qualifying donation (see
