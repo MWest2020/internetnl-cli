@@ -1,6 +1,6 @@
 """`DemoSettings` (`netnl.settings.DemoSettings`) — fail-closed opt-in for
 the anonymous `/demo/*` route family. See
-`openspec/changes/add-demo-run/design.md`, D2/D6.
+`openspec/changes/archive/2026-09-08-add-demo-run/design.md`, D2/D6.
 """
 
 from __future__ import annotations

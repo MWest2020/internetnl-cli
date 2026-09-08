@@ -6,12 +6,12 @@ last_reviewed: 2026-09-03
 # Running the netnl demo
 
 The demo is an anonymous, single-domain front door onto the `netnl` facade
-(`/demo/*`, opt-in, see `openspec/changes/add-demo-run/design.md`): a
+(`/demo/*`, opt-in, see `openspec/changes/archive/2026-09-08-add-demo-run/design.md`): a
 first-time visitor types a bare domain into the dark-launched demo page and
 sees a real result, without an account. It is the smallest possible slice —
 one domain, strictly bounded — not a way to issue tenant credentials; that
 flow (turning a demo visitor into a supporter/tenant) is a separate, later
-change and does not exist yet (see `openspec/changes/add-demo-run/tasks.md`,
+change and does not exist yet (see `openspec/changes/archive/2026-09-08-add-demo-run/tasks.md`,
 owner input O4).
 
 ## Enabling it
@@ -211,7 +211,7 @@ the demo page moves to a new hostname (or gains a staging copy), update
 this variable to match — the facade will otherwise answer real requests
 from the old/other origin with 403 `forbidden-origin` and preflight requests
 with a CORS-header-free 204 a browser will not let through. See
-`design.md`'s D6/D8 and `openspec/changes/add-demo-run/tasks.md`'s owner
+`design.md`'s D6/D8 and `openspec/changes/archive/2026-09-08-add-demo-run/tasks.md`'s owner
 input O6 (a single origin is a deliberate constraint, not yet revisited).
 
 ## Retention

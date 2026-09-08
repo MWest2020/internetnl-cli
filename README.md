@@ -10,7 +10,7 @@ until the run finishes, and renders the result as a diffable table or as JSON
 for pipelines.
 
 > **Status:** implemented. The user-visible surface stays pinned in
-> [`openspec/changes/add-internetnl-cli/design.md`](openspec/changes/add-internetnl-cli/design.md);
+> [`openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md`](openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md);
 > the commands below match the current behaviour.
 
 **New here?** See the illustrated
@@ -114,7 +114,7 @@ score" without naming the endpoint — which is why every result is labelled.
 ## Configuration
 
 Everything is environment-tunable; see
-[`openspec/changes/add-internetnl-cli/design.md`](openspec/changes/add-internetnl-cli/design.md)
+[`openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md`](openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md)
 for the full table (`INTERNETNL_ENDPOINT`, `INTERNETNL_USERNAME`,
 `INTERNETNL_PASSWORD`, timeouts, poll interval and maximum, batch size,
 config path). `INTERNETNL_CREDENTIAL` is a single `username:password`

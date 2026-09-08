@@ -155,7 +155,7 @@ it) CI/CD variables, the same way you would for any other credential.
 
 `internetnl submit`/`poll`/`results` return one of these exit codes
 (the full table is in
-[`openspec/changes/add-internetnl-cli/design.md`](../../openspec/changes/add-internetnl-cli/design.md#exit-codes)):
+[`openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md`](../../openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md#exit-codes)):
 
 | Code | Meaning |
 |---|---|

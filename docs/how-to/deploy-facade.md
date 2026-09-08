@@ -14,7 +14,7 @@ first if the instance itself does not exist yet.
 
 ## Two supported topologies
 
-`openspec/changes/add-measurement-api/design.md` ("Two supported
+`openspec/changes/archive/2026-09-08-add-measurement-api/design.md` ("Two supported
 topologies") pins two ways to run the facade:
 
 1. **Instance on a VPS, facade in a Kubernetes cluster (the one we run).**
@@ -44,7 +44,7 @@ credential-guessing traffic: `netnl.auth` fast-fails a request with no (or
 an unparseable) `Authorization` header without touching the password
 hasher, and caps how many password verifications may run *concurrently*
 (a small, fixed number) — see
-`openspec/changes/add-measurement-api/design.md`, "Tenancy and identity"
+`openspec/changes/archive/2026-09-08-add-measurement-api/design.md`, "Tenancy and identity"
 ("Authentication cost is bounded on two axes"). That bound protects this
 process's own CPU and memory from a burst of concurrent bad-credential
 requests; it is **not** a rate limit, and it does nothing to slow down a
@@ -212,7 +212,7 @@ Edit `deploy/.env` and fill in at least:
 
 Leave the tunables (rate limit, max domains, retention, ...) at their
 commented-out defaults to start; see `deploy/.env.example` and
-`openspec/changes/add-measurement-api/design.md`'s configuration table for
+`openspec/changes/archive/2026-09-08-add-measurement-api/design.md`'s configuration table for
 what each one does. `deploy/.env` is gitignored — never commit it.
 
 Optionally, uncomment `NETNL_SECURITY_CONTACT` and set it to a `mailto:`

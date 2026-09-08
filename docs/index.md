@@ -9,7 +9,7 @@ A command-line client for the Internet.nl batch API, plus a recipe for
 running your own batch instance. What the tool is (and is not) and the
 quickstart live in the [README](../README.md); the pinned CLI surface —
 commands, environment variables, exit codes — lives in
-[`openspec/changes/add-internetnl-cli/design.md`](../openspec/changes/add-internetnl-cli/design.md)
+[`openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md`](../openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md)
 until the implementation lands.
 
 ## How-to
@@ -25,6 +25,10 @@ until the implementation lands.
 - [Deploying the upstream instance on a VPS, reached over a tailnet](how-to/deploy-instance-vps.md) —
   the batch instance on a fixed-public-IP VPS, joined to a Tailscale
   tailnet so a homelab facade can reach it privately.
+- [Measuring what your instance can carry](how-to/measure-capacity.md) — the
+  three Prometheus queries that answer "how much can this box take", how to
+  point them at a load event that already happened, and a worked example
+  from a 2-core VPS measuring 362 domains.
 - [Self-hosting: four traps](how-to/self-hosting-pitfalls.md) — the places
   where following the upstream batch documentation literally still leaves you
   with a broken instance: the public-IP setting that kills all container

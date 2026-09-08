@@ -1,7 +1,7 @@
 #cloud-config
 #
 # Hetzner Cloud user-data for the Internet.nl batch-instance VPS
-# (topology 1 — see openspec/changes/add-measurement-api/design.md, "VPS
+# (topology 1 — see openspec/changes/archive/2026-09-08-add-measurement-api/design.md, "VPS
 # provisioning (Hetzner) — for topology 1", and
 # docs/how-to/deploy-instance-vps.md for the full runbook).
 #

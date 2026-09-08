@@ -40,12 +40,30 @@ De private beta met echte gebruikers moet uitwijzen waar de knie zit. Dat
 hangt af van het onboarden van tenants, niet van een getal dat wij kunnen
 kiezen.
 
-Wat er wél gemeten is (2026-09-08, scan van 362 domeinen): **2,4
-CPU-seconden per domein**, waarbij de VPS piekte op 15 procent van twee
-cores en het geheugen rond 950 MB vrij bleef. Rekenkracht is dus niet het
-eerste knelpunt; geheugen waarschijnlijk wel, met `WORKER_MEMORY_LIMIT` op
-1 GB per worker. Dat is een bovengrens-indicatie, geen belastingtest: de
-blokken liepen sequentieel, niet gelijktijdig.
+Wat er wél gemeten is (2026-09-08, scan van 362 domeinen in blokken van 25 —
+de zwaarste belasting die de instance tot nu toe heeft gehad). Uit de
+Prometheus op de VPS zelf, die dit al verzamelt met vijf jaar retentie:
+
+| Grootheid | Rust | Tijdens de scan |
+|---|---|---|
+| Beschikbaar geheugen | ~995 MB | **520 MB** (dieptepunt) |
+| `sum(celery_queue_length)` | 0 | **0** (piek) |
+| `node_load1` (2 cores) | ~0,3 | **3,75** (piek) |
+| CPU per domein | — | **2,4 CPU-seconden** |
+
+Drie dingen die dit zegt. **Geheugen is het knelpunt**, zoals verwacht: de
+scan at ongeveer 475 MB van de 995 MB vrije ruimte op, bij werk dat
+sequentieel liep. **De wachtrij liep nooit op** — `celery_queue_length` bleef
+nul, het werk werd net zo snel opgenomen als het binnenkwam, dus de rem zat
+niet in een backlog. En **de load piekte op 3,75 op twee cores**, bijna twee
+keer de capaciteit: verzadigd, maar er viel niets om.
+
+Wat dit *niet* zegt: de blokken liepen na elkaar, niet gelijktijdig. Twee
+tenants die tegelijk een grote batch indienen is een ander verhaal, en dat is
+precies wat 4.3 moet uitwijzen. Lees 520 MB als "de helft van de marge bij
+één sequentiële gebruiker", niet als "er is nog 520 MB over".
+
+Herhalen kan met de PromQL in `docs/how-to/measure-capacity.md`.
 
 ## Wachten op een tweede gebruiker
 

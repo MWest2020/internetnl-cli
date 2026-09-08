@@ -6,7 +6,7 @@ last_reviewed: 2026-08-31
 # Deploying the upstream instance on a VPS, reached over a tailnet
 
 This page covers **topology 1** from
-`openspec/changes/add-measurement-api/design.md`, "Two supported
+`openspec/changes/archive/2026-09-08-add-measurement-api/design.md`, "Two supported
 topologies": the upstream batch instance runs on a VPS with a fixed
 public IPv4 + IPv6, and the facade runs elsewhere (a homelab Kubernetes
 cluster, in our case) and reaches it privately over a
@@ -122,7 +122,7 @@ open, `PasswordAuthentication no` and `KbdInteractiveAuthentication no`
 inbound and only opens SSH (rate-limited) and the Tailscale UDP port,
 and the host already joined to your tailnet. See
 `deploy/vps/cloud-init.yaml` for the exact detail, and
-`openspec/changes/add-measurement-api/design.md`, "VPS provisioning
+`openspec/changes/archive/2026-09-08-add-measurement-api/design.md`, "VPS provisioning
 (Hetzner) — for topology 1", for why each piece is there.
 
 The instance's batch API is **not** opened publicly by any of this —

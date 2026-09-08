@@ -8,7 +8,7 @@ last_reviewed: 2026-09-03
 `POST /webhooks/bmc`, opt-in via `NETNL_BMC_WEBHOOK_SECRET`, turns a
 qualifying Buy Me a Coffee (BMC) donation into a `netnl` tenant credential,
 mailed directly to the donor — see
-`openspec/changes/add-supporter-issuance/design.md` for the pinned
+`openspec/changes/archive/2026-09-08-add-supporter-issuance/design.md` for the pinned
 decisions this runbook operates. It replaces the manual half of
 [Supporter keys](supporter-key.md): an operator no longer has to notice a
 donation and run `netnl-admin user add` by hand, though that fallback still
@@ -173,7 +173,7 @@ credential.
   indistinguishable from a brand-new one: it mints a *second* credential,
   and the original stays active unless separately revoked. This is
   accepted, not closed by a tombstone table — see
-  `openspec/changes/add-supporter-issuance/design.md`, "Post-prune
+  `openspec/changes/archive/2026-09-08-add-supporter-issuance/design.md`, "Post-prune
   replay", for why (in short: closing it that way reintroduces the
   unbounded-growth problem retention exists to bound, against a threat
   that already requires the webhook secret or a captured signed request —
@@ -191,7 +191,7 @@ credential.
 
 - [Supporter keys](supporter-key.md) — the issuance model this bridge
   automates, and the manual fallback.
-- `openspec/changes/add-supporter-issuance/design.md` — the pinned
+- `openspec/changes/archive/2026-09-08-add-supporter-issuance/design.md` — the pinned
   decisions (D1-D5), configuration table, and route ordering this runbook
   operates.
 - [deploy-facade.md](deploy-facade.md) — where the facade's own secrets

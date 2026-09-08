@@ -63,7 +63,7 @@ security), dispatched from the orchestrator host. Role definitions live in
 `.claude/agents/`, role skills in `.claude/skills/`, and `scripts/verify.sh`
 is the Stop-gate a builder run must pass (it runs the pytest suite once
 `pyproject.toml` exists). The CLI surface the builder implements is pinned in
-`openspec/changes/add-internetnl-cli/design.md`.
+`openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md`.
 
 ## Upstream sources
 

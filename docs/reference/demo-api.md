@@ -14,14 +14,14 @@ This is the contract the dark-launched demo page (in the
 `internetnl-cli-demo` repo) relies on for the anonymous `/demo/*` route
 family. It exists so that page and this facade never drift apart silently —
 if you change anything below, update the demo page in the same change. See
-`openspec/changes/add-demo-run/design.md` for the pinned decisions (D1–D15)
+`openspec/changes/archive/2026-09-08-add-demo-run/design.md` for the pinned decisions (D1–D15)
 behind every rule here, and [how-to/demo-run.md](../how-to/demo-run.md) for
 enabling and operating the demo.
 
 The demo is **anonymous** (no `Authorization` header, ever) and
 **strictly bounded** — it is not the authenticated batch-v2 surface
 documented for tenants; see [deploy-facade.md](../how-to/deploy-facade.md)
-and `openspec/changes/add-measurement-api/design.md` for that.
+and `openspec/changes/archive/2026-09-08-add-measurement-api/design.md` for that.
 
 ## Endpoints
 

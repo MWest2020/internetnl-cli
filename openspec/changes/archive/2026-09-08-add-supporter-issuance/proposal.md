@@ -2,7 +2,7 @@
 
 ## Why
 
-[Supporter keys](../../../docs/how-to/supporter-key.md) already describe the
+[Supporter keys](../../../../docs/how-to/supporter-key.md) already describe the
 model — a small donation buys a lifetime `netnl` tenant credential — and the
 donation link (<https://buymeacoffee.com/mark.westerweel>) is live. Issuance
 itself is still entirely manual: an operator watches for a Buy Me a Coffee

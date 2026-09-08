@@ -2,7 +2,7 @@
 # deploy/vps/create-vps.sh — provisions a Hetzner Cloud VPS for the
 # Internet.nl batch instance (topology 1). See
 # docs/how-to/deploy-instance-vps.md for the full runbook and
-# openspec/changes/add-measurement-api/design.md, "VPS provisioning
+# openspec/changes/archive/2026-09-08-add-measurement-api/design.md, "VPS provisioning
 # (Hetzner) — for topology 1", for the pinned decisions this script
 # implements.
 #

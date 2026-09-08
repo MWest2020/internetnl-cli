@@ -1,5 +1,5 @@
 """Anonymous, single-domain demo runs (`/demo/*`), opt-in via
-`NETNL_DEMO_ENABLED=1`. See `openspec/changes/add-demo-run/design.md` for
+`NETNL_DEMO_ENABLED=1`. See `openspec/changes/archive/2026-09-08-add-demo-run/design.md` for
 the pinned decisions (D1-D15) this module implements; in short: one bare
 domain, one borrowed credential row nobody ever authenticates as, and
 several independent bounds layered in front of the exact same reservation

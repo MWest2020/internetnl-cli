@@ -79,7 +79,7 @@ _NUMERIC_DEFAULTS = {
 @dataclass(frozen=True)
 class DemoSettings:
     """Configuration for the opt-in, anonymous `/demo/*` route family (see
-    `openspec/changes/add-demo-run/design.md`, pinned decisions D1-D15).
+    `openspec/changes/archive/2026-09-08-add-demo-run/design.md`, pinned decisions D1-D15).
     `None` on `Settings.demo` means the family does not exist as far as any
     client can tell (`NETNL_DEMO_ENABLED` unset) — this dataclass is only
     ever constructed once that opt-in is on and its two required variables

@@ -1,7 +1,7 @@
 """`POST /webhooks/bmc`: the Buy Me a Coffee webhook bridge that turns a
 qualifying donation into a `netnl` tenant credential, mailed to the donor.
 
-See `openspec/changes/add-supporter-issuance/design.md` for the pinned
+See `openspec/changes/archive/2026-09-08-add-supporter-issuance/design.md` for the pinned
 decisions (D1-D5) this module implements. Registered from `api.py` only
 when `settings.supporter` is not `None` — see that module's `create_app`.
 

@@ -26,7 +26,7 @@ First tagged release, cut so the bundled GitHub Action can be published to
 the GitHub Marketplace and referenced by a stable tag (`@v1`) instead of
 `@main`. The user-visible surface — commands, flags, environment variables
 and exit codes — is the one pinned in
-`openspec/changes/add-internetnl-cli/design.md` and stays stable within 1.x.
+`openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md` and stays stable within 1.x.
 
 ### Added
 
@@ -350,7 +350,7 @@ and exit codes — is the one pinned in
 - Habitat onboarding: role definitions (`.claude/agents/`), role skills
   (`.claude/skills/`) and the builder Stop-gate `scripts/verify.sh` — the
   CLI itself is built through the habitat agent chain.
-- `openspec/changes/add-internetnl-cli/design.md` pinning the CLI surface:
+- `openspec/changes/archive/2026-09-08-add-internetnl-cli/design.md` pinning the CLI surface:
   environment variables, commands, exit codes, gating semantics and output
   shape.
 - OpenSpec change `add-internetnl-cli` (proposal, tasks, spec deltas) — the
