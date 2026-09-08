@@ -2,8 +2,16 @@
 
 ## Owner inputs — not this build's call
 
-- [ ] O1 The exact signature-header name and encoding BMC's dashboard
-      actually sends for this account — `NETNL_BMC_SIGNATURE_HEADER`
+- [x] O1 The exact signature-header name and encoding BMC's dashboard
+      actually sends for this account. **Confirmed 2026-09-04 by a real
+      delivery**: transaction `pi_3UBw…` (a live Stripe payment intent, not
+      a test-mode payload) verified against `NETNL_BMC_SIGNATURE_HEADER`'s
+      default `X-Signature-Sha256` and minted `supporter-37be0871` —
+      `supporter-issue` and `supporter-deliver` are both in the audit trail.
+      Since verification happens before anything else is touched, an issued
+      credential *is* the proof that the header name and digest encoding
+      were right. The tolerant hex/base64 decoding was not needed. Original
+      note: — `NETNL_BMC_SIGNATURE_HEADER`
       defaults to `X-Signature-Sha256` and `bmc.verify_signature` accepts
       hex or base64, but this was not confirmed against a live delivery at
       build time; see `docs/how-to/supporter-webhook.md`'s troubleshooting

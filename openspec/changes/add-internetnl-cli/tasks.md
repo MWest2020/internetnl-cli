@@ -61,8 +61,20 @@ If 0.1 is granted, section 4 becomes optional rather than blocking.
       `docs/how-to/self-hosting-pitfalls.md`.
 - [x] 4.3 Document the batch-vs-website differences on the same page: no
       connection test, DNSSEC without registrar lookup, no A/AAAA prechecks
-- [ ] 4.4 Run the CLI against the own instance unchanged, with only the
+- [x] 4.4 Run the CLI against the own instance unchanged, with only the
       endpoint variable altered — this is the acceptance test for section 1.2
+      - Done 2026-09-08. `uv tool install
+        'git+https://github.com/MWest2020/internetnl-cli@v1'` on a machine
+        that had never run it, then only `INTERNETNL_ENDPOINT`
+        (`https://api.westerweel.work`, in
+        `~/.config/internetnl/config.ini`) and `INTERNETNL_CREDENTIAL` set:
+        `internetnl submit westerweel.work` returned a real scored result,
+        including the three known `web_https_tls_*` failures that follow
+        from the deliberate no-ACM decision. No flag, no code path and no
+        configuration file differs from a run against the hosted API.
+      - Repeated at scale the same day: 362 domains measured through the
+        unmodified `internetnl_cli` client and its own `poll_until_done`,
+        in 15 batches, without touching the library.
 
 ## 5. Repo hygiene
 
