@@ -109,5 +109,18 @@
       the requester's path in `docs/reference/service.md` ("Getting a
       credential": ask, or donate) and the operator's in
       `docs/how-to/beta.md` (issue, reissue, revoke, list).
-- [ ] 5.3 Handover package: deploy recipe + issuance runbook complete enough
-      to run without us; revisit repo split at this point
+- [x] 5.3 Handover package: deploy recipe + issuance runbook complete enough
+      to run without us; revisit repo split at this point.
+      **Decided 2026-09-08 (owner Mark): one repo.** The client, the facade
+      and the deploy recipe stay together. They share the HTTP client
+      (`netnl.upstream` builds an unmodified `internetnl_cli.client
+      .BatchClient`), one test suite, and one openspec administration;
+      splitting would cut that band to make a distinction nobody has asked
+      for. The handover material itself is complete:
+      `docs/how-to/deploy-instance-vps.md` and
+      `docs/how-to/self-hosting-pitfalls.md` for the instance,
+      `docs/how-to/deploy-facade.md` for the facade,
+      `docs/how-to/beta.md` for issuance, and
+      `docs/reference/service.md` for what a tenant is promised.
+      Revisit only if someone other than the owner actually runs a facade —
+      that, not repo tidiness, is what would justify the split.
