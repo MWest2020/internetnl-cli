@@ -1,7 +1,17 @@
 # supporter-issuance Specification
 
 ## Purpose
-TBD - created by archiving change add-supporter-issuance. Update Purpose after archive.
+
+The bridge from a donation to a working credential, and everything that keeps it
+from becoming an attack surface.
+
+The idea is small: someone supports the project, and they get access to measure.
+The implementation is not, because every step touches something dangerous — a
+webhook from outside, mail built from content we did not write, a credential that
+must exist exactly once. Hence the shape here: opt-in and otherwise invisible,
+signed deliveries only, a qualifying live donation as the trigger, persist before
+mail so a failed send never leaves an orphaned credential, and untrusted text
+that never reaches a mail header or an envelope.
 ## Requirements
 ### Requirement: The bridge is opt-in and otherwise invisible
 
