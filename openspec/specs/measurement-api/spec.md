@@ -1,7 +1,16 @@
 # measurement-api Specification
 
 ## Purpose
-TBD - created by archiving change add-measurement-api. Update Purpose after archive.
+
+The server side: a batch API v2 compatible surface that several tenants can
+share without seeing each other.
+
+The reason this exists at all is the credential. Internet.nl's batch API is not
+open, and handing your upstream credential to everyone who wants to measure is
+not sharing, it is giving it away. So the server holds that credential and never
+lets it out; tenants authenticate to *us*; each tenant sees only its own runs;
+and limits keep one tenant from consuming the instance. Compatibility with v2 is
+what makes all of that invisible — an existing client points at this and works.
 ## Requirements
 ### Requirement: Batch API v2 compatible surface
 

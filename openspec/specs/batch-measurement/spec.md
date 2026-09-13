@@ -1,7 +1,22 @@
 # batch-measurement Specification
 
 ## Purpose
-TBD - created by archiving change add-internetnl-cli. Update Purpose after archive.
+
+What the CLI is for: submitting a whole fleet of domains to an Internet.nl batch
+endpoint and getting an answer you can act on.
+
+The public site tests one domain in a browser. This capability is the other
+shape of the same question — many domains, unattended, in a pipeline. Everything
+here follows from that: the endpoint is configurable because not everyone
+measures against the same instance; a run can be resumed because a batch outlives
+a terminal; the output is machine-readable because a human is not the only
+reader; and a result can fail a build, because a measurement nobody acts on is a
+report.
+
+"Honest results" is the load-bearing requirement. A gate that quietly passes when
+the measurement did not actually happen is worse than no gate, so the difference
+between "everything is fine" and "we could not tell" stays visible all the way to
+the exit code.
 ## Requirements
 ### Requirement: Configurable endpoint
 

@@ -1,7 +1,14 @@
 # demo-run Specification
 
 ## Purpose
-TBD - created by archiving change document-demo-env. Update Purpose after archive.
+
+The way someone who has never seen this tool gets a real result out of it.
+
+A CLI against an API you must first deploy has a first step that most people
+never finish. So the demo family exists, and it is discoverable from the
+deployment example rather than hidden in prose: type a domain, get a genuine
+answer from the same service every tenant uses. It is rate-limited on purpose —
+the point is to prove the thing works, not to be free capacity.
 ## Requirements
 ### Requirement: The demo family is discoverable from the deployment example
 
