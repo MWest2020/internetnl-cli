@@ -1,0 +1,16 @@
+# Wat iemand nodig heeft om dit over te nemen. Gelezen door estafette
+# (MWest2020/estafette); `estafette assess .` toetst het.
+name: internetnl-cli
+licence: MIT
+owner: Mark West
+contact: https://github.com/MWest2020/internetnl-cli/issues
+status: poc
+# De api-extra uit pyproject: optioneel te installeren, maar wél echt gebruikt
+# in de code. Het manifest beantwoordt "wat heeft iemand nodig om dit over te
+# nemen", en om de facade te draaien heb je deze vier nodig.
+deps:
+  - fastapi
+  - pydantic
+  - starlette
+  - uvicorn
+deployment_target: cli
