@@ -1,0 +1,11 @@
+version = 1
+
+# internetnl-cli staat onder MIT. In plaats van een header in elk van de 62
+# bronbestanden dekt deze blanket-annotatie de hele boom; zie
+# https://reuse.software/. Zo is de licentie machineleesbaar zonder dat elke
+# toekomstige bijdrage eraan hoeft te denken.
+[[annotations]]
+path = ["**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Mark West"
+SPDX-License-Identifier = "MIT"
