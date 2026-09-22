@@ -21,9 +21,12 @@ All notable changes to this project are documented here. The format follows
   left untouched); a domain whose own status is not `ok` still gets a
   block, with an empty `results` list, rather than being dropped. Domains
   and tests are sorted alphabetically so the same finished batch always
-  exports the same bytes. `--json` and the plain-text table are
-  unchanged. See [docs/netnl-findings-v1.md](docs/netnl-findings-v1.md)
-  for the schema.
+  exports the same bytes. The document header carries traceability back
+  to the batch that produced it: `generated_at` (when the file was
+  written), and `source.api`/`source.endpoint`/`source.request_id` (the
+  API generation, the instance's hostname, and the batch's own request
+  id). `--json` and the plain-text table are unchanged. See
+  [docs/netnl-findings-v1.md](docs/netnl-findings-v1.md) for the schema.
 
 ### Changed
 

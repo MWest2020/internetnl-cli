@@ -157,7 +157,7 @@ def _write_atomic(path: str, content: str) -> None:
         raise ConfigError(f"cannot write findings file {path}: {exc}") from exc
 
 
-def _run_findings_export(client, args, stdout: IO[str], stderr: IO[str]) -> int:
+def _run_findings_export(client, cfg, args, stdout: IO[str], stderr: IO[str]) -> int:
     reply = client.results(args.request_id)
     request_type = (reply.get("request") or {}).get("request_type")
 
@@ -186,7 +186,12 @@ def _run_findings_export(client, args, stdout: IO[str], stderr: IO[str]) -> int:
         else:
             categories_by_test = result
 
-    doc = findings_module.build_document(reply, categories_by_test=categories_by_test)
+    doc = findings_module.build_document(
+        reply,
+        generated_at=datetime.now(timezone.utc),
+        endpoint_host=cfg.endpoint_host,
+        categories_by_test=categories_by_test,
+    )
     if args.findings_out:
         buffer = io.StringIO()
         findings_module.render_findings(doc, buffer)
@@ -262,7 +267,7 @@ def _run_results(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str
     status = status_reply["request"]["status"]
     if status == "done":
         if args.format == "findings":
-            return _run_findings_export(client, args, stdout, stderr)
+            return _run_findings_export(client, cfg, args, stdout, stderr)
         return _render(client, cfg, args.request_id, args, stdout, stderr)
 
     if status in ("error", "cancelled"):

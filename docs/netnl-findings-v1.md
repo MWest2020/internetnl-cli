@@ -30,6 +30,12 @@ as a successful measurement.
 ```json
 {
   "schema": "netnl-findings/v1",
+  "generated_at": "2026-09-22T10:25:16Z",
+  "source": {
+    "api": "internet.nl batch v2",
+    "endpoint": "api.westerweel.work",
+    "request_id": "b2dda607433522760b51faecbcb23c87"
+  },
   "domains": [
     {
       "domain": "example.nl",
@@ -54,9 +60,24 @@ as a successful measurement.
 
 `domains` is a list, sorted alphabetically by `domain`; each domain's
 `results` list is sorted alphabetically by `test`. The same finished
-batch always exports the same bytes — same order, same JSON formatting —
-so two exports of one batch diff cleanly in an archive and a consumer can
-recognise a re-import as already seen.
+batch, exported at the same `generated_at`, always exports the same bytes
+— same order, same JSON formatting — so two exports of one batch diff
+cleanly in an archive and a consumer can recognise a re-import as already
+seen.
+
+### Requirement: Traceability
+
+A consumer treats a finding as evidence and needs a way back to the batch
+that produced it — a file with no origin information cannot be checked
+against the instance that measured it. The document header carries that
+origin, alongside the results:
+
+| Field                | Meaning                                                                                       |
+| --------------------- | ----------------------------------------------------------------------------------------------- |
+| `generated_at`        | The moment this file was written, RFC 3339 in UTC (`YYYY-MM-DDTHH:MM:SSZ`) — not the batch's own `finished_date`, which lives per-domain below. |
+| `source.api`          | The batch API generation, from `reply.api_version`'s major component (`"2.7.0"` → `"internet.nl batch v2"`). |
+| `source.endpoint`     | The instance's hostname only — never a full URL, and never with credentials.                  |
+| `source.request_id`   | `reply.request.request_id`: the batch this export came from, verbatim.                          |
 
 ### Per-domain fields
 

@@ -1,5 +1,11 @@
 {
   "schema": "netnl-findings/v1",
+  "generated_at": "2026-09-22T10:25:16Z",
+  "source": {
+    "api": "internet.nl batch v2",
+    "endpoint": "api.westerweel.work",
+    "request_id": "b2dda607433522760b51faecbcb23c87"
+  },
   "domains": [
     {
       "domain": "westerweel.work",

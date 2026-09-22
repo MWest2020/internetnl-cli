@@ -2,9 +2,12 @@
 
 This is a pure transform of the shape `BatchClient.results()` returns (the
 same `reply` dict `render.build_document` consumes): `request` for
-`finished_date`/`request_type`, `domains` for the per-domain payload. No
-network I/O, no aggregation, no scoring of its own — see proposal.md's
-"Why" for why that judgement stays with the API.
+`finished_date`/`request_type`/`request_id`, `api_version` and `domains`
+for the per-domain payload. No network I/O, no aggregation, no scoring of
+its own — see proposal.md's "Why" for why that judgement stays with the
+API. `generated_at` and `endpoint_host` are the two pieces of the header
+this module cannot derive from `reply` alone (the write time, and the
+config-resolved endpoint); the caller (`cli.py`) supplies both.
 
 Categorising a test does need the instance's `GET /metadata/report`
 hierarchy (see runs/02-categorie-uit-metadata.md and runs/
@@ -24,8 +27,20 @@ network, and the caller warns before choosing it.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 SCHEMA = "netnl-findings/v1"
+
+
+def _api_label(api_version: str | None) -> str:
+    """`"internet.nl batch v2"` from an `api_version` like `"2.7.0"`.
+
+    Only the major component is stable across patch releases of the same
+    batch API generation; the contract pins the fixed "internet.nl batch v"
+    prefix plus that component, not the full semver string.
+    """
+    major = (api_version or "unknown").split(".", 1)[0]
+    return f"internet.nl batch v{major}"
 
 
 def _category_for(test_name: str, categories: dict, categories_by_test: dict[str, str] | None) -> str | None:
@@ -84,7 +99,13 @@ def _domain_block(
     }
 
 
-def build_document(reply: dict, categories_by_test: dict[str, str] | None = None) -> dict:
+def build_document(
+    reply: dict,
+    *,
+    generated_at: datetime,
+    endpoint_host: str,
+    categories_by_test: dict[str, str] | None = None,
+) -> dict:
     """Turn a completed batch `reply` into a `netnl-findings/v1` document.
 
     Callers are responsible for only calling this on a `done` batch —
@@ -92,6 +113,12 @@ def build_document(reply: dict, categories_by_test: dict[str, str] | None = None
     is the test-name -> category-name mapping the caller derived from
     `GET /metadata/report` (see module docstring); `None` triggers the
     testname-prefix fallback.
+
+    `generated_at` (the moment the file is written) and `endpoint_host` (the
+    hostname only, never a URL with credentials) are the caller's job to
+    supply — see docs/netnl-findings-v1.md's Traceability requirement. This
+    function does no network I/O and never reads the clock itself, so the
+    same reply with the same `generated_at` always produces the same bytes.
     """
     request = reply.get("request") or {}
     measured_at = request.get("finished_date")
@@ -103,7 +130,16 @@ def build_document(reply: dict, categories_by_test: dict[str, str] | None = None
         for name in sorted(domains)
     ]
 
-    return {"schema": SCHEMA, "domains": domain_blocks}
+    return {
+        "schema": SCHEMA,
+        "generated_at": generated_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source": {
+            "api": _api_label(reply.get("api_version")),
+            "endpoint": endpoint_host,
+            "request_id": request.get("request_id"),
+        },
+        "domains": domain_blocks,
+    }
 
 
 def render_findings(doc: dict, stream) -> None:
