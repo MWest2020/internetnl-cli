@@ -83,10 +83,25 @@ why the block always appears.
 | Field      | Meaning                                                                                          |
 | ---------- | ------------------------------------------------------------------------------------------------- |
 | `test`     | The API's own subtest name, e.g. `web_https_tls_ciphers`.                                         |
-| `category` | The longest key in the batch's `results.categories` that prefixes `test` (`web_dnssec_exist` → `web_dnssec`). `null` when no category key prefixes the test name — the test still appears; nothing is dropped or renamed to force a match. |
+| `category` | The category the instance's own `GET /metadata/report` hierarchy places `test` under: `report.hierarchy.<web\|mail>` lists, per category, its subtestgroups, and `test` belongs to the category whose subtestgroup name is the longest prefix of `test` (`web_dnssec_exist` → `web_dnssec`; `web_ns_rpki_exists` → `web_rpki`, since `web_ns_rpki` is a subtestgroup of `web_rpki` even though it isn't a prefix of `web_rpki`). `null` when no subtestgroup prefixes the test name — the test still appears; nothing is dropped or renamed to force a match. |
 | `status`   | One of `passed`, `failed`, `warning`, `info`, `not_tested`, `error` — the API's own value, verbatim. `error` (a broken measurement) is distinct from `failed` (a measured, failing result). |
 | `verdict`  | The API's own verdict word (`good`, `bad`, `warning`, `not-tested`, `recommendations`, `other`, …), verbatim, alongside `status` rather than instead of it. |
 | `detail`   | Always `null` in v1. The batch API publishes no per-variant detail (that only exists in the HTML report, which this export does not scrape). The field exists so a later API version — or a later schema version — can fill it without a breaking change to the ones that don't. |
+
+### When the metadata hierarchy is unavailable
+
+`--format findings` fetches `GET /metadata/report` alongside the batch
+results to place each test's `category`. When that fetch fails, or the
+reply is structurally unusable (missing or malformed
+`report`/`hierarchy`/`data`), the export still writes — it is a degraded
+render, never a hard failure — but `category` falls back to the older,
+weaker rule: the longest key in the batch's own `results.categories` that
+prefixes the test name. That rule can't see a subtestgroup whose name
+isn't itself a prefix of the test (it misses `web_ns_rpki_exists`, for
+example), so every fallback is announced with a `warning:` line on
+stderr rather than happening silently — a findings document that quietly
+drops a real category reads to a consumer as "measured, nothing here to
+flag."
 
 ## What this export deliberately does not do
 

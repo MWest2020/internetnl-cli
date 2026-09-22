@@ -1,0 +1,238 @@
+{
+  "api_version": "2.7.0",
+  "report": {
+    "data": {
+      "web_ipv6": { "type": "category", "translation_key": "t" },
+      "web_ipv6_ns_address": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_ipv6_ns_reach": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_ipv6_ws_address": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_ipv6_ws_reach": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_ipv6_ws_similar": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_dnssec": { "type": "category", "translation_key": "t" },
+      "web_dnssec_exist": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_dnssec_valid": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https": { "type": "category", "translation_key": "t" },
+      "web_https_http_available": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_http_redirect": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_http_hsts": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_http_compress": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_keyexchange": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_ciphers": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_cipherorder": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_version": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_compress": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_secreneg": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_clientreneg": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_caa": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_0rtt": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_ocsp": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_keyexchangehash": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_tls_extendedmastersecret": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_cert_chain": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_cert_pubkey": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_cert_sig": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_cert_domain": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_dane_exist": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_https_dane_valid": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_appsecpriv": { "type": "category", "translation_key": "t" },
+      "web_appsecpriv_x_frame_options": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_appsecpriv_referrer_policy": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_appsecpriv_csp": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_appsecpriv_x_content_type_options": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_appsecpriv_securitytxt": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_rpki": { "type": "category", "translation_key": "t" },
+      "web_ns_rpki": { "type": "subtest", "translation_key": "t" },
+      "web_rpki_exists": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_rpki_valid": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_ns_rpki_exists": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "web_ns_rpki_valid": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_ipv6": { "type": "category", "translation_key": "t" },
+      "mail_ipv6_ns_address": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_ipv6_ns_reach": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_ipv6_mx_address": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_ipv6_mx_reach": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_dnssec": { "type": "category", "translation_key": "t" },
+      "mail_dnssec_mailto_exist": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_dnssec_mailto_valid": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_dnssec_mx_exist": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_dnssec_mx_valid": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_auth": { "type": "category", "translation_key": "t" },
+      "mail_auth_dmarc_exist": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_auth_dmarc_policy": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_auth_dkim_exist": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_auth_spf_exist": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_auth_spf_policy": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls": { "type": "category", "translation_key": "t" },
+      "mail_starttls_tls_available": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_keyexchange": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_ciphers": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_cipherorder": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_version": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_compress": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_secreneg": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_clientreneg": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_cert_chain": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_cert_pubkey": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_cert_sig": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_cert_domain": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_caa": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_dane_exist": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_dane_valid": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_dane_rollover": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_0rtt": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_keyexchangehash": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_starttls_tls_extendedmastersecret": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_rpki": { "type": "category", "translation_key": "t" },
+      "mail_ns_rpki": { "type": "subtest", "translation_key": "t" },
+      "mail_mx_ns_rpki": { "type": "subtest", "translation_key": "t" },
+      "mail_rpki_exists": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_rpki_valid": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_ns_rpki_exists": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_ns_rpki_valid": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_mx_ns_rpki_exists": { "type": "test", "translation_key": "t", "status_verdict_map": {} },
+      "mail_mx_ns_rpki_valid": { "type": "test", "translation_key": "t", "status_verdict_map": {} }
+    },
+    "hierarchy": {
+      "web": [
+        {
+          "name": "web_ipv6",
+          "children": [
+            { "name": "web_ipv6_ns_address" },
+            { "name": "web_ipv6_ns_reach" },
+            { "name": "web_ipv6_ws_address" },
+            { "name": "web_ipv6_ws_reach" },
+            { "name": "web_ipv6_ws_similar" }
+          ]
+        },
+        {
+          "name": "web_dnssec",
+          "children": [{ "name": "web_dnssec_exist" }, { "name": "web_dnssec_valid" }]
+        },
+        {
+          "name": "web_https",
+          "children": [
+            { "name": "web_https_http_available" },
+            { "name": "web_https_http_redirect" },
+            { "name": "web_https_http_hsts" },
+            { "name": "web_https_http_compress" },
+            { "name": "web_https_tls_keyexchange" },
+            { "name": "web_https_tls_ciphers" },
+            { "name": "web_https_tls_cipherorder" },
+            { "name": "web_https_tls_version" },
+            { "name": "web_https_tls_compress" },
+            { "name": "web_https_tls_secreneg" },
+            { "name": "web_https_tls_clientreneg" },
+            { "name": "web_https_tls_caa" },
+            { "name": "web_https_tls_0rtt" },
+            { "name": "web_https_tls_ocsp" },
+            { "name": "web_https_tls_keyexchangehash" },
+            { "name": "web_https_tls_extendedmastersecret" },
+            { "name": "web_https_cert_chain" },
+            { "name": "web_https_cert_pubkey" },
+            { "name": "web_https_cert_sig" },
+            { "name": "web_https_cert_domain" },
+            { "name": "web_https_dane_exist" },
+            { "name": "web_https_dane_valid" }
+          ]
+        },
+        {
+          "name": "web_appsecpriv",
+          "children": [
+            { "name": "web_appsecpriv_x_frame_options" },
+            { "name": "web_appsecpriv_referrer_policy" },
+            { "name": "web_appsecpriv_csp" },
+            { "name": "web_appsecpriv_x_content_type_options" },
+            { "name": "web_appsecpriv_securitytxt" }
+          ]
+        },
+        {
+          "name": "web_rpki",
+          "children": [
+            {
+              "name": "web_rpki",
+              "children": [{ "name": "web_rpki_exists" }, { "name": "web_rpki_valid" }]
+            },
+            {
+              "name": "web_ns_rpki",
+              "children": [{ "name": "web_ns_rpki_exists" }, { "name": "web_ns_rpki_valid" }]
+            }
+          ]
+        }
+      ],
+      "mail": [
+        {
+          "name": "mail_ipv6",
+          "children": [
+            { "name": "mail_ipv6_ns_address" },
+            { "name": "mail_ipv6_ns_reach" },
+            { "name": "mail_ipv6_mx_address" },
+            { "name": "mail_ipv6_mx_reach" }
+          ]
+        },
+        {
+          "name": "mail_dnssec",
+          "children": [
+            { "name": "mail_dnssec_mailto_exist" },
+            { "name": "mail_dnssec_mailto_valid" },
+            { "name": "mail_dnssec_mx_exist" },
+            { "name": "mail_dnssec_mx_valid" }
+          ]
+        },
+        {
+          "name": "mail_auth",
+          "children": [
+            { "name": "mail_auth_dmarc_exist" },
+            { "name": "mail_auth_dmarc_policy" },
+            { "name": "mail_auth_dkim_exist" },
+            { "name": "mail_auth_spf_exist" },
+            { "name": "mail_auth_spf_policy" }
+          ]
+        },
+        {
+          "name": "mail_starttls",
+          "children": [
+            { "name": "mail_starttls_tls_available" },
+            { "name": "mail_starttls_tls_keyexchange" },
+            { "name": "mail_starttls_tls_ciphers" },
+            { "name": "mail_starttls_tls_cipherorder" },
+            { "name": "mail_starttls_tls_version" },
+            { "name": "mail_starttls_tls_compress" },
+            { "name": "mail_starttls_tls_secreneg" },
+            { "name": "mail_starttls_tls_clientreneg" },
+            { "name": "mail_starttls_cert_chain" },
+            { "name": "mail_starttls_cert_pubkey" },
+            { "name": "mail_starttls_cert_sig" },
+            { "name": "mail_starttls_cert_domain" },
+            { "name": "mail_starttls_tls_caa" },
+            { "name": "mail_starttls_dane_exist" },
+            { "name": "mail_starttls_dane_valid" },
+            { "name": "mail_starttls_dane_rollover" },
+            { "name": "mail_starttls_tls_0rtt" },
+            { "name": "mail_starttls_tls_keyexchangehash" },
+            { "name": "mail_starttls_tls_extendedmastersecret" }
+          ]
+        },
+        {
+          "name": "mail_rpki",
+          "children": [
+            {
+              "name": "mail_rpki",
+              "children": [{ "name": "mail_rpki_exists" }, { "name": "mail_rpki_valid" }]
+            },
+            {
+              "name": "mail_ns_rpki",
+              "children": [{ "name": "mail_ns_rpki_exists" }, { "name": "mail_ns_rpki_valid" }]
+            },
+            {
+              "name": "mail_mx_ns_rpki",
+              "children": [
+                { "name": "mail_mx_ns_rpki_exists" },
+                { "name": "mail_mx_ns_rpki_valid" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

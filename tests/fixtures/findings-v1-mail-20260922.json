@@ -102,28 +102,28 @@
         },
         {
           "test": "mail_mx_ns_rpki_exists",
-          "category": null,
+          "category": "mail_rpki",
           "status": "passed",
           "verdict": "good",
           "detail": null
         },
         {
           "test": "mail_mx_ns_rpki_valid",
-          "category": null,
+          "category": "mail_rpki",
           "status": "passed",
           "verdict": "good",
           "detail": null
         },
         {
           "test": "mail_ns_rpki_exists",
-          "category": null,
+          "category": "mail_rpki",
           "status": "passed",
           "verdict": "good",
           "detail": null
         },
         {
           "test": "mail_ns_rpki_valid",
-          "category": null,
+          "category": "mail_rpki",
           "status": "passed",
           "verdict": "good",
           "detail": null

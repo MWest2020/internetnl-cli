@@ -157,9 +157,35 @@ def _write_atomic(path: str, content: str) -> None:
         raise ConfigError(f"cannot write findings file {path}: {exc}") from exc
 
 
-def _run_findings_export(client, args, stdout: IO[str]) -> int:
+def _run_findings_export(client, args, stdout: IO[str], stderr: IO[str]) -> int:
     reply = client.results(args.request_id)
-    doc = findings_module.build_document(reply)
+    request_type = (reply.get("request") or {}).get("request_type")
+
+    # Category needs the instance's own metadata hierarchy (runs/
+    # 02-categorie-uit-metadata.md) — a failed or unusable fetch degrades to
+    # the testname-prefix fallback in findings_module.build_document, never
+    # a hard failure, but it must not degrade silently.
+    category_groups: dict[str, str] | None = None
+    try:
+        metadata = client.metadata_report()
+    except (ApiError, TransportError) as exc:
+        _write_stderr(
+            stderr,
+            f"warning: metadata unavailable ({exc}): "
+            "category falls back to the testname-prefix rule and may miss infixed subtestgroups",
+        )
+    else:
+        result = gating.category_groups_from_metadata(metadata, request_type)
+        if result is None:
+            _write_stderr(
+                stderr,
+                "warning: metadata reply had no usable hierarchy: "
+                "category falls back to the testname-prefix rule and may miss infixed subtestgroups",
+            )
+        else:
+            category_groups = result
+
+    doc = findings_module.build_document(reply, category_groups=category_groups)
     if args.findings_out:
         buffer = io.StringIO()
         findings_module.render_findings(doc, buffer)
@@ -235,7 +261,7 @@ def _run_results(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str
     status = status_reply["request"]["status"]
     if status == "done":
         if args.format == "findings":
-            return _run_findings_export(client, args, stdout)
+            return _run_findings_export(client, args, stdout, stderr)
         return _render(client, cfg, args.request_id, args, stdout, stderr)
 
     if status in ("error", "cancelled"):

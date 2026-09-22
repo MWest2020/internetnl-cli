@@ -5,6 +5,19 @@ same `reply` dict `render.build_document` consumes): `request` for
 `finished_date`/`request_type`, `domains` for the per-domain payload. No
 network I/O, no aggregation, no scoring of its own — see proposal.md's
 "Why" for why that judgement stays with the API.
+
+Categorising a test does need the instance's `GET /metadata/report`
+hierarchy (see runs/02-categorie-uit-metadata.md): a test's category isn't
+always its own name's prefix — RPKI's nameserver variants (`web_ns_rpki_*`,
+`mail_ns_rpki_*`, `mail_mx_ns_rpki_*`) live under the `web_rpki`/`mail_rpki`
+category despite carrying a different subtestgroup infix. Fetching that
+hierarchy is I/O, so it stays the caller's job (`cli.py`); this module only
+takes the already-parsed `category_groups` mapping (subtestgroup name ->
+category name) as a plain argument. Without one (metadata unavailable or
+unusable), it falls back to the old rule: the longest key in a domain's own
+`results.categories` that prefixes the test name — worse (it misses
+infixed subtestgroups) but requires no network, and the caller warns
+before choosing it.
 """
 
 from __future__ import annotations
@@ -14,8 +27,23 @@ import json
 SCHEMA = "netnl-findings/v1"
 
 
-def _category_for(test_name: str, categories: dict) -> str | None:
-    """The longest key in `categories` that prefixes `test_name`, or None."""
+def _category_for(test_name: str, categories: dict, category_groups: dict[str, str] | None) -> str | None:
+    """The category for `test_name`.
+
+    With `category_groups` (subtestgroup name -> category name, from the
+    instance's metadata hierarchy): the category whose subtestgroup name is
+    the longest prefix of `test_name`. Without it: the longest key in
+    `categories` that prefixes `test_name` (the fallback rule).
+    """
+    if category_groups is not None:
+        best_group: str | None = None
+        category: str | None = None
+        for group_name, category_name in category_groups.items():
+            if test_name.startswith(group_name) and (best_group is None or len(group_name) > len(best_group)):
+                best_group = group_name
+                category = category_name
+        return category
+
     best: str | None = None
     for key in categories:
         if test_name.startswith(key) and (best is None or len(key) > len(best)):
@@ -23,7 +51,13 @@ def _category_for(test_name: str, categories: dict) -> str | None:
     return best
 
 
-def _domain_block(name: str, domain: dict, domain_type: str | None, measured_at: str | None) -> dict:
+def _domain_block(
+    name: str,
+    domain: dict,
+    domain_type: str | None,
+    measured_at: str | None,
+    category_groups: dict[str, str] | None,
+) -> dict:
     results = domain.get("results") or {}
     categories = results.get("categories") or {}
     tests = results.get("tests") or {}
@@ -36,7 +70,7 @@ def _domain_block(name: str, domain: dict, domain_type: str | None, measured_at:
         entries.append(
             {
                 "test": test_name,
-                "category": _category_for(test_name, categories),
+                "category": _category_for(test_name, categories, category_groups),
                 "status": test.get("status"),
                 "verdict": test.get("verdict"),
                 "detail": None,
@@ -54,11 +88,14 @@ def _domain_block(name: str, domain: dict, domain_type: str | None, measured_at:
     }
 
 
-def build_document(reply: dict) -> dict:
+def build_document(reply: dict, category_groups: dict[str, str] | None = None) -> dict:
     """Turn a completed batch `reply` into a `netnl-findings/v1` document.
 
     Callers are responsible for only calling this on a `done` batch —
-    this function does not check `request.status` itself.
+    this function does not check `request.status` itself. `category_groups`
+    is the subtestgroup-name -> category-name mapping the caller derived
+    from `GET /metadata/report` (see module docstring); `None` triggers the
+    testname-prefix fallback.
     """
     request = reply.get("request") or {}
     measured_at = request.get("finished_date")
@@ -66,7 +103,7 @@ def build_document(reply: dict) -> dict:
     domains = reply.get("domains") or {}
 
     domain_blocks = [
-        _domain_block(name, domains[name] or {}, domain_type, measured_at)
+        _domain_block(name, domains[name] or {}, domain_type, measured_at, category_groups)
         for name in sorted(domains)
     ]
 

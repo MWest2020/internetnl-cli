@@ -530,16 +530,38 @@ def _findings_reply():
     return reply
 
 
-def test_results_format_findings_on_done_run_writes_one_document_no_metadata_call(monkeypatch):
-    opener = FakeOpener([_ok(STATUS_DONE), _ok(_findings_reply())])
+def test_results_format_findings_on_done_run_uses_metadata_for_category(monkeypatch):
+    # runs/02-categorie-uit-metadata.md: category comes from the instance's
+    # own metadata hierarchy, fetched here, not sniffed from the reply.
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(_findings_reply()), _ok(METADATA_REPLY)])
     exit_code, stdout, stderr, _ = _run(
         ["results", REQUEST_ID, "--format", "findings"], opener, monkeypatch
     )
     assert exit_code == 0
     doc = json.loads(stdout)
     assert doc["schema"] == "netnl-findings/v1"
-    # No metadata fetch: findings is a pure passthrough of the results reply.
-    assert len(opener.calls) == 2
+    assert len(opener.calls) == 3
+    assert "warning" not in stderr
+    example = [d for d in doc["domains"] if d["domain"] == "example.nl"][0]
+    by_test = {e["test"]: e["category"] for e in example["results"]}
+    assert by_test["web_ipv6_ns_address"] == "web_ipv6"
+    assert by_test["web_dnssec_exist"] == "web_dnssec"
+
+
+def test_results_format_findings_metadata_fetch_failure_warns_and_falls_back(monkeypatch):
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(_findings_reply()), HttpResponse(status=500, body=b"boom")])
+    exit_code, stdout, stderr, _ = _run(
+        ["results", REQUEST_ID, "--format", "findings"], opener, monkeypatch
+    )
+    assert exit_code == 0
+    assert "warning: metadata unavailable" in stderr
+    doc = json.loads(stdout)
+    assert doc["schema"] == "netnl-findings/v1"
+    # Falls back to the testname-prefix rule, using the reply's own
+    # results.categories — still finds the un-infixed RPKI test.
+    example = [d for d in doc["domains"] if d["domain"] == "example.nl"][0]
+    by_test = {e["test"]: e["category"] for e in example["results"]}
+    assert by_test["web_ipv6_ns_address"] == "web_ipv6"
 
 
 def test_results_format_findings_on_running_run_exits_nonzero_no_stdout(monkeypatch):
@@ -564,7 +586,7 @@ def test_results_format_findings_on_cancelled_run_exits_nonzero_no_stdout(monkey
 
 def test_results_format_findings_writes_findings_out_file(tmp_path, monkeypatch):
     out = tmp_path / "findings.json"
-    opener = FakeOpener([_ok(STATUS_DONE), _ok(_findings_reply())])
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(_findings_reply()), _ok(METADATA_REPLY)])
     exit_code, stdout, stderr, _ = _run(
         ["results", REQUEST_ID, "--format", "findings", "--findings-out", str(out)],
         opener,
@@ -594,7 +616,7 @@ def test_results_format_findings_on_running_run_leaves_existing_findings_out_unt
 def test_results_format_findings_broken_domain_appears_with_empty_results(monkeypatch):
     reply = copy.deepcopy(_findings_reply())
     # RESULTS_REPLY already carries "broken.nl": {"status": "error"} alongside example.nl.
-    opener = FakeOpener([_ok(STATUS_DONE), _ok(reply)])
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(reply), _ok(METADATA_REPLY)])
     exit_code, stdout, stderr, _ = _run(
         ["results", REQUEST_ID, "--format", "findings"], opener, monkeypatch
     )

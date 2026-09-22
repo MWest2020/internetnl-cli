@@ -249,14 +249,14 @@
         },
         {
           "test": "web_ns_rpki_exists",
-          "category": null,
+          "category": "web_rpki",
           "status": "passed",
           "verdict": "good",
           "detail": null
         },
         {
           "test": "web_ns_rpki_valid",
-          "category": null,
+          "category": "web_rpki",
           "status": "passed",
           "verdict": "good",
           "detail": null

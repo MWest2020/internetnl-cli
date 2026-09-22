@@ -2,6 +2,7 @@ import io
 import json
 import pathlib
 
+from internetnl_cli import gating
 from internetnl_cli.findings import SCHEMA, build_document, render_findings
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -50,6 +51,7 @@ def test_domains_and_tests_sorted_alphabetically():
 
 
 def test_category_is_longest_matching_prefix():
+    # No `category_groups` given -> the testname-prefix fallback rule.
     reply = _reply(
         {
             "example.nl": {
@@ -70,6 +72,7 @@ def test_category_is_longest_matching_prefix():
 
 
 def test_no_matching_category_is_null_and_test_still_appears():
+    # No `category_groups` given -> the testname-prefix fallback rule.
     reply = _reply(
         {
             "example.nl": {
@@ -177,16 +180,46 @@ def test_two_renders_of_the_same_batch_are_byte_identical():
     assert first.getvalue() == second.getvalue()
 
 
-# --- golden fixtures: real measurements from 2026-09-22, see runs/01-export.md ---
+# --- golden fixtures: real measurements from 2026-09-22, see runs/01-export.md
+# and runs/02-categorie-uit-metadata.md ---
+
+METADATA = _load("metadata-report-20260922.json")
 
 
 def test_web_fixture_matches_golden_findings_export():
     reply = _load("batch-v2-web-20260922.json")
     expected = _load("findings-v1-web-20260922.json")
-    assert build_document(reply) == expected
+    category_groups = gating.category_groups_from_metadata(METADATA, "web")
+    assert build_document(reply, category_groups=category_groups) == expected
 
 
 def test_mail_fixture_matches_golden_findings_export():
     reply = _load("batch-v2-mail-20260922.json")
     expected = _load("findings-v1-mail-20260922.json")
-    assert build_document(reply) == expected
+    category_groups = gating.category_groups_from_metadata(METADATA, "mail")
+    assert build_document(reply, category_groups=category_groups) == expected
+
+
+def test_metadata_placed_rpki_ns_variants_are_never_null_category():
+    """Regression for run 02: `_category_for` used to take the longest key
+    in a domain's own `results.categories` that prefixed the test name —
+    that rule is blind to the `ns`/`mx_ns` infix RPKI's nameserver variants
+    carry, so `web_ns_rpki_*`, `mail_ns_rpki_*` and `mail_mx_ns_rpki_*` fell
+    to `category: null` even though the instance's own metadata hierarchy
+    places every one of them under `web_rpki`/`mail_rpki`.
+    """
+    web_groups = gating.category_groups_from_metadata(METADATA, "web")
+    mail_groups = gating.category_groups_from_metadata(METADATA, "mail")
+
+    web_doc = build_document(_load("batch-v2-web-20260922.json"), category_groups=web_groups)
+    mail_doc = build_document(_load("batch-v2-mail-20260922.json"), category_groups=mail_groups)
+
+    web_by_test = {e["test"]: e["category"] for d in web_doc["domains"] for e in d["results"]}
+    mail_by_test = {e["test"]: e["category"] for d in mail_doc["domains"] for e in d["results"]}
+
+    assert web_by_test["web_ns_rpki_exists"] == "web_rpki"
+    assert web_by_test["web_ns_rpki_valid"] == "web_rpki"
+    assert mail_by_test["mail_ns_rpki_exists"] == "mail_rpki"
+    assert mail_by_test["mail_ns_rpki_valid"] == "mail_rpki"
+    assert mail_by_test["mail_mx_ns_rpki_exists"] == "mail_rpki"
+    assert mail_by_test["mail_mx_ns_rpki_valid"] == "mail_rpki"

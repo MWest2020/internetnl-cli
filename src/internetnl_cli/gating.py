@@ -67,6 +67,58 @@ def reference_from_metadata(metadata: dict, request_type: str | None) -> set[str
     return names
 
 
+def category_groups_from_metadata(metadata: dict, request_type: str | None) -> dict[str, str] | None:
+    """Subtestgroup name -> category name, from `report.hierarchy.<request_type>`.
+
+    Used by `findings.py` (via `cli.py`, which owns the network call) to
+    place a test in its category: `report.hierarchy.<web|mail>` is a list
+    of categories, each with a `children` list of subtestgroups (runs/
+    02-categorie-uit-metadata.md) — a test belongs to the category whose
+    subtestgroup name is the longest prefix of the test name. Unlike a
+    test's own name, a subtestgroup's name is not always the test's own
+    prefix (RPKI's nameserver variants carry a `web_ns_rpki`/`mail_ns_rpki`/
+    `mail_mx_ns_rpki` infix that a plain "longest key in `categories`" rule
+    can't see).
+
+    Returns `None` when the reply is structurally unusable — same rule as
+    `reference_from_metadata` — so the caller can warn and fall back
+    instead of silently degrading.
+    """
+    if not isinstance(metadata, dict):
+        return None
+
+    report = metadata.get("report")
+    if not isinstance(report, dict):
+        return None
+
+    if not isinstance(report.get("data"), dict) or not isinstance(report.get("hierarchy"), dict):
+        return None
+
+    if not request_type:
+        return {}
+
+    tree = report["hierarchy"].get(request_type)
+    if not isinstance(tree, list):
+        return {}
+
+    groups: dict[str, str] = {}
+    for category in tree:
+        if not isinstance(category, dict):
+            continue
+        category_name = category.get("name")
+        children = category.get("children")
+        if not isinstance(category_name, str) or not isinstance(children, list):
+            continue
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            group_name = child.get("name")
+            if isinstance(group_name, str):
+                groups[group_name] = category_name
+
+    return groups
+
+
 def parse_allowlist(path) -> set[tuple[str, str]]:
     try:
         with open(path, "r", encoding="utf-8") as fh:
