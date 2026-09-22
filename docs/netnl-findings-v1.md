@@ -83,7 +83,7 @@ why the block always appears.
 | Field      | Meaning                                                                                          |
 | ---------- | ------------------------------------------------------------------------------------------------- |
 | `test`     | The API's own subtest name, e.g. `web_https_tls_ciphers`.                                         |
-| `category` | The category the instance's own `GET /metadata/report` hierarchy places `test` under: `report.hierarchy.<web\|mail>` lists, per category, its subtestgroups, and `test` belongs to the category whose subtestgroup name is the longest prefix of `test` (`web_dnssec_exist` → `web_dnssec`; `web_ns_rpki_exists` → `web_rpki`, since `web_ns_rpki` is a subtestgroup of `web_rpki` even though it isn't a prefix of `web_rpki`). `null` when no subtestgroup prefixes the test name — the test still appears; nothing is dropped or renamed to force a match. |
+| `category` | The category the instance's own `GET /metadata/report` hierarchy places `test` under: `report.hierarchy.<web\|mail>` is a tree, three (or four, for RPKI's nameserver variants) layers deep — category → subtestgroup → test — and `test` is placed under whichever top-level category it descends from, however deep. This is an exact lookup, not a prefix match: the instance says directly which category each test belongs to (`web_dnssec_exist` → `web_dnssec`; `web_ns_rpki_exists` → `web_rpki`, several layers down under `web_rpki` → `web_ns_rpki` → `web_ns_rpki_exists`). `null` when the metadata hierarchy has no entry for the test — the test still appears; nothing is dropped or renamed to force a match. |
 | `status`   | One of `passed`, `failed`, `warning`, `info`, `not_tested`, `error` — the API's own value, verbatim. `error` (a broken measurement) is distinct from `failed` (a measured, failing result). |
 | `verdict`  | The API's own verdict word (`good`, `bad`, `warning`, `not-tested`, `recommendations`, `other`, …), verbatim, alongside `status` rather than instead of it. |
 | `detail`   | Always `null` in v1. The batch API publishes no per-variant detail (that only exists in the HTML report, which this export does not scrape). The field exists so a later API version — or a later schema version — can fill it without a breaking change to the ones that don't. |
@@ -98,10 +98,11 @@ render, never a hard failure — but `category` falls back to the older,
 weaker rule: the longest key in the batch's own `results.categories` that
 prefixes the test name. That rule can't see a subtestgroup whose name
 isn't itself a prefix of the test (it misses `web_ns_rpki_exists`, for
-example), so every fallback is announced with a `warning:` line on
-stderr rather than happening silently — a findings document that quietly
-drops a real category reads to a consumer as "measured, nothing here to
-flag."
+example, and — since the real hierarchy is several layers deep — most
+other tests too), so every fallback is announced with a `warning:` line
+on stderr rather than happening silently — a findings document that
+quietly drops a real category reads to a consumer as "measured, nothing
+here to flag."
 
 ## What this export deliberately does not do
 

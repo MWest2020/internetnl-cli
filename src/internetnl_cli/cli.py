@@ -162,10 +162,11 @@ def _run_findings_export(client, args, stdout: IO[str], stderr: IO[str]) -> int:
     request_type = (reply.get("request") or {}).get("request_type")
 
     # Category needs the instance's own metadata hierarchy (runs/
-    # 02-categorie-uit-metadata.md) — a failed or unusable fetch degrades to
-    # the testname-prefix fallback in findings_module.build_document, never
-    # a hard failure, but it must not degrade silently.
-    category_groups: dict[str, str] | None = None
+    # 02-categorie-uit-metadata.md, runs/03-hierarchie-is-drie-lagen.md) — a
+    # failed or unusable fetch degrades to the testname-prefix fallback in
+    # findings_module.build_document, never a hard failure, but it must not
+    # degrade silently.
+    categories_by_test: dict[str, str] | None = None
     try:
         metadata = client.metadata_report()
     except (ApiError, TransportError) as exc:
@@ -175,7 +176,7 @@ def _run_findings_export(client, args, stdout: IO[str], stderr: IO[str]) -> int:
             "category falls back to the testname-prefix rule and may miss infixed subtestgroups",
         )
     else:
-        result = gating.category_groups_from_metadata(metadata, request_type)
+        result = gating.category_by_test_from_metadata(metadata, request_type)
         if result is None:
             _write_stderr(
                 stderr,
@@ -183,9 +184,9 @@ def _run_findings_export(client, args, stdout: IO[str], stderr: IO[str]) -> int:
                 "category falls back to the testname-prefix rule and may miss infixed subtestgroups",
             )
         else:
-            category_groups = result
+            categories_by_test = result
 
-    doc = findings_module.build_document(reply, category_groups=category_groups)
+    doc = findings_module.build_document(reply, categories_by_test=categories_by_test)
     if args.findings_out:
         buffer = io.StringIO()
         findings_module.render_findings(doc, buffer)

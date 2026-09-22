@@ -51,7 +51,7 @@ def test_domains_and_tests_sorted_alphabetically():
 
 
 def test_category_is_longest_matching_prefix():
-    # No `category_groups` given -> the testname-prefix fallback rule.
+    # No `categories_by_test` given -> the testname-prefix fallback rule.
     reply = _reply(
         {
             "example.nl": {
@@ -72,7 +72,7 @@ def test_category_is_longest_matching_prefix():
 
 
 def test_no_matching_category_is_null_and_test_still_appears():
-    # No `category_groups` given -> the testname-prefix fallback rule.
+    # No `categories_by_test` given -> the testname-prefix fallback rule.
     reply = _reply(
         {
             "example.nl": {
@@ -180,24 +180,28 @@ def test_two_renders_of_the_same_batch_are_byte_identical():
     assert first.getvalue() == second.getvalue()
 
 
-# --- golden fixtures: real measurements from 2026-09-22, see runs/01-export.md
-# and runs/02-categorie-uit-metadata.md ---
+# --- golden fixtures: real measurements from 2026-09-22, see runs/01-export.md,
+# runs/02-categorie-uit-metadata.md and runs/03-hierarchie-is-drie-lagen.md ---
 
+# `metadata-report-20260922.json` is the instance's actual `GET
+# /metadata/report` reply (fetched from api.westerweel.work) — three layers
+# deep (category -> subtestgroup -> test, four for RPKI's nameserver
+# variants), not the flat category -> test shape an earlier run fabricated.
 METADATA = _load("metadata-report-20260922.json")
 
 
 def test_web_fixture_matches_golden_findings_export():
     reply = _load("batch-v2-web-20260922.json")
     expected = _load("findings-v1-web-20260922.json")
-    category_groups = gating.category_groups_from_metadata(METADATA, "web")
-    assert build_document(reply, category_groups=category_groups) == expected
+    categories_by_test = gating.category_by_test_from_metadata(METADATA, "web")
+    assert build_document(reply, categories_by_test=categories_by_test) == expected
 
 
 def test_mail_fixture_matches_golden_findings_export():
     reply = _load("batch-v2-mail-20260922.json")
     expected = _load("findings-v1-mail-20260922.json")
-    category_groups = gating.category_groups_from_metadata(METADATA, "mail")
-    assert build_document(reply, category_groups=category_groups) == expected
+    categories_by_test = gating.category_by_test_from_metadata(METADATA, "mail")
+    assert build_document(reply, categories_by_test=categories_by_test) == expected
 
 
 def test_metadata_placed_rpki_ns_variants_are_never_null_category():
@@ -208,18 +212,38 @@ def test_metadata_placed_rpki_ns_variants_are_never_null_category():
     to `category: null` even though the instance's own metadata hierarchy
     places every one of them under `web_rpki`/`mail_rpki`.
     """
-    web_groups = gating.category_groups_from_metadata(METADATA, "web")
-    mail_groups = gating.category_groups_from_metadata(METADATA, "mail")
+    web_by_test = gating.category_by_test_from_metadata(METADATA, "web")
+    mail_by_test = gating.category_by_test_from_metadata(METADATA, "mail")
 
-    web_doc = build_document(_load("batch-v2-web-20260922.json"), category_groups=web_groups)
-    mail_doc = build_document(_load("batch-v2-mail-20260922.json"), category_groups=mail_groups)
+    web_doc = build_document(_load("batch-v2-web-20260922.json"), categories_by_test=web_by_test)
+    mail_doc = build_document(_load("batch-v2-mail-20260922.json"), categories_by_test=mail_by_test)
 
-    web_by_test = {e["test"]: e["category"] for d in web_doc["domains"] for e in d["results"]}
-    mail_by_test = {e["test"]: e["category"] for d in mail_doc["domains"] for e in d["results"]}
+    web_by_test_result = {e["test"]: e["category"] for d in web_doc["domains"] for e in d["results"]}
+    mail_by_test_result = {e["test"]: e["category"] for d in mail_doc["domains"] for e in d["results"]}
 
-    assert web_by_test["web_ns_rpki_exists"] == "web_rpki"
-    assert web_by_test["web_ns_rpki_valid"] == "web_rpki"
-    assert mail_by_test["mail_ns_rpki_exists"] == "mail_rpki"
-    assert mail_by_test["mail_ns_rpki_valid"] == "mail_rpki"
-    assert mail_by_test["mail_mx_ns_rpki_exists"] == "mail_rpki"
-    assert mail_by_test["mail_mx_ns_rpki_valid"] == "mail_rpki"
+    assert web_by_test_result["web_ns_rpki_exists"] == "web_rpki"
+    assert web_by_test_result["web_ns_rpki_valid"] == "web_rpki"
+    assert mail_by_test_result["mail_ns_rpki_exists"] == "mail_rpki"
+    assert mail_by_test_result["mail_ns_rpki_valid"] == "mail_rpki"
+    assert mail_by_test_result["mail_mx_ns_rpki_exists"] == "mail_rpki"
+    assert mail_by_test_result["mail_mx_ns_rpki_valid"] == "mail_rpki"
+
+
+def test_golden_fixtures_have_no_null_category():
+    """Regression for run 03: the fabricated metadata fixture was flat
+    (category -> test directly), so the real three-layer hierarchy (category
+    -> subtestgroup -> test) made `category_by_test_from_metadata` miss 14
+    of 38 web tests and 12 of the mail tests. Against the real hierarchy,
+    every test in both golden fixtures must resolve to a category.
+    """
+    web_by_test = gating.category_by_test_from_metadata(METADATA, "web")
+    mail_by_test = gating.category_by_test_from_metadata(METADATA, "mail")
+
+    web_doc = build_document(_load("batch-v2-web-20260922.json"), categories_by_test=web_by_test)
+    mail_doc = build_document(_load("batch-v2-mail-20260922.json"), categories_by_test=mail_by_test)
+
+    web_nulls = [e["test"] for d in web_doc["domains"] for e in d["results"] if e["category"] is None]
+    mail_nulls = [e["test"] for d in mail_doc["domains"] for e in d["results"] if e["category"] is None]
+
+    assert web_nulls == []
+    assert mail_nulls == []
