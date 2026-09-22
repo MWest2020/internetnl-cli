@@ -1,0 +1,281 @@
+{
+  "schema": "netnl-findings/v1",
+  "domains": [
+    {
+      "domain": "westerweel.work",
+      "type": "mail",
+      "status": "ok",
+      "measured_at": "2026-09-22T10:29:06.937031+00:00",
+      "score_percent": 70,
+      "report_url": "https://netnl.westerweel.work/mail/westerweel.work/2/",
+      "results": [
+        {
+          "test": "mail_auth_dkim_exist",
+          "category": "mail_auth",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_auth_dmarc_exist",
+          "category": "mail_auth",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_auth_dmarc_policy",
+          "category": "mail_auth",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_auth_spf_exist",
+          "category": "mail_auth",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_auth_spf_policy",
+          "category": "mail_auth",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_dnssec_mailto_exist",
+          "category": "mail_dnssec",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_dnssec_mailto_valid",
+          "category": "mail_dnssec",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_dnssec_mx_exist",
+          "category": "mail_dnssec",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_dnssec_mx_valid",
+          "category": "mail_dnssec",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_ipv6_mx_address",
+          "category": "mail_ipv6",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_ipv6_mx_reach",
+          "category": "mail_ipv6",
+          "status": "failed",
+          "verdict": "bad",
+          "detail": null
+        },
+        {
+          "test": "mail_ipv6_ns_address",
+          "category": "mail_ipv6",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_ipv6_ns_reach",
+          "category": "mail_ipv6",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_mx_ns_rpki_exists",
+          "category": null,
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_mx_ns_rpki_valid",
+          "category": null,
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_ns_rpki_exists",
+          "category": null,
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_ns_rpki_valid",
+          "category": null,
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_rpki_exists",
+          "category": "mail_rpki",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_rpki_valid",
+          "category": "mail_rpki",
+          "status": "passed",
+          "verdict": "good",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_cert_chain",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_cert_domain",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_cert_pubkey",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_cert_sig",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_dane_exist",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_dane_rollover",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_dane_valid",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_0rtt",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_available",
+          "category": "mail_starttls",
+          "status": "error",
+          "verdict": "other",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_caa",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_cipherorder",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_ciphers",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_clientreneg",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_compress",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_extendedmastersecret",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_keyexchange",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_keyexchangehash",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_secreneg",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        },
+        {
+          "test": "mail_starttls_tls_version",
+          "category": "mail_starttls",
+          "status": "not_tested",
+          "verdict": "not-tested",
+          "detail": null
+        }
+      ]
+    }
+  ]
+}

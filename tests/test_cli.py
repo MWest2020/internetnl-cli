@@ -519,3 +519,89 @@ def test_valid_metadata_reply_does_not_warn(monkeypatch):
     exit_code, stdout, stderr, _ = _run(["poll", REQUEST_ID], opener, monkeypatch)
     assert exit_code == 0
     assert "warning" not in stderr
+
+
+# --- findings export (openspec/changes/2026-09-22-findings-export) ---
+
+
+def _findings_reply():
+    reply = copy.deepcopy(RESULTS_REPLY)
+    reply["domains"]["example.nl"]["report"] = {"url": "https://batch.example/site/example.nl/1/"}
+    return reply
+
+
+def test_results_format_findings_on_done_run_writes_one_document_no_metadata_call(monkeypatch):
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(_findings_reply())])
+    exit_code, stdout, stderr, _ = _run(
+        ["results", REQUEST_ID, "--format", "findings"], opener, monkeypatch
+    )
+    assert exit_code == 0
+    doc = json.loads(stdout)
+    assert doc["schema"] == "netnl-findings/v1"
+    # No metadata fetch: findings is a pure passthrough of the results reply.
+    assert len(opener.calls) == 2
+
+
+def test_results_format_findings_on_running_run_exits_nonzero_no_stdout(monkeypatch):
+    opener = FakeOpener([_ok(STATUS_RUNNING)])
+    exit_code, stdout, stderr, _ = _run(
+        ["results", REQUEST_ID, "--format", "findings"], opener, monkeypatch
+    )
+    assert exit_code != 0
+    assert stdout == ""
+
+
+def test_results_format_findings_on_cancelled_run_exits_nonzero_no_stdout(monkeypatch):
+    reply = copy.deepcopy(STATUS_RUNNING)
+    reply["request"]["status"] = "cancelled"
+    opener = FakeOpener([_ok(reply)])
+    exit_code, stdout, stderr, _ = _run(
+        ["results", REQUEST_ID, "--format", "findings"], opener, monkeypatch
+    )
+    assert exit_code != 0
+    assert stdout == ""
+
+
+def test_results_format_findings_writes_findings_out_file(tmp_path, monkeypatch):
+    out = tmp_path / "findings.json"
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(_findings_reply())])
+    exit_code, stdout, stderr, _ = _run(
+        ["results", REQUEST_ID, "--format", "findings", "--findings-out", str(out)],
+        opener,
+        monkeypatch,
+    )
+    assert exit_code == 0
+    assert stdout == ""
+    doc = json.loads(out.read_text())
+    assert doc["schema"] == "netnl-findings/v1"
+
+
+def test_results_format_findings_on_running_run_leaves_existing_findings_out_untouched(
+    tmp_path, monkeypatch
+):
+    out = tmp_path / "findings.json"
+    out.write_text("old-content")
+    opener = FakeOpener([_ok(STATUS_RUNNING)])
+    exit_code, stdout, stderr, _ = _run(
+        ["results", REQUEST_ID, "--format", "findings", "--findings-out", str(out)],
+        opener,
+        monkeypatch,
+    )
+    assert exit_code != 0
+    assert out.read_text() == "old-content"
+
+
+def test_results_format_findings_broken_domain_appears_with_empty_results(monkeypatch):
+    reply = copy.deepcopy(_findings_reply())
+    # RESULTS_REPLY already carries "broken.nl": {"status": "error"} alongside example.nl.
+    opener = FakeOpener([_ok(STATUS_DONE), _ok(reply)])
+    exit_code, stdout, stderr, _ = _run(
+        ["results", REQUEST_ID, "--format", "findings"], opener, monkeypatch
+    )
+    assert exit_code == 0
+    doc = json.loads(stdout)
+    broken = [d for d in doc["domains"] if d["domain"] == "broken.nl"][0]
+    assert broken["status"] == "error"
+    assert broken["results"] == []
+    assert broken["score_percent"] is None
+    assert broken["report_url"] is None

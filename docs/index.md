@@ -59,3 +59,7 @@ until the implementation lands.
 - [The anonymous page API](reference/demo-api.md) — the page contract for `/demo/*`:
   endpoints, poll cadence, CORS requirements, id hygiene and the full error
   table with the literal, directly-showable visitor-facing messages.
+- [`netnl-findings/v1`](netnl-findings-v1.md) — the schema `internetnl
+  results --format findings` writes: per-domain and per-test fields,
+  category derivation, and the exit-code contract for an unfinished or
+  failed batch.

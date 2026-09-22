@@ -13,15 +13,19 @@ The argparse tree here is the pinned CLI surface from design.md:
 from __future__ import annotations
 
 import argparse
+import io
+import os
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from typing import IO
 
 from internetnl_cli import config as config_module
+from internetnl_cli import findings as findings_module
 from internetnl_cli import gating
 from internetnl_cli.client import BatchClient, is_valid_request_id, urllib_opener
-from internetnl_cli.errors import ApiError, InternetnlError, RunFailed, TransportError
+from internetnl_cli.errors import ApiError, ConfigError, InternetnlError, RunFailed, TransportError
 from internetnl_cli.hosts import collect_hosts
 from internetnl_cli.poll import poll_until_done
 from internetnl_cli.render import build_document, render_json, render_table, sanitize
@@ -71,6 +75,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     results = subparsers.add_parser("results", parents=[common], help="render a finished run")
     results.add_argument("request_id", metavar="REQUEST_ID")
+    results.add_argument(
+        "--format",
+        choices=["findings"],
+        help="write netnl-findings/v1 instead of the table/--json output",
+    )
+    results.add_argument(
+        "--findings-out",
+        metavar="FILE",
+        help="with --format findings, write to FILE instead of stdout",
+    )
 
     return parser
 
@@ -118,6 +132,40 @@ def _render(client, cfg, request_id, args, stdout, stderr) -> int:
         render_table(doc, stdout)
     if args.fail_on_scored:
         gating.gate(checks)
+    return 0
+
+
+def _write_atomic(path: str, content: str) -> None:
+    """Write `content` to `path` without ever leaving a partial file behind.
+
+    A write that dies partway (disk full, permission revoked mid-write) must
+    not corrupt or truncate a pre-existing file at `path` — see tasks.md
+    2.1. Writing to a sibling temp file and `os.replace`-ing it over the
+    target makes the switch atomic on the same filesystem.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    try:
+        fd, temp_path = tempfile.mkstemp(dir=directory, prefix=".findings-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            os.replace(temp_path, path)
+        except BaseException:
+            os.unlink(temp_path)
+            raise
+    except OSError as exc:
+        raise ConfigError(f"cannot write findings file {path}: {exc}") from exc
+
+
+def _run_findings_export(client, args, stdout: IO[str]) -> int:
+    reply = client.results(args.request_id)
+    doc = findings_module.build_document(reply)
+    if args.findings_out:
+        buffer = io.StringIO()
+        findings_module.render_findings(doc, buffer)
+        _write_atomic(args.findings_out, buffer.getvalue())
+    else:
+        findings_module.render_findings(doc, stdout)
     return 0
 
 
@@ -186,6 +234,8 @@ def _run_results(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str
     status_reply = client.status(args.request_id)
     status = status_reply["request"]["status"]
     if status == "done":
+        if args.format == "findings":
+            return _run_findings_export(client, args, stdout)
         return _render(client, cfg, args.request_id, args, stdout, stderr)
 
     if status in ("error", "cancelled"):
@@ -193,6 +243,9 @@ def _run_results(args: argparse.Namespace, *, cfg, client, sleep, stdout: IO[str
 
     if status not in _UNFINISHED_STATUSES:
         raise ApiError(f"unexpected request status '{status}' from {client.endpoint_host}")
+
+    if args.format == "findings":
+        raise ApiError(f"cannot export findings for run {args.request_id}: still {status}")
 
     _write_stderr(stderr, f"status: {status}")
     if args.json:

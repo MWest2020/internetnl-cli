@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `internetnl results <id> --format findings` (`openspec/changes/2026-09-22-findings-export`),
+  plus `--findings-out FILE`: a new, versioned output shape
+  (`"schema": "netnl-findings/v1"`) carrying every subtest of a completed
+  batch verbatim — the API's own `status` and `verdict`, a `category`
+  derived from the batch's own `results.categories` (longest matching
+  prefix; `null`, never dropped, when nothing matches), and each domain's
+  own `score_percent`/`report_url`. `detail` stays `null` in v1 — the
+  batch API publishes no per-variant detail, and this export does not
+  scrape the HTML report to get one. Exporting a batch that is not `done`
+  exits non-zero and writes nothing (an existing `--findings-out` file is
+  left untouched); a domain whose own status is not `ok` still gets a
+  block, with an empty `results` list, rather than being dropped. Domains
+  and tests are sorted alphabetically so the same finished batch always
+  exports the same bytes. `--json` and the plain-text table are
+  unchanged. See [docs/netnl-findings-v1.md](docs/netnl-findings-v1.md)
+  for the schema.
+
 ### Changed
 
 - Nothing a user receives calls this a demo any more. The four

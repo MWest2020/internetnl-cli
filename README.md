@@ -104,6 +104,18 @@ not a scaled-down imitation of it.
   **not a scraper** of the website UI, and **not a reimplementation** of any
   test.
 
+## Exporting for another tool
+
+`internetnl results <request-id> --format findings [--findings-out FILE]`
+writes `netnl-findings/v1`: every subtest of a finished batch, verbatim —
+the API's own `status` and `verdict`, category names derived from the
+API's own `results.categories`, and the domain's own score and report
+URL. No aggregation, no re-scoring, no HTML scraping. It exists so a
+consumer (Wanderer is the first) can adopt internet.nl results as its
+own dimension without reimplementing internet.nl's category rules or the
+batch API's edge cases. `--json` and the table are unchanged; see
+[docs/netnl-findings-v1.md](docs/netnl-findings-v1.md) for the schema.
+
 ## Batch results are not website results
 
 Upstream documents the differences: the connection test is unavailable,
