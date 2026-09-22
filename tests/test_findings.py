@@ -229,12 +229,17 @@ def test_metadata_placed_rpki_ns_variants_are_never_null_category():
     assert mail_by_test_result["mail_mx_ns_rpki_valid"] == "mail_rpki"
 
 
-def test_golden_fixtures_have_no_null_category():
+def test_real_hierarchy_leaves_no_test_uncategorised():
     """Regression for run 03: the fabricated metadata fixture was flat
     (category -> test directly), so the real three-layer hierarchy (category
     -> subtestgroup -> test) made `category_by_test_from_metadata` miss 14
     of 38 web tests and 12 of the mail tests. Against the real hierarchy,
-    every test in both golden fixtures must resolve to a category.
+    every measured test must resolve to a category.
+
+    This rebuilds from the raw batch replies; it does not read the golden
+    files. Drift in a committed golden file is caught by
+    `test_web_fixture_matches_golden_findings_export` and its mail twin,
+    which compare the whole document.
     """
     web_by_test = gating.category_by_test_from_metadata(METADATA, "web")
     mail_by_test = gating.category_by_test_from_metadata(METADATA, "mail")
