@@ -164,7 +164,7 @@ something you run behind NAT — and it is a maintained service, not a script.
 [docs/how-to/deploy-instance-vps.md](docs/how-to/deploy-instance-vps.md) walks
 the whole deployment, and
 [docs/how-to/self-hosting-pitfalls.md](docs/how-to/self-hosting-pitfalls.md)
-collects the four traps that cost this project days — including a documented
+collects the five traps that cost this project days — including a documented
 setting that silently kills all container egress, and a certbot in the
 webserver image that cannot start, so certificates never renew.
 

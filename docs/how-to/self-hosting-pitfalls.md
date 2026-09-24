@@ -1,9 +1,9 @@
 ---
 status: current
-last_reviewed: 2026-09-06
+last_reviewed: 2026-09-24
 ---
 
-# Self-hosting an Internet.nl batch instance: four traps
+# Self-hosting an Internet.nl batch instance: five traps
 
 Everything here was hit on a real deployment of the upstream Docker batch
 stack (release 1.11.3) on a single Hetzner VPS, and cost days to find. None
@@ -136,6 +136,22 @@ docker/compose.sh ... up -d
 
 Restarting a stranded container reattaches it to the same stale ID; removing
 and recreating it is what actually rejoins the new network.
+
+## 5. Docker publishes ports straight past `ufw`
+
+**Symptom.** `ufw` default-denies inbound and `ufw status` shows no rule for
+443, yet the instance answers on 443 from the internet.
+
+**Cause.** Docker writes its own iptables rules for published ports, ahead of
+the chains `ufw` manages. A default-deny `ufw` does not cover containers.
+
+**Fix.** Filter container traffic in the `DOCKER-USER` chain, which Docker
+evaluates before its own rules, and make that rule survive reboots (on the
+reference deployment: a small systemd unit that inserts a drop for the public
+interface, e.g. `iptables -I DOCKER-USER -i eth0 -p tcp --dport 443 -j DROP`
+plus the exceptions you do want). Bind services that must never be public,
+such as the resolver on 53, to loopback in the compose file. Check from
+outside the host, not with `ufw status`.
 
 ## Before you start
 

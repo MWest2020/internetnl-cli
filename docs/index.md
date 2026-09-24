@@ -29,7 +29,7 @@ until the implementation lands.
   three Prometheus queries that answer "how much can this box take", how to
   point them at a load event that already happened, and a worked example
   from a 2-core VPS measuring 362 domains.
-- [Self-hosting: four traps](how-to/self-hosting-pitfalls.md) — the places
+- [Self-hosting: five traps](how-to/self-hosting-pitfalls.md) — the places
   where following the upstream batch documentation literally still leaves you
   with a broken instance: the public-IP setting that kills all container
   egress, the certbot that cannot start so certificates never renew, the
