@@ -174,7 +174,9 @@ webserver image that cannot start, so certificates never renew.
   `uv run pytest` runs the suite (no test touches the network or your real
   `$HOME`).
 - The repo is built through the habitat agent chain: role definitions live in
-  `.claude/agents/`, and `scripts/verify.sh` is the non-negotiable gate a
+  the handbook (`MWest2020/handbook`, `docs/agents/seeds/<role>.md`, read by
+  habitat at the commit pinned as `handbook_ref` in ratatoskr's
+  `agents/factory.yml`), and `scripts/verify.sh` is the non-negotiable gate a
   builder run must pass.
 
 ## License
