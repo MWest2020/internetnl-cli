@@ -387,7 +387,10 @@ def _extra_id(value: Any) -> str | None:
         return None
     if isinstance(value, int) and value >= 0:
         return str(value)
-    if isinstance(value, str) and value.isdigit() and len(value) <= 32:
+    # ASCII digits only: `str.isdigit()` is also true for "²" (which `int`
+    # then refuses) and for other scripts' digits (which `int` silently maps
+    # onto ASCII ones).
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 32:
         return str(int(value))
     return None
 
@@ -439,10 +442,24 @@ def is_extra_marked(payload: object) -> bool:
     return isinstance(extras, list) and len(extras) > 0
 
 
-_SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
+# `support_type` values worth naming in a log line; anything else is
+# logged as `other` so a free-form value can never reach the log.
+_KNOWN_SUPPORT_TYPES = {
+    t.casefold(): t
+    for t in ("Supporter", "Extra", "Membership", "Subscription", "Wishlist", "Commission")
+}
 
 
 def shape_summary(payload: object) -> str:
+    """Never raises (it runs before routing on every signed delivery); see
+    `_shape_summary`."""
+    try:
+        return _shape_summary(payload)
+    except Exception:  # pragma: no cover - defensive
+        return "shape=unreadable"
+
+
+def _shape_summary(payload: object) -> str:
     """A log-safe description of a delivery's *shape*, for learning what a
     real "support created" delivery of an Extra purchase looks like:
     `support_type` (only if it is a short plain token, else `other`),
@@ -457,8 +474,8 @@ def shape_summary(payload: object) -> str:
     support_type = _lookup(payload, data, "support_type")
     if support_type is _MISSING:
         st = "absent"
-    elif isinstance(support_type, str) and _SAFE_TOKEN_RE.fullmatch(support_type):
-        st = support_type
+    elif isinstance(support_type, str) and support_type.strip().casefold() in _KNOWN_SUPPORT_TYPES:
+        st = _KNOWN_SUPPORT_TYPES[support_type.strip().casefold()]
     else:
         st = "other"
     extras = _lookup(payload, data, "extras")

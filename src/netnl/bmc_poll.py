@@ -20,8 +20,11 @@ There is no transaction id in this response. Each purchase is keyed
 `bmc-extra:<purchase_id>` and goes through the same persist-then-mail step
 (`bazibo_issuance._process`), so the poller never mails one purchase twice.
 It cannot recognise a purchase the webhook or `netnl-admin bazibo mint
---ref` already handled (those key on the transaction id): run either the
-poller or the webhook path for Extras, not both. The poller is off without
+--ref` already handled (those key on the transaction id), so the two are
+mutually exclusive in code: the poller runs only with
+`NETNL_BAZIBO_SOURCE=poll`, which also turns the webhook's Bazibo path off,
+and it never mails a purchase dated before `NETNL_BMC_POLL_NOT_BEFORE` or
+without a date. The poller is off without
 `NETNL_BMC_API_TOKEN` and no CronJob runs it yet (BMC's developer site did
 not issue the owner a token, 2026-11-27).
 
@@ -151,6 +154,7 @@ def poll(settings: Settings, now: datetime, sender, opener=urllib_opener) -> dic
     cfg = settings.supporter
     bz = settings.bazibo
     assert cfg is not None and bz is not None and bz.enabled and bz.bmc_api_token
+    assert bz.source == "poll"
     match = bmc.BaziboMatch(bz.extra_id, bz.extra_title)
     qualify = bmc.QualifyConfig(
         accept_test_mode=True, min_amount=bz.min_amount, currency=cfg.currency,
@@ -169,7 +173,12 @@ def poll(settings: Settings, now: datetime, sender, opener=urllib_opener) -> dic
                 continue
             if purchase.revoked:
                 continue
-            if purchase.purchased_on is not None and purchase.purchased_on < cutoff:
+            # No date, or older than the lookback or the go-live marker:
+            # never mailed by the poller (no backfill of purchases another
+            # channel may already have served).
+            if purchase.purchased_on is None or purchase.purchased_on < cutoff:
+                continue
+            if bz.poll_not_before is not None and purchase.purchased_on < bz.poll_not_before:
                 continue
             counts["matched"] += 1
             delivery = bmc.Delivery(

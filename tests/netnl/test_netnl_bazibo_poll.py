@@ -195,9 +195,12 @@ class FakeApi:
         return HttpResponse(status=200, body=json.dumps(body).encode())
 
 
-def run_poll(env, clock, sender, api) -> tuple[int, str, str]:
+POLL = {"NETNL_BAZIBO_SOURCE": "poll", "NETNL_BMC_POLL_NOT_BEFORE": "2025-12-15T00:00:00"}
+
+
+def run_poll(env, clock, sender, api, *, source_poll=True) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    settings = load(env)
+    settings = load(dict(env, **POLL) if source_poll else env)
     code = admin._bazibo_poll(settings, clock(), out, err, opener=api, sender=sender)
     return code, out.getvalue(), err.getvalue()
 
@@ -216,6 +219,8 @@ def test_poll_mints_once_per_purchase(env, app, clock, recording_sender, db):
 @pytest.mark.parametrize("item", [
     api_item(revoked=1),
     api_item(when="2025-12-01 00:00:00"),                 # older than the 168h lookback
+    api_item(when=None),                                  # no date: never backfilled
+    api_item(reward_id="٦٠٣٤١٣"),                          # non-ASCII digits never match
     api_item(reward_id=1, title="Something else"),
     {"purchase_id": "x"},
     "not a dict",
@@ -276,12 +281,14 @@ def test_poll_is_off_without_token_or_without_bazibo(env, app, clock, recording_
     e = dict(env)
     e.pop("NETNL_BMC_API_TOKEN")
     api = FakeApi({1: [api_item()]})
-    code, out, _ = run_poll(e, clock, recording_sender, api)
+    code, out, _ = run_poll(e, clock, recording_sender, api, source_poll=False)
     assert code == 0 and "NETNL_BMC_API_TOKEN" in out and api.calls == []
     e = dict(env)
     e.pop("NETNL_BAZIBO_EXTRA_ID")
     code, out, _ = run_poll(e, clock, recording_sender, api)
     assert code == 0 and "not enabled" in out and api.calls == []
+    code, out, _ = run_poll(env, clock, recording_sender, api, source_poll=False)
+    assert code == 0 and "NETNL_BAZIBO_SOURCE" in out and api.calls == []
 
 
 def test_poll_logs_and_db_hold_no_token_or_email(env, app, clock, recording_sender, caplog):
@@ -293,6 +300,11 @@ def test_poll_logs_and_db_hold_no_token_or_email(env, app, clock, recording_send
 
 
 @pytest.mark.parametrize("over, needle", [
+    ({"NETNL_BAZIBO_SOURCE": "both"}, "NETNL_BAZIBO_SOURCE"),
+    ({"NETNL_BAZIBO_SOURCE": "poll"}, "NETNL_BMC_POLL_NOT_BEFORE"),
+    ({"NETNL_BAZIBO_SOURCE": "poll", "NETNL_BMC_API_TOKEN": "", "NETNL_BMC_POLL_NOT_BEFORE": "2026-01-01"},
+     "NETNL_BMC_API_TOKEN"),
+    ({"NETNL_BMC_API_BASE": "https://tok@developers.buymeacoffee.com/api/v1"}, "NETNL_BMC_API_BASE"),
     ({"NETNL_BMC_API_TOKEN": "has space"}, "NETNL_BMC_API_TOKEN"),
     ({"NETNL_BMC_API_BASE": "http://developers.buymeacoffee.com/api/v1"}, "NETNL_BMC_API_BASE"),
     ({"NETNL_BMC_POLL_MAX_PAGES": "0"}, "NETNL_BMC_POLL_MAX_PAGES"),
@@ -301,6 +313,7 @@ def test_poll_settings_refused(env, over, needle):
     with pytest.raises(SettingsError) as exc:
         load(dict(env, **over))
     assert needle in str(exc.value) and "has space" not in str(exc.value)
+    assert "tok@" not in str(exc.value)
 
 
 def test_settings_repr_hides_the_token(env):
@@ -414,3 +427,36 @@ def test_manual_mint_through_main_reaches_the_mail_path(env, monkeypatch, record
     out = io.StringIO()
     assert admin.main(["bazibo", "mint", "--mail", BUYER, "--ref", "pi_main"], stdout=out, env=env) == 0
     assert "mailed: ref pi_main" in out.getvalue() and len(recording_sender.sent) == 1
+
+
+def test_poll_never_mails_before_the_not_before_marker(env, app, clock, recording_sender):
+    e = dict(env, NETNL_BMC_POLL_LOOKBACK_HOURS="100000")
+    _, out, _ = run_poll(e, clock, recording_sender, FakeApi({1: [api_item(when="2025-12-14 23:59:59")]}))
+    assert "matched=0" in out and recording_sender.sent == []
+
+
+def test_source_poll_turns_the_webhook_bazibo_path_off(env, fake_opener, clock, recording_sender):
+    e = dict(env, **POLL)
+    c = TestClient(create_app(load(e), opener=fake_opener, now=clock, sender=recording_sender),
+                   raise_server_exceptions=False)
+    resp = post_webhook(c, support_created(extras=[bazibo_item()], amount=5.0))
+    assert resp.json() == {"status": "ignored"} and recording_sender.sent == []
+    conn = store.connect(load(e).db)
+    assert _counts(conn)["credentials"] == 0
+    conn.close()
+
+
+def test_non_ascii_digit_ids_never_crash_or_match(client, db, recording_sender):
+    for weird in ("²", "٦٠٣٤١٣"):
+        resp = post_webhook(client, support_created(extras=[bazibo_item(id=weird)], txn=f"pi_{len(weird)}"))
+        assert resp.status_code == 200 and resp.json() == {"status": "ignored"}
+    resp = post_webhook(client, support_created(support_type="Supporter", extras=None, amount=5.0,
+                                                txn="pi_plain"))
+    assert resp.json() == {"status": "ok"}
+    assert recording_sender.sent and all("BZB1." not in m.body for m in recording_sender.sent)
+
+
+def test_unknown_support_type_tokens_are_logged_as_other(client, caplog):
+    caplog.set_level(logging.INFO, logger="netnl")
+    post_webhook(client, support_created(support_type="alexj", extras=None, amount=5.0))
+    assert "alexj" not in caplog.text and "support_type=other" in caplog.text

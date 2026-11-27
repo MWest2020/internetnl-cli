@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import math
+from datetime import datetime, timezone
 import os
 import re
 from dataclasses import dataclass, field
@@ -516,6 +517,8 @@ class BaziboSettings:
     bmc_api_base: str = "https://developers.buymeacoffee.com/api/v1"
     poll_lookback_hours: int = 168
     poll_max_pages: int = 10
+    source: str = "webhook"
+    poll_not_before: "datetime | None" = None
 
 
 def _decode_seed(raw: str) -> bytes:
@@ -623,8 +626,38 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
     if not api_base.startswith("https://") and not (
         env.get("NETNL_ALLOW_HTTP") == "1" and api_base.startswith("http://")
     ):
-        raise SettingsError(f"NETNL_BMC_API_BASE must be an https:// URL: got {api_base!r}")
-    _reject_crlf("NETNL_BMC_API_BASE", api_base)
+        raise SettingsError("NETNL_BMC_API_BASE must be an https:// URL (value not shown)")
+    if any(ch in api_base for ch in "\r\n@") or not api_base.isprintable():
+        raise SettingsError(
+            "NETNL_BMC_API_BASE must be a plain https://host/path URL, no credentials "
+            "(value not shown)"
+        )
+
+    # Which channel mints Bazibo codes for Extra purchases. The webhook (and
+    # a hand issue) key on BMC's transaction id, the API poller on the API's
+    # purchase id; they cannot recognise each other's purchases, so exactly
+    # one of them is ever active (design.md D11).
+    source = env.get("NETNL_BAZIBO_SOURCE", "webhook")
+    if source not in ("webhook", "poll"):
+        raise SettingsError(f"NETNL_BAZIBO_SOURCE must be 'webhook' or 'poll': got {source!r}")
+    poll_not_before = None
+    if source == "poll":
+        if token is None:
+            raise SettingsError(
+                "NETNL_BAZIBO_SOURCE=poll requires NETNL_BMC_API_TOKEN"
+            )
+        raw_nb = env.get("NETNL_BMC_POLL_NOT_BEFORE") or ""
+        try:
+            poll_not_before = datetime.fromisoformat(raw_nb)
+        except ValueError:
+            raise SettingsError(
+                "NETNL_BAZIBO_SOURCE=poll requires NETNL_BMC_POLL_NOT_BEFORE, an ISO "
+                "timestamp (UTC unless it says otherwise) before which purchases are "
+                "never mailed by the poller (no backfill of purchases another channel "
+                f"already served): got {raw_nb!r}"
+            ) from None
+        if poll_not_before.tzinfo is None:
+            poll_not_before = poll_not_before.replace(tzinfo=timezone.utc)
 
     raw_origins = env.get("NETNL_BAZIBO_ALLOWED_ORIGINS")
     if raw_origins is None:
@@ -652,5 +685,7 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
         client_ip_header=env.get("NETNL_BAZIBO_CLIENT_IP_HEADER", "CF-Connecting-IP"),
         bmc_api_token=token,
         bmc_api_base=api_base,
+        source=source,
+        poll_not_before=poll_not_before,
         **numeric,
     )

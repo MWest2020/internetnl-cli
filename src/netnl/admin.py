@@ -223,6 +223,9 @@ def _bazibo_poll(settings, now: datetime, stdout: IO[str], stderr: IO[str], *, o
     if not bz.bmc_api_token:
         print("poll off: NETNL_BMC_API_TOKEN is not set", file=stdout)
         return 0
+    if bz.source != "poll":
+        print("poll off: NETNL_BAZIBO_SOURCE is not 'poll' (the webhook mints)", file=stdout)
+        return 0
     assert cfg is not None  # Bazibo enabled implies the bridge (settings.py)
     if sender is None:
         sender = mail.smtp_sender(

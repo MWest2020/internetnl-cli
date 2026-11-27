@@ -525,7 +525,7 @@ async def handle_webhook(request: Request, settings: Settings) -> dict:
         event == bmc._DONATION_CREATED and bmc.is_extra_marked(payload)
     )
     if is_extra:
-        if bazibo_cfg is not None and bazibo_cfg.enabled:
+        if bazibo_cfg is not None and bazibo_cfg.enabled and bazibo_cfg.source == "webhook":
             return await bazibo_issuance.handle(payload, request, settings, _sanitize)
         _logger.info(
             "event=ignored decision=extra_purchase type=%s", bmc.loggable_event(event)

@@ -247,8 +247,14 @@ longer maintained"). Documented fields per purchase: `purchase_id`,
 `extra.reward_title`; paginated with `current_page`, `last_page`,
 `next_page_url`. No transaction id, so it keys on `bmc-extra:<purchase_id>`
 and cannot recognise a purchase the webhook or a hand issue already
-handled: run it only instead of, not next to, the webhook path for Extras.
-Off without `NETNL_BMC_API_TOKEN`; no CronJob is deployed for it. Pages
+handled. Review round 2 made the two channels mutually exclusive in code:
+`NETNL_BAZIBO_SOURCE` is `webhook` (default) or `poll`; `poll` requires the
+token and `NETNL_BMC_POLL_NOT_BEFORE` (purchases before it, or without a
+date, are never mailed by the poller, so switching over does not backfill
+purchases the webhook served) and turns the webhook's Bazibo path off.
+A hand issue keys on the transaction id and is not recognised by the
+poller either: under `poll`, hand-issue only purchases dated before the
+marker. Off without `NETNL_BMC_API_TOKEN`; no CronJob is deployed for it. Pages
 are requested by number from `NETNL_BMC_API_BASE` only (the token never
 follows a URL from a response), redirects are refused.
 

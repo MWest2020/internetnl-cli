@@ -386,9 +386,12 @@ developer API (`GET /v1/extras`: `purchase_id`, `purchased_on`,
 recent purchases of the Extra. It does nothing without
 `NETNL_BMC_API_TOKEN` (in `netnl-bridge`), and no CronJob runs it: the
 developer site did not issue a token. It keys on the API's `purchase_id`,
-not the transaction id, so run it instead of the webhook path, not next to
-it. Settings: `NETNL_BMC_API_TOKEN`, `NETNL_BMC_API_BASE`,
-`NETNL_BMC_POLL_LOOKBACK_HOURS` (168), `NETNL_BMC_POLL_MAX_PAGES` (10). To find
+not the transaction id, so it runs only with `NETNL_BAZIBO_SOURCE=poll`,
+which turns the webhook's Bazibo path off, and only for purchases dated at
+or after `NETNL_BMC_POLL_NOT_BEFORE`. Settings: `NETNL_BAZIBO_SOURCE`
+(`webhook`), `NETNL_BMC_API_TOKEN`, `NETNL_BMC_POLL_NOT_BEFORE`,
+`NETNL_BMC_API_BASE`, `NETNL_BMC_POLL_LOOKBACK_HOURS` (168),
+`NETNL_BMC_POLL_MAX_PAGES` (10). To find
 the code id of a purchase (for example after a refund):
 `sqlite3 /data/netnl.sqlite3 "SELECT code_id, state FROM bazibo_issuance WHERE txn_id = '<pi_…>'"`.
 The revocation list is the `bazibo_revoked` table (`code_id`, `reason` =
