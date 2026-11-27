@@ -105,6 +105,57 @@ def test_a_crash_after_persist_alerts(w_app, w_client, w_conn, clock, recording_
     assert "pending" in m.body
 
 
+def test_cap_then_failed_retry_alerts_once(w_env, fake_opener, clock, recording_sender):
+    # watch row at T0 (cap, no issuance row), the retry later creates a failed row
+    env = dict(w_env, NETNL_SUPPORTER_MAX_PER_HOUR="1")
+    app = create_app(load(env), opener=fake_opener, now=clock, sender=recording_sender)
+    client = TestClient(app, raise_server_exceptions=False)
+    conn = store.connect(app.state.settings.db)
+    try:
+        post_webhook(client, donation(txn="t1", amount=1.0))
+        assert post_webhook(client, donation(txn="t2", amount=1.0)).status_code == 503
+        clock.advance(3700)
+        recording_sender.fail_always = True
+        assert post_webhook(client, donation(txn="t2", amount=1.0)).status_code == 503
+        recording_sender.fail_always = False
+        assert store.find_bazibo_issuance(conn, "t2")["state"] == "failed"
+        watch(app, conn, clock() + timedelta(minutes=20), recording_sender)
+        assert [m.subject for m in alerts(recording_sender)] == [
+            "Bazibo-code niet verstuurd voor transactie t2 — controleer"
+        ]
+        watch(app, conn, clock() + timedelta(hours=2), recording_sender)
+        assert len(alerts(recording_sender)) == 1
+    finally:
+        conn.close()
+
+
+def test_rows_from_before_the_watch_never_alert(w_app, w_conn, clock, recording_sender):
+    at = store.utcnow_iso(clock)
+    store.insert_bazibo_issuance(w_conn, txn_id="old_undeliverable", code_id="", state="undeliverable",
+                                 attempts=0, created_at=at, updated_at=at)
+    store.insert_bazibo_issuance(w_conn, txn_id="old_failed", code_id="00" * 10, state="failed",
+                                 attempts=3, created_at=at, updated_at=at)
+    for hours in (1, 2):
+        rc, out, _ = watch(w_app, w_conn, clock() + timedelta(hours=hours), recording_sender)
+        assert rc == 0 and "alerted=0" in out
+    assert alerts(recording_sender) == []
+
+
+def test_a_changed_id_gets_no_copy_paste_command(w_app, w_conn, clock, recording_sender):
+    store.watch_bazibo(w_conn, "pi x/1", store.utcnow_iso(clock))
+    watch(w_app, w_conn, clock() + timedelta(minutes=16), recording_sender)
+    [m] = alerts(recording_sender)
+    assert "--ref pi?x?1" not in m.body and "bijzondere tekens" in m.body
+
+
+def test_the_alert_is_audited_with_its_transaction(w_app, w_client, w_conn, clock, recording_sender):
+    recording_sender.fail_on_calls = {0}
+    post_webhook(w_client, donation(txn="pi_aud", amount=1.0))
+    watch(w_app, w_conn, clock() + timedelta(minutes=16), recording_sender)
+    row = w_conn.execute("SELECT detail FROM audit WHERE event = 'bazibo-alert'").fetchone()
+    assert row["detail"] == "txn=pi_aud state=failed"
+
+
 def test_undeliverable_and_parked_rows_alert(w_app, w_client, w_conn, clock, recording_sender):
     post_webhook(w_client, donation(txn="pi_nomail", amount=1.0, email_addr=None))
     recording_sender.fail_always = True

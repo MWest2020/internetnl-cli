@@ -288,7 +288,8 @@ def _bazibo_watch(conn, settings, now: datetime, stdout: IO[str], stderr: IO[str
             continue
         store.mark_bazibo_alerted(conn, row["txn_id"], at)
         store.record_audit(
-            conn, at=at, credential=None, event="bazibo-alert", detail=f"state={row['state'] or 'none'}",
+            conn, at=at, credential=None, event="bazibo-alert",
+            detail=f"txn={mail.safe_ref(row['txn_id'])} state={row['state'] or 'none'}",
         )
         alerted += 1
     print(f"alerted={alerted} failed={failed}", file=stdout)

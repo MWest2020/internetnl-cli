@@ -394,6 +394,12 @@ def build_bazibo_notify_mail(*, to: str, code_id: str, txn_id: str, source: str 
 _SAFE_REF = re.compile(r"[^A-Za-z0-9_.:-]")
 
 
+def safe_ref(txn_id: str) -> str:
+    """A transaction id reduced to plain token characters (`?` otherwise),
+    at most 128: safe in a header, a log or an audit line."""
+    return _SAFE_REF.sub("?", txn_id)[:128] or "?"
+
+
 def build_bazibo_alert_mail(
     *, to: str, txn_id: str, state: str | None, attempts: int | None, code_id: str | None,
     seen_at: str,
@@ -402,7 +408,15 @@ def build_bazibo_alert_mail(
     not delivered in time. The transaction id (reduced to plain token
     characters, so nothing from BMC can reach a header), the issuance state
     and attempts, the code id — never the buyer's address, never the code."""
-    ref = _SAFE_REF.sub("?", txn_id)[:128] or "?"
+    ref = safe_ref(txn_id)
+    # The command only when it names the exact transaction: a changed id
+    # would make a new issuance row (and a second code).
+    fix = (
+        f"  kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo mint --mail <adres> --ref {ref}\n\n"
+        if ref == txn_id
+        else "  (de transactie-id bevat bijzondere tekens: neem hem letterlijk uit de tabel\n"
+             "  bazibo_watch voor netnl-admin bazibo mint --mail <adres> --ref <id>)\n\n"
+    )
     what = {
         None: "geen uitgifte-rij: de code is nooit aangemaakt (limiet per uur, crash of databasefout)",
         "pending": "pending: de mail is niet afgerond (crash tijdens versturen)",
@@ -417,7 +431,7 @@ def build_bazibo_alert_mail(
         f"Eerst gezien: {seen_at}\n\n"
         "Controleer de BMC-melding van deze donatie en stuur de code zo nodig met de hand\n"
         "(dezelfde transactie, dus nooit een tweede code):\n\n"
-        f"  kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo mint --mail <adres> --ref {ref}\n\n"
+        f"{fix}"
         "Deze melding komt één keer per transactie.\n"
     )
     return Mail(to=to, subject=f"Bazibo-code niet verstuurd voor transactie {ref} — controleer", body=body)

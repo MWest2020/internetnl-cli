@@ -746,12 +746,14 @@ def watch_bazibo(conn: sqlite3.Connection, txn_id: str, seen_at: str) -> None:
 
 
 def bazibo_alert_candidates(conn: sqlite3.Connection, cutoff_iso: str) -> list[sqlite3.Row]:
-    """Transactions with no delivered code that were first seen (or first
-    issued) at or before `cutoff_iso` and have not been alerted yet: a watch
-    row without a delivered issuance (also: no issuance row at all), and any
-    issuance row that is not delivered (failed, parked, pending past a crash,
-    undeliverable). Columns: txn_id, seen_at, state (NULL without a row),
-    attempts, code_id."""
+    """Watched transactions first seen at or before `cutoff_iso`, not yet
+    alerted, with no delivered code: no issuance row at all, or one that is
+    failed, parked, pending past a crash or undeliverable. One row per
+    transaction (`txn_id` is the watch table's key). Every issuance path
+    (`bazibo_issuance._process`: webhook, donation, poller, hand issue)
+    writes the watch row first, so issuance rows from before the watch
+    existed are never alerted (no burst on the first deploy). Columns:
+    txn_id, seen_at, state (NULL without a row), attempts, code_id."""
     return conn.execute(
         """
         SELECT w.txn_id AS txn_id, w.seen_at AS seen_at, i.state AS state,
@@ -759,14 +761,9 @@ def bazibo_alert_candidates(conn: sqlite3.Connection, cutoff_iso: str) -> list[s
           FROM bazibo_watch w LEFT JOIN bazibo_issuance i ON i.txn_id = w.txn_id
          WHERE w.alerted_at IS NULL AND w.seen_at <= ?
            AND (i.state IS NULL OR i.state != ?)
-        UNION
-        SELECT i.txn_id, i.created_at, i.state, i.attempts, i.code_id
-          FROM bazibo_issuance i LEFT JOIN bazibo_watch w ON w.txn_id = i.txn_id
-         WHERE i.state != ? AND i.created_at <= ?
-           AND (w.txn_id IS NULL OR w.alerted_at IS NULL)
-         ORDER BY 2
+         ORDER BY w.seen_at
         """,
-        (cutoff_iso, SUPPORTER_DELIVERED, SUPPORTER_DELIVERED, cutoff_iso),
+        (cutoff_iso, SUPPORTER_DELIVERED),
     ).fetchall()
 
 
