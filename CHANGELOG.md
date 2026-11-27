@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `netnl-admin bazibo watch` (CronJob, every 5 min): one alert mail to
+  `NETNL_BAZIBO_ALERT_TO` per transaction that qualified for a Bazibo code
+  and has none delivered after `NETNL_BAZIBO_ALERT_AFTER_MINUTES` (15),
+  also for failed, parked, crashed and undeliverable rows. New table
+  `bazibo_watch` (transaction id and timestamps only).
+
 - Bazibo codes from plain donations: with `NETNL_BAZIBO_FROM_DONATIONS=1`
   a live `donation.created` of at least `NETNL_BAZIBO_DONATION_MIN`
   (default 1) mints and mails a Bazibo code ("Bedankt voor je donatie!"),
