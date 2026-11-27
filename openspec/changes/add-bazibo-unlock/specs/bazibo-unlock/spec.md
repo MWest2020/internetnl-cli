@@ -85,6 +85,61 @@ transaction id, so both webhook events of one purchase mail once.
   mentions the Extra's title or id in its note or message
 - THEN it follows the donation rules and no code is minted
 
+### Requirement: A plain donation mints a code when switched on
+
+With `NETNL_BAZIBO_FROM_DONATIONS=1` (default off), a validly-signed, live
+`donation.created` delivery that is not marked as an Extra, with an amount
+at or above `NETNL_BAZIBO_DONATION_MIN` (default `1`, in the account's
+currency) and the configured currency, SHALL mint and mail one Bazibo code,
+in addition to whatever the netnl credential path does with the same
+delivery. It SHALL use the same `bazibo_issuance` row (keyed on the
+transaction id) as an Extra purchase, so one transaction never yields two
+codes. Mark, 27 Nov 2026: BMC sends this account no webhook for an Extra
+purchase, only "support created".
+
+#### Scenario: One euro gives a code only
+
+- WHEN the switch is on and a live donation of 1 arrives
+- THEN a Bazibo code is mailed and no netnl credential is minted
+
+#### Scenario: Two euro gives both
+
+- WHEN the switch is on and a live donation of 2 arrives
+- THEN one Bazibo mail and one netnl credential mail are sent, each once,
+  also when BMC replays the delivery
+
+#### Scenario: Switched off
+
+- WHEN `NETNL_BAZIBO_FROM_DONATIONS` is unset or `0`
+- THEN donations behave exactly as before this requirement
+
+#### Scenario: The donation mail says thank you for the donation
+
+- WHEN a code is mailed for a donation
+- THEN the mail opens with "Bedankt voor je donatie! Hier is je code voor
+  de volledige versie van Bazibo in de browser." (and the English line)
+  instead of the purchase wording
+
+### Requirement: An undelivered code raises one alert
+
+With `NETNL_BAZIBO_ALERT_TO` set, `netnl-admin bazibo watch` SHALL mail that
+address once per transaction that qualified for a Bazibo code and has no
+delivered issuance `NETNL_BAZIBO_ALERT_AFTER_MINUTES` (default 15) after it
+was first seen, including a transaction with no issuance row and any
+failed, parked, pending or undeliverable issuance row. The alert SHALL NOT
+carry the buyer's address or the code.
+
+#### Scenario: A failed mail is alerted once
+
+- WHEN a code mail failed and no retry delivered it within 15 minutes
+- THEN one mail "Bazibo-code niet verstuurd voor transactie <txn> —
+  controleer" goes out, and later runs send nothing more for it
+
+#### Scenario: Nothing written but the watch row
+
+- WHEN a qualifying donation hit the hourly cap and no issuance row exists
+- THEN the watch still alerts for its transaction
+
 ### Requirement: The delivery shape is logged without personal data
 
 Every `donation.created` and `extra_purchase.created` delivery that passed

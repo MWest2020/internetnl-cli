@@ -260,3 +260,59 @@ follows a URL from a response), redirects are refused.
 
 - **O7** Get a working BMC API token, and deploy the poller CronJob
   instead of relying on the webhook. Default: no; webhook plus hand issue.
+
+## Round 3 (2026-11-27): codes from plain donations
+
+A real purchase of the Extra (27 Nov 2026, 10:43Z) produced no webhook at
+all: on this account BMC sends webhooks only for "support created"
+(donations), which the netnl supporter-key path has received since
+September. Mark chose to sell the Bazibo web unlock as a plain donation
+("1 is goed als de flow maar duidelijk is").
+
+### D12 — A donation of at least 1 mints a code
+
+`NETNL_BAZIBO_FROM_DONATIONS=1` (default off) makes a live
+`donation.created` that is not Extra-marked, at or above
+`NETNL_BAZIBO_DONATION_MIN` (default `1`), mint and mail a code through
+the same `_persist`/`_process` step as an Extra, with the donation's
+thank-you line in the mail. The switch alone enables the subsystem
+(`enabled`, so `/bazibo/activate` answers), and needs the bridge and the
+device salt like an Extra does.
+
+Idempotency per product: the Bazibo code keeps its `bazibo_issuance` row
+and the netnl credential its `supporter_issuance` row, both keyed on BMC's
+transaction id. One donation of 2 or more gives one mail of each, once; a
+replay finds both rows delivered. Both paths run before the reply, the
+netnl credential first (so nothing on the Bazibo side, not even an
+unexpected exception, can delay or block a key; such an exception is logged
+by type only and answered 503); if
+either raised a 503 (mail failure, hourly cap, lease) the reply is that
+503, and BMC's retry re-sends only the mail that failed, because the other
+row is already `delivered`. An Extra purchase reported both ways would find
+the same `bazibo_issuance` row and never get a second code. The Extra
+routing (D1, D8) stays: harmless, and useful if BMC ever sends Extra
+webhooks.
+
+`NETNL_BAZIBO_SOURCE=poll` together with the switch is refused at startup:
+the poller keys on the API's purchase id and could mail a second code for a
+purchase the donation path already served.
+
+The note or message of a donation still decides nothing; only the amount
+does. Anyone who donates 1 or more gets a code, which is the intent.
+
+### D13 — The watch (`netnl-admin bazibo watch`)
+
+Mark, 27 Nov 2026: "geen zin in ad hoc oplossingen". A silent failure must
+be noticed without anyone looking at logs. `bazibo_issuance._process`
+writes a `bazibo_watch` row (transaction id, first seen; no email, no code)
+as its own autocommit write before `_persist`, so a transaction is watched
+even when no issuance row follows (hourly cap, crash, locked database).
+A CronJob runs `netnl-admin bazibo watch` every 5 minutes: every watched
+transaction without a delivered issuance after
+`NETNL_BAZIBO_ALERT_AFTER_MINUTES` (15), and every issuance row that is not
+delivered (failed, parked, pending past a crash, undeliverable), gets one
+mail to `NETNL_BAZIBO_ALERT_TO`. `alerted_at` is set only after the mail
+went out (alert once, retried on a failed send). The subject carries the
+transaction id reduced to `[A-Za-z0-9_.:-]` (`?` otherwise), so nothing
+from BMC reaches a header. Not covered: a payment BMC never sends a webhook
+for; BMC's own sale notifications remain the check for that.

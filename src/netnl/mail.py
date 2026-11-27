@@ -15,6 +15,7 @@ invariant above.
 
 from __future__ import annotations
 
+import re
 import html as _html
 import logging
 import smtplib
@@ -245,7 +246,7 @@ _BAZIBO_BODY_TEMPLATE = """\
 
 Hoi!
 
-Dank je wel voor het kopen van de volledige versie van Bazibo (web).
+{thanks_nl}
 
 Open deze link op het apparaat waarop gespeeld wordt:
 
@@ -268,7 +269,7 @@ Mark, Bazibo
 
 Hi!
 
-Thank you for buying the full version of Bazibo (web).
+{thanks_en}
 
 Open this link on the device your child plays on:
 
@@ -290,6 +291,19 @@ Mark, Bazibo
 
 # Mail-client HTML: no external resource of any kind (the QR code is an
 # inline `cid:` part), no script/form, inline CSS only, single column.
+# The opening sentence: a purchase of the Extra, or a plain donation (Mark,
+# 27 Nov 2026). Filled into both templates.
+_BAZIBO_THANKS = {
+    False: (
+        "Dank je wel voor het kopen van de volledige versie van Bazibo (web).",
+        "Thank you for buying the full version of Bazibo (web).",
+    ),
+    True: (
+        "Bedankt voor je donatie! Hier is je code voor de volledige versie van Bazibo in de browser.",
+        "Thank you for your donation! Here is your code for the full version of Bazibo in the browser.",
+    ),
+}
+
 _BAZIBO_HTML_TEMPLATE = """\
 <!DOCTYPE html>
 <html lang="nl">
@@ -306,7 +320,7 @@ _BAZIBO_HTML_TEMPLATE = """\
         <tr>
           <td style="padding:28px;">
             <h1 style="margin:0 0 12px 0; font-size:20px;">Dank je wel!</h1>
-            <p style="margin:0 0 16px 0; font-size:15px; line-height:1.5;">Je hebt de volledige versie van Bazibo (web) gekocht. Open deze link op het apparaat waarop gespeeld wordt:</p>
+            <p style="margin:0 0 16px 0; font-size:15px; line-height:1.5;">{thanks_nl} Open deze link op het apparaat waarop gespeeld wordt:</p>
             <p style="margin:0 0 16px 0;"><a href="{link}" style="display:inline-block; padding:12px 18px; background-color:#2f7d4f; color:#ffffff; text-decoration:none; border-radius:8px; font-size:15px;">Bazibo openen</a></p>
             <p style="margin:0 0 16px 0; font-size:13px; line-height:1.5;">Werkt die niet? <a href="{link_pages}" style="color:#2f7d4f;">Gebruik deze link</a>. Of scan de QR-code, of vul de code zelf in:</p>
             <p style="margin:0 0 16px 0; text-align:center;"><img src="cid:{qr_cid}" width="200" height="200" alt="QR-code met je Bazibo-link" style="display:inline-block; width:200px; height:200px;"></p>
@@ -314,7 +328,7 @@ _BAZIBO_HTML_TEMPLATE = """\
             <p style="margin:0 0 24px 0; font-size:13px; line-height:1.5; color:#555555;">De code werkt in alle browsers van je gezin (tot {device_limit} apparaten), wordt op het apparaat zelf bewaard en je kunt hem altijd opnieuw invoeren vanuit deze mail.</p>
             <hr style="border:none; border-top:1px solid #eadfcf; margin:0 0 24px 0;">
             <h1 lang="en" style="margin:0 0 12px 0; font-size:20px;">Thank you!</h1>
-            <p lang="en" style="margin:0 0 16px 0; font-size:15px; line-height:1.5;">You bought the full version of Bazibo (web). Open <a href="{link}" style="color:#2f7d4f;">this link</a> on the device your child plays on (or <a href="{link_pages}" style="color:#2f7d4f;">this one</a> if the first does not work), scan the QR code above, or enter the code above in Bazibo yourself.</p>
+            <p lang="en" style="margin:0 0 16px 0; font-size:15px; line-height:1.5;">{thanks_en} Open <a href="{link}" style="color:#2f7d4f;">this link</a> on the device your child plays on (or <a href="{link_pages}" style="color:#2f7d4f;">this one</a> if the first does not work), scan the QR code above, or enter the code above in Bazibo yourself.</p>
             <p lang="en" style="margin:0 0 16px 0; font-size:13px; line-height:1.5; color:#555555;">The code works in every browser of your family (up to {device_limit} devices), is kept on the device itself, and you can always enter it again from this mail.</p>
             <p style="margin:0; font-size:14px;">Veel speelplezier! / Have fun playing!<br>Mark, Bazibo</p>
           </td>
@@ -340,14 +354,21 @@ def qr_png(text: str) -> bytes:
     return buffer.getvalue()
 
 
-def build_bazibo_mail(*, to: str, code: str, link: str, link_pages: str, device_limit: int) -> Mail:
+def build_bazibo_mail(
+    *, to: str, code: str, link: str, link_pages: str, device_limit: int, donation: bool = False,
+) -> Mail:
     """Interpolates only the code, its two links (fixed prefixes plus the
     code, which is base64url/`.` only) and an operator-configured integer —
     nothing from the BMC delivery. Every value is still HTML-escaped in the
     HTML part.
+
+    `donation`: the code came from a plain BMC donation, not an Extra
+    purchase; the thank-you line says so (Dutch and English).
     """
+    thanks_nl, thanks_en = _BAZIBO_THANKS[bool(donation)]
     body = _BAZIBO_BODY_TEMPLATE.format(
-        link=link, link_pages=link_pages, code=code, device_limit=device_limit
+        link=link, link_pages=link_pages, code=code, device_limit=device_limit,
+        thanks_nl=thanks_nl, thanks_en=thanks_en,
     )
     html_body = _BAZIBO_HTML_TEMPLATE.format(
         link=_html.escape(link, quote=True),
@@ -355,16 +376,65 @@ def build_bazibo_mail(*, to: str, code: str, link: str, link_pages: str, device_
         code=_html.escape(code, quote=True),
         device_limit=int(device_limit),
         qr_cid=_html.escape(_BAZIBO_QR_CID, quote=True),
+        thanks_nl=_html.escape(thanks_nl, quote=True),
+        thanks_en=_html.escape(thanks_en, quote=True),
     )
     image = InlineImage(cid=_BAZIBO_QR_CID, data=qr_png(link))
     return Mail(to=to, subject=_BAZIBO_SUBJECT, body=body, html=html_body, inline_images=(image,))
 
 
-def build_bazibo_notify_mail(*, to: str, code_id: str, txn_id: str) -> Mail:
-    """Operator notification (`NETNL_SUPPORTER_NOTIFY`): the code id and
-    transaction id only — never the code, never the buyer's address."""
-    body = f"bazibo code issued: code id {code_id}, txn {txn_id}\n"
+def build_bazibo_notify_mail(*, to: str, code_id: str, txn_id: str, source: str = "extra") -> Mail:
+    """Operator notification (`NETNL_SUPPORTER_NOTIFY`): the code id,
+    transaction id and where it came from (`extra` or `donation`) only —
+    never the code, never the buyer's address."""
+    body = f"bazibo code issued ({source}): code id {code_id}, txn {txn_id}\n"
     return Mail(to=to, subject="netnl: bazibo code issued", body=body)
+
+
+_SAFE_REF = re.compile(r"[^A-Za-z0-9_.:-]")
+
+
+def safe_ref(txn_id: str) -> str:
+    """A transaction id reduced to plain token characters (`?` otherwise),
+    at most 128: safe in a header, a log or an audit line."""
+    return _SAFE_REF.sub("?", txn_id)[:128] or "?"
+
+
+def build_bazibo_alert_mail(
+    *, to: str, txn_id: str, state: str | None, attempts: int | None, code_id: str | None,
+    seen_at: str,
+) -> Mail:
+    """`netnl-admin bazibo watch`: one alert per transaction whose code was
+    not delivered in time. The transaction id (reduced to plain token
+    characters, so nothing from BMC can reach a header), the issuance state
+    and attempts, the code id — never the buyer's address, never the code."""
+    ref = safe_ref(txn_id)
+    # The command only when it names the exact transaction: a changed id
+    # would make a new issuance row (and a second code).
+    fix = (
+        f"  kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo mint --mail <adres> --ref {ref}\n\n"
+        if ref == txn_id
+        else "  (de transactie-id bevat bijzondere tekens: neem hem letterlijk uit de tabel\n"
+             "  bazibo_watch voor netnl-admin bazibo mint --mail <adres> --ref <id>)\n\n"
+    )
+    what = {
+        None: "geen uitgifte-rij: de code is nooit aangemaakt (limiet per uur, crash of databasefout)",
+        "pending": "pending: de mail is niet afgerond (crash tijdens versturen)",
+        "failed": "failed: de mail kon niet worden verstuurd",
+        "undeliverable": "undeliverable: geen bruikbaar e-mailadres in de webhook",
+    }.get(state, f"{state}")
+    body = (
+        f"Bazibo-code niet verstuurd voor transactie {ref}.\n\n"
+        f"Status: {what}\n"
+        f"Pogingen: {attempts if attempts is not None else 0}\n"
+        f"Code-id: {code_id or '-'}\n"
+        f"Eerst gezien: {seen_at}\n\n"
+        "Controleer de BMC-melding van deze donatie en stuur de code zo nodig met de hand\n"
+        "(dezelfde transactie, dus nooit een tweede code):\n\n"
+        f"{fix}"
+        "Deze melding komt één keer per transactie.\n"
+    )
+    return Mail(to=to, subject=f"Bazibo-code niet verstuurd voor transactie {ref} — controleer", body=body)
 
 
 def smtp_sender(

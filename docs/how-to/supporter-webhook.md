@@ -202,16 +202,28 @@ payload:
 
 | BMC event | What happens |
 |---|---|
-| `donation.created` | Unchanged: a netnl credential at or above `NETNL_SUPPORTER_MIN_AMOUNT` (default 2). |
+| `donation.created` | A netnl credential at or above `NETNL_SUPPORTER_MIN_AMOUNT` (default 2), unchanged. With `NETNL_BAZIBO_FROM_DONATIONS=1` also one Bazibo code at or above `NETNL_BAZIBO_DONATION_MIN` (default 1): €1 gives a code only, €2 or more a code and a netnl key, two mails. |
 | `extra_purchase.created` whose `data.extras[]` holds the configured Extra | One Bazibo unlock code, mailed. Never a netnl credential. |
 | `donation.created` ("support created") with `support_type: "Extra"` or a non-empty `extras[]` | An Extra purchase delivered as support: same as the row above, never a netnl credential. Without the Bazibo Extra in `extras[]` (or while dormant): 200 `ignored`. |
 | `extra_purchase.created` for any other Extra | 200 `ignored`, nothing written. |
 | anything else (memberships, refunds, commissions, unknown types) | 200 `ignored`, nothing written, whatever the payload looks like. Logged by type only (`type=other` for a type BMC does not list). |
 
-A donation that says "for Bazibo" in its note is still a donation: it
-follows the donation rules and never mints a code. Only the structured
-fields `support_type` and `extras[]` decide. If that happens, issue a code
-by hand (below).
+A donation's note or message never decides anything: only its amount
+does. Since 27 Nov 2026 the Bazibo web unlock is sold as a plain donation
+(Mark: "1 is goed als de flow maar duidelijk is"), because a real Extra
+purchase on this account produced no webhook at all; see design.md D12.
+
+**Codes from donations** (`NETNL_BAZIBO_FROM_DONATIONS=1`). Each product
+has its own idempotency row, keyed on BMC's transaction id:
+`bazibo_issuance` for the code, `supporter_issuance` for the netnl key. A
+replay finds both delivered and sends nothing. If one of the two mails
+fails, the reply is 503 and BMC's retry re-sends only that one (the code
+is the same code again). An Extra purchase that BMC reported both ways
+would find the same `bazibo_issuance` row: never two codes. The mail opens
+with "Bedankt voor je donatie! Hier is je code voor de volledige versie
+van Bazibo in de browser." Log line: `event=bazibo-issued source=donation
+txn_id=… code_id=…`. To switch it off, set the variable to `0` (or remove
+it) and restart; donations then behave as before.
 
 Every signed `donation.created`/`extra_purchase.created` logs its shape,
 without personal data:
@@ -361,6 +373,30 @@ salt are in the `netnl-bridge` Secret, the public-key cross-check and
    with `live_mode: false` and is ignored unless
    `NETNL_BMC_ACCEPT_TEST_MODE=1` is set for the test.
 
+### The watch: a code that did not go out
+
+Mark, 27 Nov 2026: "geen zin in ad hoc oplossingen". `netnl-admin bazibo
+watch` runs as the CronJob `netnl-bazibo-watch` every 5 minutes. It mails
+`NETNL_BAZIBO_ALERT_TO` once per transaction that qualified for a code and
+has none delivered `NETNL_BAZIBO_ALERT_AFTER_MINUTES` (15) after it was
+first seen, with the subject "Bazibo-code niet verstuurd voor transactie
+<txn> — controleer". It covers:
+
+- a qualifying donation or Extra with no issuance row at all (hourly cap,
+  a crash or a database error before the row): the webhook writes a
+  `bazibo_watch` row (transaction id, first seen) before anything else;
+- an issuance row that is `failed`, parked (attempts used up), `pending`
+  past a crash, or `undeliverable` (no address in the webhook).
+
+The alert carries the transaction id (plain token characters only), the
+state, attempts and code id, and the hand-issue command for that
+transaction. Never the buyer's address, never the code. A transaction is
+marked alerted only after its mail went out; a failed alert mail is retried
+on the next run (exit 1). Without `NETNL_BAZIBO_ALERT_TO` the command says
+"watch off" and exits 0. What it cannot see: a donation BMC never sent a
+webhook for (that is what happened to the Extra); compare BMC's own sale
+notifications for those.
+
 ### Operator commands
 
 ```sh
@@ -407,6 +443,10 @@ The revocation list is the `bazibo_revoked` table (`code_id`, `reason` =
 | `NETNL_BAZIBO_DEVICE_SALT` | unset | Secret, ≥ 32 characters. Required once on. |
 | `NETNL_BAZIBO_PUBLIC_KEY` | unset | Startup refuses a key that does not match. |
 | `NETNL_BAZIBO_MIN_AMOUNT` | `0` | Minimum payment for the Extra (independent of the netnl minimum). |
+| `NETNL_BAZIBO_FROM_DONATIONS` | `0` | `1`: a plain donation also mints a code. Enables the subsystem on its own (no Extra needed). Refused together with `NETNL_BAZIBO_SOURCE=poll`. |
+| `NETNL_BAZIBO_ALERT_TO` | unset | `bazibo watch`: one alert per undelivered transaction to this address. Off while unset. |
+| `NETNL_BAZIBO_ALERT_AFTER_MINUTES` | `15` | How long a transaction may go without a delivered code before the alert. |
+| `NETNL_BAZIBO_DONATION_MIN` | `1` | Minimum donation for a code, in the account's currency (independent of the netnl minimum). |
 | `NETNL_BAZIBO_DEVICE_LIMIT` | `10` | Devices per code. |
 | `NETNL_BAZIBO_AUTO_REVOKE_AT` | `100` | Distinct devices that revoke a code. |
 | `NETNL_BAZIBO_ACTIVATE_PER_MINUTE` | `10` | Per-address activation requests per minute. |

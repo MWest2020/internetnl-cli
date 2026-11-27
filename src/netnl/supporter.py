@@ -505,8 +505,10 @@ async def handle_webhook(request: Request, settings: Settings) -> dict:
     # `extra_purchase.created` while Bazibo is enabled -> a Bazibo code
     # (`netnl.bazibo_issuance`, which never touches the credential tables);
     # every other event -> 200 and nothing else, whatever its shape. A
-    # donation is never routed to Bazibo, whatever its note or message
-    # says: the Extra is the only way to buy a code.
+    # donation's note or message never decides anything. With
+    # `NETNL_BAZIBO_FROM_DONATIONS=1` a donation of at least
+    # `NETNL_BAZIBO_DONATION_MIN` also mints a Bazibo code (below), on its
+    # own idempotency row next to the netnl credential's (design.md D12).
     event = bmc.event_type(payload)
     if event is None:
         raise NetnlHTTPError(400, "bad-request", "invalid field: type")
@@ -546,21 +548,64 @@ async def handle_webhook(request: Request, settings: Settings) -> dict:
     decision = bmc.qualifies(delivery, bmc.QualifyConfig(
         accept_test_mode=cfg.accept_test_mode, min_amount=cfg.min_amount, currency=cfg.currency,
     ))
+
+    # A Bazibo code from the same donation (design.md D12, Mark 27 Nov 2026),
+    # judged against its own minimum. Its own idempotency row
+    # (`bazibo_issuance`, transaction id) next to the netnl one
+    # (`supporter_issuance`, transaction id): one donation gives at most one
+    # mail of each, and a retry after either mail failed re-sends only the
+    # one that failed. Both are tried before a 503 is answered.
+    bazibo_decision = None
+    if bazibo_cfg is not None and bazibo_cfg.enabled and bazibo_cfg.from_donations:
+        bazibo_decision = bmc.qualifies(delivery, bmc.QualifyConfig(
+            accept_test_mode=cfg.accept_test_mode, min_amount=bazibo_cfg.donation_min,
+            currency=cfg.currency,
+        ))
+        if bazibo_decision in bmc.IGNORE_DECISIONS:
+            _logger.info("event=ignored decision=bazibo_%s source=donation", bazibo_decision.value)
+            bazibo_decision = None
+
     if decision in bmc.IGNORE_DECISIONS:
         _logger.info("event=ignored decision=%s", decision.value)
-        return {"status": "ignored"}
+        if bazibo_decision is None:
+            return {"status": "ignored"}
 
-    now = request.app.state.now()
-    sender = request.app.state.sender
+    # The netnl credential first, exactly as before this change; the Bazibo
+    # code second, so nothing on the Bazibo side can delay or block a key.
+    failure: NetnlHTTPError | None = None
+    statuses: list[str] = []
+    if decision not in bmc.IGNORE_DECISIONS:
+        now = request.app.state.now()
+        sender = request.app.state.sender
+        try:
+            outcome = await run_in_threadpool(_process, settings, delivery, decision, now, sender)
+        except NetnlHTTPError as exc:
+            failure = exc
+        else:
+            _logger.info("event=%s txn_id=%s", outcome, _sanitize(delivery.transaction_id))
+            # "duplicate" is indistinguishable on the wire from a fresh
+            # issuance (design.md) — this never reveals which one happened.
+            # "ignored" means undeliverable.
+            statuses.append("ok" if outcome in ("issued", "duplicate") else "ignored")
 
-    outcome = await run_in_threadpool(_process, settings, delivery, decision, now, sender)
+    if bazibo_decision is not None:
+        try:
+            result = await bazibo_issuance.handle_donation(
+                delivery, bazibo_decision, request, settings, _sanitize
+            )
+            statuses.append(result["status"])
+        except NetnlHTTPError as exc:
+            failure = failure or exc
+        except Exception as exc:  # noqa: BLE001 - never let the code path take the key path down
+            # Only the exception's type: its text could carry SMTP or
+            # database detail. 503 so BMC retries; the netnl row is
+            # already delivered and sends nothing again.
+            _logger.warning(
+                "event=bazibo-error source=donation txn_id=%s error=%s",
+                _sanitize(delivery.transaction_id), type(exc).__name__,
+            )
+            failure = failure or _delivery_failed("could not issue the Bazibo code")
 
-    _logger.info("event=%s txn_id=%s", outcome, _sanitize(delivery.transaction_id))
-    if outcome == "issued":
-        return {"status": "ok"}
-    if outcome == "duplicate":
-        # Indistinguishable on the wire from a fresh issuance (design.md)
-        # — this never reveals to the caller which one happened.
-        return {"status": "ok"}
-    # outcome == "ignored" (undeliverable)
-    return {"status": "ignored"}
+    if failure is not None:
+        raise failure
+    return {"status": "ok" if "ok" in statuses else "ignored"}
