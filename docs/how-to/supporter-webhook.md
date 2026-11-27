@@ -419,7 +419,7 @@ The revocation list is the `bazibo_revoked` table (`code_id`, `reason` =
 | `NETNL_BAZIBO_DEVICE_SALT` | unset | Secret, ≥ 32 characters. Required once on. |
 | `NETNL_BAZIBO_PUBLIC_KEY` | unset | Startup refuses a key that does not match. |
 | `NETNL_BAZIBO_MIN_AMOUNT` | `0` | Minimum payment for the Extra (independent of the netnl minimum). |
-| `NETNL_BAZIBO_FROM_DONATIONS` | `0` | `1`: a plain donation also mints a code. Enables the subsystem on its own (no Extra needed). |
+| `NETNL_BAZIBO_FROM_DONATIONS` | `0` | `1`: a plain donation also mints a code. Enables the subsystem on its own (no Extra needed). Refused together with `NETNL_BAZIBO_SOURCE=poll`. |
 | `NETNL_BAZIBO_DONATION_MIN` | `1` | Minimum donation for a code, in the account's currency (independent of the netnl minimum). |
 | `NETNL_BAZIBO_DEVICE_LIMIT` | `10` | Devices per code. |
 | `NETNL_BAZIBO_AUTO_REVOKE_AT` | `100` | Distinct devices that revoke a code. |

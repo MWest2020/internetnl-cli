@@ -570,8 +570,24 @@ async def handle_webhook(request: Request, settings: Settings) -> dict:
         if bazibo_decision is None:
             return {"status": "ignored"}
 
+    # The netnl credential first, exactly as before this change; the Bazibo
+    # code second, so nothing on the Bazibo side can delay or block a key.
     failure: NetnlHTTPError | None = None
     statuses: list[str] = []
+    if decision not in bmc.IGNORE_DECISIONS:
+        now = request.app.state.now()
+        sender = request.app.state.sender
+        try:
+            outcome = await run_in_threadpool(_process, settings, delivery, decision, now, sender)
+        except NetnlHTTPError as exc:
+            failure = exc
+        else:
+            _logger.info("event=%s txn_id=%s", outcome, _sanitize(delivery.transaction_id))
+            # "duplicate" is indistinguishable on the wire from a fresh
+            # issuance (design.md) — this never reveals which one happened.
+            # "ignored" means undeliverable.
+            statuses.append("ok" if outcome in ("issued", "duplicate") else "ignored")
+
     if bazibo_decision is not None:
         try:
             result = await bazibo_issuance.handle_donation(
@@ -579,21 +595,16 @@ async def handle_webhook(request: Request, settings: Settings) -> dict:
             )
             statuses.append(result["status"])
         except NetnlHTTPError as exc:
-            failure = exc
-
-    if decision not in bmc.IGNORE_DECISIONS:
-        now = request.app.state.now()
-        sender = request.app.state.sender
-        try:
-            outcome = await run_in_threadpool(_process, settings, delivery, decision, now, sender)
-        except NetnlHTTPError as exc:
             failure = failure or exc
-        else:
-            _logger.info("event=%s txn_id=%s", outcome, _sanitize(delivery.transaction_id))
-            # "duplicate" is indistinguishable on the wire from a fresh
-            # issuance (design.md) — this never reveals which one happened.
-            # "ignored" means undeliverable.
-            statuses.append("ok" if outcome in ("issued", "duplicate") else "ignored")
+        except Exception as exc:  # noqa: BLE001 - never let the code path take the key path down
+            # Only the exception's type: its text could carry SMTP or
+            # database detail. 503 so BMC retries; the netnl row is
+            # already delivered and sends nothing again.
+            _logger.warning(
+                "event=bazibo-error source=donation txn_id=%s error=%s",
+                _sanitize(delivery.transaction_id), type(exc).__name__,
+            )
+            failure = failure or _delivery_failed("could not issue the Bazibo code")
 
     if failure is not None:
         raise failure

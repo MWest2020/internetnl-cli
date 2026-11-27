@@ -245,7 +245,7 @@ _BAZIBO_BODY_TEMPLATE = """\
 
 Hoi!
 
-Dank je wel voor het kopen van de volledige versie van Bazibo (web).
+{thanks_nl}
 
 Open deze link op het apparaat waarop gespeeld wordt:
 
@@ -268,7 +268,7 @@ Mark, Bazibo
 
 Hi!
 
-Thank you for buying the full version of Bazibo (web).
+{thanks_en}
 
 Open this link on the device your child plays on:
 
@@ -290,20 +290,18 @@ Mark, Bazibo
 
 # Mail-client HTML: no external resource of any kind (the QR code is an
 # inline `cid:` part), no script/form, inline CSS only, single column.
-# The thank-you sentences a donation's mail swaps in (Mark, 27 Nov 2026).
-_BAZIBO_THANKS_NL = "Dank je wel voor het kopen van de volledige versie van Bazibo (web)."
-_BAZIBO_THANKS_EN = "Thank you for buying the full version of Bazibo (web)."
-_BAZIBO_DONATION_NL = (
-    "Bedankt voor je donatie! Hier is je code voor de volledige versie van Bazibo in de browser."
-)
-_BAZIBO_DONATION_EN = (
-    "Thank you for your donation! Here is your code for the full version of Bazibo in the browser."
-)
-_BAZIBO_HTML_THANKS_NL = (
-    "Je hebt de volledige versie van Bazibo (web) gekocht. Open deze link op het apparaat "
-    "waarop gespeeld wordt:"
-)
-_BAZIBO_HTML_THANKS_EN = "You bought the full version of Bazibo (web). Open"
+# The opening sentence: a purchase of the Extra, or a plain donation (Mark,
+# 27 Nov 2026). Filled into both templates.
+_BAZIBO_THANKS = {
+    False: (
+        "Dank je wel voor het kopen van de volledige versie van Bazibo (web).",
+        "Thank you for buying the full version of Bazibo (web).",
+    ),
+    True: (
+        "Bedankt voor je donatie! Hier is je code voor de volledige versie van Bazibo in de browser.",
+        "Thank you for your donation! Here is your code for the full version of Bazibo in the browser.",
+    ),
+}
 
 _BAZIBO_HTML_TEMPLATE = """\
 <!DOCTYPE html>
@@ -321,7 +319,7 @@ _BAZIBO_HTML_TEMPLATE = """\
         <tr>
           <td style="padding:28px;">
             <h1 style="margin:0 0 12px 0; font-size:20px;">Dank je wel!</h1>
-            <p style="margin:0 0 16px 0; font-size:15px; line-height:1.5;">Je hebt de volledige versie van Bazibo (web) gekocht. Open deze link op het apparaat waarop gespeeld wordt:</p>
+            <p style="margin:0 0 16px 0; font-size:15px; line-height:1.5;">{thanks_nl} Open deze link op het apparaat waarop gespeeld wordt:</p>
             <p style="margin:0 0 16px 0;"><a href="{link}" style="display:inline-block; padding:12px 18px; background-color:#2f7d4f; color:#ffffff; text-decoration:none; border-radius:8px; font-size:15px;">Bazibo openen</a></p>
             <p style="margin:0 0 16px 0; font-size:13px; line-height:1.5;">Werkt die niet? <a href="{link_pages}" style="color:#2f7d4f;">Gebruik deze link</a>. Of scan de QR-code, of vul de code zelf in:</p>
             <p style="margin:0 0 16px 0; text-align:center;"><img src="cid:{qr_cid}" width="200" height="200" alt="QR-code met je Bazibo-link" style="display:inline-block; width:200px; height:200px;"></p>
@@ -329,7 +327,7 @@ _BAZIBO_HTML_TEMPLATE = """\
             <p style="margin:0 0 24px 0; font-size:13px; line-height:1.5; color:#555555;">De code werkt in alle browsers van je gezin (tot {device_limit} apparaten), wordt op het apparaat zelf bewaard en je kunt hem altijd opnieuw invoeren vanuit deze mail.</p>
             <hr style="border:none; border-top:1px solid #eadfcf; margin:0 0 24px 0;">
             <h1 lang="en" style="margin:0 0 12px 0; font-size:20px;">Thank you!</h1>
-            <p lang="en" style="margin:0 0 16px 0; font-size:15px; line-height:1.5;">You bought the full version of Bazibo (web). Open <a href="{link}" style="color:#2f7d4f;">this link</a> on the device your child plays on (or <a href="{link_pages}" style="color:#2f7d4f;">this one</a> if the first does not work), scan the QR code above, or enter the code above in Bazibo yourself.</p>
+            <p lang="en" style="margin:0 0 16px 0; font-size:15px; line-height:1.5;">{thanks_en} Open <a href="{link}" style="color:#2f7d4f;">this link</a> on the device your child plays on (or <a href="{link_pages}" style="color:#2f7d4f;">this one</a> if the first does not work), scan the QR code above, or enter the code above in Bazibo yourself.</p>
             <p lang="en" style="margin:0 0 16px 0; font-size:13px; line-height:1.5; color:#555555;">The code works in every browser of your family (up to {device_limit} devices), is kept on the device itself, and you can always enter it again from this mail.</p>
             <p style="margin:0; font-size:14px;">Veel speelplezier! / Have fun playing!<br>Mark, Bazibo</p>
           </td>
@@ -366,32 +364,29 @@ def build_bazibo_mail(
     `donation`: the code came from a plain BMC donation, not an Extra
     purchase; the thank-you line says so (Dutch and English).
     """
+    thanks_nl, thanks_en = _BAZIBO_THANKS[bool(donation)]
     body = _BAZIBO_BODY_TEMPLATE.format(
-        link=link, link_pages=link_pages, code=code, device_limit=device_limit
+        link=link, link_pages=link_pages, code=code, device_limit=device_limit,
+        thanks_nl=thanks_nl, thanks_en=thanks_en,
     )
-    if donation:
-        body = body.replace(_BAZIBO_THANKS_NL, _BAZIBO_DONATION_NL).replace(
-            _BAZIBO_THANKS_EN, _BAZIBO_DONATION_EN
-        )
     html_body = _BAZIBO_HTML_TEMPLATE.format(
         link=_html.escape(link, quote=True),
         link_pages=_html.escape(link_pages, quote=True),
         code=_html.escape(code, quote=True),
         device_limit=int(device_limit),
         qr_cid=_html.escape(_BAZIBO_QR_CID, quote=True),
+        thanks_nl=_html.escape(thanks_nl, quote=True),
+        thanks_en=_html.escape(thanks_en, quote=True),
     )
-    if donation:
-        html_body = html_body.replace(_BAZIBO_HTML_THANKS_NL, _BAZIBO_DONATION_NL + " Open deze link op het apparaat waarop gespeeld wordt:").replace(
-            _BAZIBO_HTML_THANKS_EN, _BAZIBO_DONATION_EN + " Open"
-        )
     image = InlineImage(cid=_BAZIBO_QR_CID, data=qr_png(link))
     return Mail(to=to, subject=_BAZIBO_SUBJECT, body=body, html=html_body, inline_images=(image,))
 
 
-def build_bazibo_notify_mail(*, to: str, code_id: str, txn_id: str) -> Mail:
-    """Operator notification (`NETNL_SUPPORTER_NOTIFY`): the code id and
-    transaction id only — never the code, never the buyer's address."""
-    body = f"bazibo code issued: code id {code_id}, txn {txn_id}\n"
+def build_bazibo_notify_mail(*, to: str, code_id: str, txn_id: str, source: str = "extra") -> Mail:
+    """Operator notification (`NETNL_SUPPORTER_NOTIFY`): the code id,
+    transaction id and where it came from (`extra` or `donation`) only —
+    never the code, never the buyer's address."""
+    body = f"bazibo code issued ({source}): code id {code_id}, txn {txn_id}\n"
     return Mail(to=to, subject="netnl: bazibo code issued", body=body)
 
 

@@ -170,13 +170,13 @@ def test_replay_sends_nothing_new(don_client, don_conn, recording_sender):
 def test_bazibo_mail_failure_retries_only_the_bazibo_mail(
     don_client, don_conn, recording_sender, clock
 ):
-    recording_sender.fail_on_calls = {0}  # the Bazibo mail goes first
+    recording_sender.fail_on_calls = {1}  # the netnl mail goes first, the Bazibo mail second
     resp = post_webhook(don_client, donation(amount=2.0))
     assert resp.status_code == 503
     assert store.find_bazibo_issuance(don_conn, "pi_don_1")["state"] == "failed"
     # The netnl credential was still issued and mailed in the same delivery.
     assert len(_netnl_mails(recording_sender)) == 1
-    first_code = _code_from_mail(recording_sender.sent[0])
+    first_code = _code_from_mail(recording_sender.sent[1])
 
     clock.advance(600)
     resp = post_webhook(don_client, donation(amount=2.0))  # BMC's retry
@@ -191,9 +191,10 @@ def test_bazibo_mail_failure_retries_only_the_bazibo_mail(
 def test_netnl_mail_failure_retries_only_the_netnl_mail(
     don_client, don_conn, recording_sender, clock
 ):
-    recording_sender.fail_on_calls = {1}  # the netnl mail goes second
+    recording_sender.fail_on_calls = {0}  # the netnl mail goes first
     resp = post_webhook(don_client, donation(amount=2.0))
     assert resp.status_code == 503
+    # The Bazibo code still went out in the same delivery.
     assert store.find_bazibo_issuance(don_conn, "pi_don_1")["state"] == "delivered"
 
     clock.advance(600)
@@ -289,7 +290,7 @@ def test_the_donation_mail_thanks_for_the_donation(don_client, recording_sender)
     line = "Bedankt voor je donatie! Hier is je code voor de volledige versie van Bazibo in de browser."
     assert line in m.body and line in m.html
     assert "Thank you for your donation!" in m.body and "Thank you for your donation!" in m.html
-    assert "voor het kopen" not in m.body and "gekocht" not in m.html
+    assert "voor het kopen" not in m.body and "voor het kopen" not in m.html
     assert "Thank you for buying" not in m.body and "You bought" not in m.html
 
 
@@ -297,7 +298,8 @@ def test_the_extra_mail_keeps_its_purchase_wording():
     m = mail.build_bazibo_mail(to=BUYER, code="BZB1.x", link="https://l/#unlock=x",
                                link_pages="https://p/#unlock=x", device_limit=10)
     assert "Dank je wel voor het kopen" in m.body and "donatie" not in m.body
-    assert "gekocht" in m.html and "donatie" not in m.html
+    assert "Dank je wel voor het kopen" in m.html and "donatie" not in m.html
+    assert "Thank you for buying" in m.body and "Thank you for buying" in m.html
 
 
 def test_logs_carry_no_email_or_code(don_client, recording_sender, caplog):
@@ -320,3 +322,72 @@ def test_activation_is_on_with_donations_only(don_env, fake_opener, clock, recor
 
 # Silence "imported but unused" for the reused constants.
 _ = (DEVICE_SALT, EXTRA_ID, TEST_SEED_B64)
+
+
+def test_an_unexpected_bazibo_error_never_blocks_the_netnl_key(
+    don_client, don_conn, recording_sender, monkeypatch, caplog, clock
+):
+    real_mint = bazibo.mint
+    monkeypatch.setattr(bazibo, "mint", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    caplog.set_level(logging.INFO)
+    resp = post_webhook(don_client, donation(amount=2.0))
+    assert resp.status_code == 503
+    assert len(_netnl_mails(recording_sender)) == 1 and _bazibo_mails(recording_sender) == []
+    assert store.find_issuance(don_conn, "pi_don_1")["state"] == "delivered"
+    assert "event=bazibo-error source=donation" in caplog.text and "boom" not in caplog.text
+
+    monkeypatch.setattr(bazibo, "mint", real_mint)
+    clock.advance(3600)  # past the pending lease the crashed attempt left behind
+    resp = post_webhook(don_client, donation(amount=2.0))
+    assert resp.status_code == 200
+    assert len(_netnl_mails(recording_sender)) == 1 and len(_bazibo_mails(recording_sender)) == 1
+
+
+def test_bazibo_hourly_cap_with_the_netnl_key_delivered(don_env, fake_opener, clock, recording_sender):
+    env = dict(don_env, NETNL_SUPPORTER_MAX_PER_HOUR="1")
+    app = create_app(load(env), opener=fake_opener, now=clock, sender=recording_sender)
+    client = TestClient(app, raise_server_exceptions=False)
+    assert post_webhook(client, donation(txn="t1", amount=1.0)).status_code == 200
+    resp = post_webhook(client, donation(txn="t2", amount=2.0))
+    assert resp.status_code == 503  # the code waits for the next hour
+    assert len(_netnl_mails(recording_sender)) == 1 and len(_bazibo_mails(recording_sender)) == 1
+    clock.advance(3700)
+    assert post_webhook(client, donation(txn="t2", amount=2.0)).status_code == 200
+    assert len(_netnl_mails(recording_sender)) == 1 and len(_bazibo_mails(recording_sender)) == 2
+
+
+def test_both_mails_failing_then_both_retried(don_client, don_conn, recording_sender, clock):
+    recording_sender.fail_on_calls = {0, 1}
+    assert post_webhook(don_client, donation(amount=2.0)).status_code == 503
+    clock.advance(600)
+    assert post_webhook(don_client, donation(amount=2.0)).status_code == 200
+    assert store.find_issuance(don_conn, "pi_don_1")["state"] == "delivered"
+    assert store.find_bazibo_issuance(don_conn, "pi_don_1")["state"] == "delivered"
+
+
+def test_a_parked_bazibo_row_with_the_netnl_key_is_ok(don_client, don_conn, recording_sender, clock):
+    store.insert_bazibo_issuance(
+        don_conn, txn_id="pi_don_1", code_id="00" * 10, state=store.SUPPORTER_FAILED,
+        attempts=99, created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+    )
+    don_conn.commit()
+    resp = post_webhook(don_client, donation(amount=2.0))
+    assert resp.status_code == 200 and resp.json() == {"status": "ok"}
+    assert len(_netnl_mails(recording_sender)) == 1 and _bazibo_mails(recording_sender) == []
+
+
+def test_poll_and_donations_together_refused(don_env):
+    env = dict(don_env, NETNL_BAZIBO_SOURCE="poll", NETNL_BMC_API_TOKEN="tok",
+               NETNL_BMC_POLL_NOT_BEFORE="2026-12-01T00:00:00")
+    with pytest.raises(SettingsError) as exc:
+        load(env)
+    assert "NETNL_BAZIBO_FROM_DONATIONS" in str(exc.value)
+
+
+def test_notify_mail_names_the_donation(don_env, fake_opener, clock, recording_sender):
+    env = dict(don_env, NETNL_SUPPORTER_NOTIFY="ops@example.org")
+    client = TestClient(create_app(load(env), opener=fake_opener, now=clock, sender=recording_sender),
+                        raise_server_exceptions=False)
+    post_webhook(client, donation(amount=1.0))
+    notes = [m for m in recording_sender.sent if m.to == "ops@example.org"]
+    assert len(notes) == 1 and "(donation)" in notes[0].body and DONOR not in notes[0].body

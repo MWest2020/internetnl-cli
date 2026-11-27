@@ -282,13 +282,20 @@ device salt like an Extra does.
 Idempotency per product: the Bazibo code keeps its `bazibo_issuance` row
 and the netnl credential its `supporter_issuance` row, both keyed on BMC's
 transaction id. One donation of 2 or more gives one mail of each, once; a
-replay finds both rows delivered. Both paths run before the reply; if
+replay finds both rows delivered. Both paths run before the reply, the
+netnl credential first (so nothing on the Bazibo side, not even an
+unexpected exception, can delay or block a key; such an exception is logged
+by type only and answered 503); if
 either raised a 503 (mail failure, hourly cap, lease) the reply is that
 503, and BMC's retry re-sends only the mail that failed, because the other
 row is already `delivered`. An Extra purchase reported both ways would find
 the same `bazibo_issuance` row and never get a second code. The Extra
 routing (D1, D8) stays: harmless, and useful if BMC ever sends Extra
 webhooks.
+
+`NETNL_BAZIBO_SOURCE=poll` together with the switch is refused at startup:
+the poller keys on the API's purchase id and could mail a second code for a
+purchase the donation path already served.
 
 The note or message of a donation still decides nothing; only the amount
 does. Anyone who donates 1 or more gets a code, which is the intent.

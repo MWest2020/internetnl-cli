@@ -663,6 +663,12 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
     if source not in ("webhook", "poll"):
         raise SettingsError(f"NETNL_BAZIBO_SOURCE must be 'webhook' or 'poll': got {source!r}")
     poll_not_before = None
+    if source == "poll" and from_donations:
+        # The poller keys on the API's purchase id, the donation path on the
+        # transaction id: together they could mail two codes for one purchase.
+        raise SettingsError(
+            "NETNL_BAZIBO_SOURCE=poll cannot be combined with NETNL_BAZIBO_FROM_DONATIONS=1"
+        )
     if source == "poll":
         if token is None:
             raise SettingsError(

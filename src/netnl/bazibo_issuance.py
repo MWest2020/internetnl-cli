@@ -216,6 +216,7 @@ def _process(
             try:
                 sender(mail.build_bazibo_notify_mail(
                     to=cfg.notify, code_id=code_id, txn_id=sanitized_txn,
+                    source="donation" if donation else "extra",
                 ))
             except Exception:
                 _logger.warning("event=bazibo-notify-failed txn_id=%s", sanitized_txn)
