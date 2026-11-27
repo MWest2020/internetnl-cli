@@ -202,28 +202,18 @@ payload:
 
 | BMC event | What happens |
 |---|---|
-| `donation.created` | A netnl credential at or above `NETNL_SUPPORTER_MIN_AMOUNT` (default 2), unchanged. With `NETNL_BAZIBO_FROM_DONATIONS=1` also one Bazibo code at or above `NETNL_BAZIBO_DONATION_MIN` (default 1): €1 gives a code only, €2 or more a code and a netnl key, two mails. |
+| `donation.created` | Unchanged: a netnl credential at or above `NETNL_SUPPORTER_MIN_AMOUNT` (default 2). Never a Bazibo code. |
 | `extra_purchase.created` whose `data.extras[]` holds the configured Extra | One Bazibo unlock code, mailed. Never a netnl credential. |
 | `donation.created` ("support created") with `support_type: "Extra"` or a non-empty `extras[]` | An Extra purchase delivered as support: same as the row above, never a netnl credential. Without the Bazibo Extra in `extras[]` (or while dormant): 200 `ignored`. |
 | `extra_purchase.created` for any other Extra | 200 `ignored`, nothing written. |
 | anything else (memberships, refunds, commissions, unknown types) | 200 `ignored`, nothing written, whatever the payload looks like. Logged by type only (`type=other` for a type BMC does not list). |
 
-A donation's note or message never decides anything: only its amount
-does. Since 27 Nov 2026 the Bazibo web unlock is sold as a plain donation
-(Mark: "1 is goed als de flow maar duidelijk is"), because a real Extra
-purchase on this account produced no webhook at all; see design.md D12.
-
-**Codes from donations** (`NETNL_BAZIBO_FROM_DONATIONS=1`). Each product
-has its own idempotency row, keyed on BMC's transaction id:
-`bazibo_issuance` for the code, `supporter_issuance` for the netnl key. A
-replay finds both delivered and sends nothing. If one of the two mails
-fails, the reply is 503 and BMC's retry re-sends only that one (the code
-is the same code again). An Extra purchase that BMC reported both ways
-would find the same `bazibo_issuance` row: never two codes. The mail opens
-with "Bedankt voor je donatie! Hier is je code voor de volledige versie
-van Bazibo in de browser." Log line: `event=bazibo-issued source=donation
-txn_id=… code_id=…`. To switch it off, set the variable to `0` (or remove
-it) and restart; donations then behave as before.
+A donation that says "for Bazibo" in its note is still a donation: it
+follows the donation rules and never mints a code. Only the structured
+fields `support_type` and `extras[]` decide. If that happens, issue a code
+by hand (below). Since 27 Nov 2026 the web unlock is sold through a Stripe
+Payment Link (next section), because BMC sent no webhook for real Extra
+purchases and its coffee price cannot be €1.
 
 Every signed `donation.created`/`extra_purchase.created` logs its shape,
 without personal data:
@@ -243,6 +233,48 @@ envelope `type`/`live_mode`/`attempt`/`data`; for Extras `data.transaction_id`,
 `data.extras[] = {id, title, amount, quantity, ...}`. A real
 `extra_purchase.created` from this account has not been seen yet; check the
 first one with the steps under "Switching it on".
+
+### Stripe Payment Link: `POST /webhooks/stripe`
+
+Mark, 27 Nov 2026: the Bazibo web unlock is a Stripe Payment Link at €1
+(design.md D12). The route exists while `NETNL_STRIPE_WEBHOOK_SECRET` and
+`NETNL_STRIPE_PAYMENT_LINK_ID` are both set (they live in the `netnl-bridge`
+Secret; one without the other refuses to start).
+
+1. The `Stripe-Signature` header is checked first (HMAC-SHA256 over
+   `"<t>." + body` with the endpoint secret, at most 300 s old). Anything
+   else: 401, nothing written.
+2. `checkout.session.completed` (or `checkout.session.async_payment_succeeded`)
+   with `payment_status: "paid"` and `payment_link` equal to
+   `NETNL_STRIPE_PAYMENT_LINK_ID`: one code, mailed to
+   `customer_details.email`, keyed on the Checkout Session id (`cs_…`) in
+   `bazibo_issuance`. A replay sends nothing; a mail failure answers 503 and
+   Stripe retries (for up to three days) with the same code.
+3. Any other event, another payment link, an unpaid session: 200 `ignored`.
+   A test-mode session (`livemode: false`) is ignored unless
+   `NETNL_STRIPE_ALLOW_TEST_MODE=1`: a code from a test payment is a real
+   code.
+
+Setting it up (Mark gives a restricted key: Products, Prices, Payment Links,
+Webhook Endpoints, all "Write"; test mode first):
+
+```sh
+STRIPE_API_KEY=rk_test_… uv run netnl-stripe-setup
+# mode: test
+# created: product, price, payment link, webhook endpoint
+# payment link: https://buy.stripe.com/test_…
+# NETNL_STRIPE_PAYMENT_LINK_ID=plink_…
+# NETNL_STRIPE_WEBHOOK_SECRET=whsec_…
+```
+
+It finds what exists by metadata `bazibo=web-unlock` and creates only what
+is missing. Stripe shows a webhook secret only when the endpoint is
+created; `--new-webhook-secret` recreates the endpoint for a new one. Put
+both values in `netnl-bridge` (plus `NETNL_STRIPE_ALLOW_TEST_MODE: "1"` in
+the ConfigMap while testing), restart, pay once with a test card
+(4242 4242 4242 4242) and look for `event=bazibo-issued source=stripe`.
+For live, run the same with the live key, replace both values, remove the
+test-mode switch. The payment link URL goes into Bazibo's `PAY_URL`.
 
 ### The code and the mail
 
@@ -443,10 +475,11 @@ The revocation list is the `bazibo_revoked` table (`code_id`, `reason` =
 | `NETNL_BAZIBO_DEVICE_SALT` | unset | Secret, ≥ 32 characters. Required once on. |
 | `NETNL_BAZIBO_PUBLIC_KEY` | unset | Startup refuses a key that does not match. |
 | `NETNL_BAZIBO_MIN_AMOUNT` | `0` | Minimum payment for the Extra (independent of the netnl minimum). |
-| `NETNL_BAZIBO_FROM_DONATIONS` | `0` | `1`: a plain donation also mints a code. Enables the subsystem on its own (no Extra needed). Refused together with `NETNL_BAZIBO_SOURCE=poll`. |
 | `NETNL_BAZIBO_ALERT_TO` | unset | `bazibo watch`: one alert per undelivered transaction to this address. Off while unset. |
 | `NETNL_BAZIBO_ALERT_AFTER_MINUTES` | `15` | How long a transaction may go without a delivered code before the alert. |
-| `NETNL_BAZIBO_DONATION_MIN` | `1` | Minimum donation for a code, in the account's currency (independent of the netnl minimum). |
+| `NETNL_STRIPE_WEBHOOK_SECRET` | unset | Secret. The Stripe endpoint's `whsec_…`; with the link id it switches `/webhooks/stripe` on. |
+| `NETNL_STRIPE_PAYMENT_LINK_ID` | unset | The Payment Link (`plink_…`) whose paid sessions mint a code. |
+| `NETNL_STRIPE_ALLOW_TEST_MODE` | `0` | `1`: test-mode sessions mint codes too (only while testing). |
 | `NETNL_BAZIBO_DEVICE_LIMIT` | `10` | Devices per code. |
 | `NETNL_BAZIBO_AUTO_REVOKE_AT` | `100` | Distinct devices that revoke a code. |
 | `NETNL_BAZIBO_ACTIVATE_PER_MINUTE` | `10` | Per-address activation requests per minute. |

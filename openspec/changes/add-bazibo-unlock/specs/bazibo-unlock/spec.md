@@ -85,40 +85,38 @@ transaction id, so both webhook events of one purchase mail once.
   mentions the Extra's title or id in its note or message
 - THEN it follows the donation rules and no code is minted
 
-### Requirement: A plain donation mints a code when switched on
+### Requirement: A paid Stripe Payment Link checkout mints a code
 
-With `NETNL_BAZIBO_FROM_DONATIONS=1` (default off), a validly-signed, live
-`donation.created` delivery that is not marked as an Extra, with an amount
-at or above `NETNL_BAZIBO_DONATION_MIN` (default `1`, in the account's
-currency) and the configured currency, SHALL mint and mail one Bazibo code,
-in addition to whatever the netnl credential path does with the same
-delivery. It SHALL use the same `bazibo_issuance` row (keyed on the
-transaction id) as an Extra purchase, so one transaction never yields two
-codes. Mark, 27 Nov 2026: BMC sends this account no webhook for an Extra
-purchase, only "support created".
+With `NETNL_STRIPE_WEBHOOK_SECRET` and `NETNL_STRIPE_PAYMENT_LINK_ID` set,
+`POST /webhooks/stripe` SHALL verify the `Stripe-Signature` header (HMAC-SHA256
+over `"<t>." + body`, 300 s tolerance, constant-time) before anything else,
+and SHALL mint and mail one code for a `checkout.session.completed` (or
+`checkout.session.async_payment_succeeded`) whose session has
+`payment_status: "paid"` and the configured `payment_link`, keyed on the
+Checkout Session id. Every other event SHALL be answered 200 and ignored.
+The buyer's address SHALL NOT be stored.
 
-#### Scenario: One euro gives a code only
+#### Scenario: A good signature mints one code
 
-- WHEN the switch is on and a live donation of 1 arrives
-- THEN a Bazibo code is mailed and no netnl credential is minted
+- WHEN a signed, paid session of the configured link arrives
+- THEN one code is mailed to `customer_details.email`, and a replay sends
+  nothing new
 
-#### Scenario: Two euro gives both
+#### Scenario: A bad or stale signature
 
-- WHEN the switch is on and a live donation of 2 arrives
-- THEN one Bazibo mail and one netnl credential mail are sent, each once,
-  also when BMC replays the delivery
+- WHEN the signature does not match, or its timestamp is more than 300 s
+  away
+- THEN the answer is 401 and nothing is written
 
-#### Scenario: Switched off
+#### Scenario: Another link, or unpaid
 
-- WHEN `NETNL_BAZIBO_FROM_DONATIONS` is unset or `0`
-- THEN donations behave exactly as before this requirement
+- WHEN the session belongs to another payment link, or is not paid
+- THEN the answer is 200 `ignored` and nothing is written
 
-#### Scenario: The donation mail says thank you for the donation
+#### Scenario: A mail failure
 
-- WHEN a code is mailed for a donation
-- THEN the mail opens with "Bedankt voor je donatie! Hier is je code voor
-  de volledige versie van Bazibo in de browser." (and the English line)
-  instead of the purchase wording
+- WHEN the code mail fails
+- THEN the answer is 503, and Stripe's retry mails the same code
 
 ### Requirement: An undelivered code raises one alert
 

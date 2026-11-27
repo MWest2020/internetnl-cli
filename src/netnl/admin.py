@@ -222,8 +222,8 @@ def _bazibo_poll(settings, now: datetime, stdout: IO[str], stderr: IO[str], *, o
     from netnl import bmc_poll, mail
 
     bz, cfg = settings.bazibo, settings.supporter
-    if bz is None or not bz.enabled:
-        print("poll off: Bazibo is not enabled (NETNL_BAZIBO_EXTRA_ID unset)", file=stdout)
+    if bz is None or not bz.enabled or (bz.extra_id is None and bz.extra_title is None):
+        print("poll off: Bazibo is not enabled for an Extra (NETNL_BAZIBO_EXTRA_ID unset)", file=stdout)
         return 0
     if not bz.bmc_api_token:
         print("poll off: NETNL_BMC_API_TOKEN is not set", file=stdout)

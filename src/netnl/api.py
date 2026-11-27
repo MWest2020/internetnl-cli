@@ -27,7 +27,7 @@ from starlette.requests import ClientDisconnect
 from internetnl_cli.client import Opener, urllib_opener
 from internetnl_cli.errors import ApiError, TransportError
 
-from netnl import auth, bazibo_activation, demo, limits, mail, store, supporter, upstream
+from netnl import auth, bazibo_activation, demo, limits, mail, store, stripe_webhook, supporter, upstream
 from netnl.errors import NetnlHTTPError
 from netnl.replies import API_VERSION, NOTICE, error_body
 from netnl.settings import Settings
@@ -535,5 +535,12 @@ def create_app(
         @app.post("/webhooks/bmc")
         async def webhook_bmc(request: Request) -> dict:
             return await supporter.handle_webhook(request, settings)
+
+    if settings.bazibo is not None and settings.bazibo.stripe_webhook_secret:
+        # Stripe Payment Link for Bazibo codes (openspec/changes/
+        # add-bazibo-unlock D12): only while NETNL_STRIPE_* is set.
+        @app.post("/webhooks/stripe")
+        async def webhook_stripe(request: Request) -> dict:
+            return await stripe_webhook.handle(request, settings)
 
     return app
