@@ -90,6 +90,25 @@ IGNORE_DECISIONS = frozenset(
 )
 
 _DONATION_CREATED = "donation.created"
+EXTRA_PURCHASE_CREATED = "extra_purchase.created"
+
+# Every event type BMC's published webhook spec lists (OpenAPI
+# `bmc-webhooks-openapi.json`, "Buy Me a Coffee — Webhook Events" 1.0.0,
+# fetched 2026-11-27). Used only to decide whether an ignored event's type
+# may be named in a log line: a type outside this list is logged as
+# "other", never echoed — the type string is untrusted input.
+KNOWN_EVENTS = frozenset(
+    {
+        "donation.created", "donation.refunded",
+        "extra_purchase.created", "extra_purchase.updated", "extra_purchase.refunded",
+        "commission_order.created", "commission_order.refunded",
+        "wishlist_payment.created", "wishlist_payment.refunded",
+        "membership.started", "membership.updated", "membership.cancelled",
+        "membership.paused",
+        "recurring_donation.started", "recurring_donation.updated",
+        "recurring_donation.cancelled",
+    }
+)
 
 
 # --- signature verification --------------------------------------------
@@ -173,6 +192,29 @@ def _require_str(value: Any, field: str, *, max_len: int = _MAX_FIELD_LEN) -> st
     if value is _MISSING or not isinstance(value, str) or not value or len(value) > max_len:
         raise MalformedDelivery(field)
     return value
+
+
+def event_type(payload: object) -> str | None:
+    """The delivery's event type (`type`, or `event`, top-level or under
+    `data`), or `None` when there is no usable one. Read *before* the
+    full parse so an event this bridge does not handle is acknowledged
+    with a 2xx whatever its payload shape (openspec/changes/
+    add-bazibo-unlock, "Routing") instead of failing a strict parse that
+    was written for donations.
+    """
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    value = _lookup(payload, data, "type", "event")
+    if not isinstance(value, str) or not value or len(value) > _MAX_FIELD_LEN:
+        return None
+    return value
+
+
+def loggable_event(event: str | None) -> str:
+    return event if event in KNOWN_EVENTS else "other"
 
 
 def parse_delivery(payload: dict) -> Delivery:
@@ -304,6 +346,103 @@ class QualifyConfig:
 def qualifies(delivery: Delivery, cfg: QualifyConfig) -> Decision:
     if delivery.event != _DONATION_CREATED:
         return Decision.IGNORE_EVENT
+    if not delivery.live_mode and not cfg.accept_test_mode:
+        return Decision.IGNORE_TEST_MODE
+    if delivery.amount < cfg.min_amount:
+        return Decision.IGNORE_AMOUNT
+    if cfg.currency is not None and delivery.currency.upper() != cfg.currency:
+        return Decision.IGNORE_CURRENCY
+    if not valid_recipient(delivery.email):
+        return Decision.UNDELIVERABLE_NO_EMAIL
+    return Decision.ISSUE
+
+
+# --- Bazibo Extra purchases (openspec/changes/add-bazibo-unlock) -----------
+
+# A cart is a handful of shop items; anything far beyond that is not a real
+# delivery and is refused as malformed rather than iterated.
+_MAX_EXTRAS = 50
+
+
+@dataclass(frozen=True)
+class ExtraItem:
+    id: str | None
+    title: str | None
+
+
+@dataclass(frozen=True)
+class ExtraPurchase:
+    """`extra_purchase.*` per BMC's published spec: the shared delivery
+    fields (same names as a donation: `transaction_id`, `amount`,
+    `currency`, `supporter_email`, envelope `live_mode`) plus `data.extras`,
+    one entry per shop item with an integer `id` and a `title`.
+    """
+
+    delivery: Delivery
+    extras: tuple[ExtraItem, ...]
+
+
+def _extra_id(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return str(value)
+    if isinstance(value, str) and value.isdigit() and len(value) <= 32:
+        return str(int(value))
+    return None
+
+
+def parse_extra_purchase(payload: dict) -> ExtraPurchase:
+    delivery = parse_delivery(payload)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        data = {}
+    raw = _lookup(payload, data, "extras")
+    if raw is _MISSING or not isinstance(raw, list) or len(raw) > _MAX_EXTRAS:
+        raise MalformedDelivery("extras")
+    items = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise MalformedDelivery("extras")
+        title = entry.get("title")
+        if not isinstance(title, str) or len(title) > _MAX_FIELD_LEN:
+            title = None
+        items.append(ExtraItem(id=_extra_id(entry.get("id")), title=title))
+    return ExtraPurchase(delivery=delivery, extras=tuple(items))
+
+
+def _norm_title(title: str) -> str:
+    return " ".join(title.split()).casefold()
+
+
+@dataclass(frozen=True)
+class BaziboMatch:
+    """`extra_id` wins when set; `extra_title` is matched (whitespace-
+    normalised, case-insensitive, exact) only when no id is configured."""
+
+    extra_id: str | None
+    extra_title: str | None
+
+    def matches(self, item: ExtraItem) -> bool:
+        if self.extra_id is not None:
+            return item.id is not None and item.id == str(int(self.extra_id))
+        if self.extra_title is not None:
+            return item.title is not None and _norm_title(item.title) == _norm_title(self.extra_title)
+        return False
+
+
+def is_bazibo_purchase(purchase: ExtraPurchase, match: BaziboMatch) -> bool:
+    return any(match.matches(item) for item in purchase.extras)
+
+
+def qualifies_bazibo(purchase: ExtraPurchase, cfg: QualifyConfig) -> Decision:
+    """Same gates as a donation (test mode, minimum, optional currency,
+    usable recipient), against the payment's total `amount` and the
+    Bazibo-specific minimum in `cfg.min_amount`. The caller has already
+    established the event is `extra_purchase.created` and that the cart
+    contains the configured Extra.
+    """
+    delivery = purchase.delivery
     if not delivery.live_mode and not cfg.accept_test_mode:
         return Decision.IGNORE_TEST_MODE
     if delivery.amount < cfg.min_amount:

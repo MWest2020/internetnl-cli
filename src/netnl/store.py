@@ -93,6 +93,48 @@ CREATE TABLE IF NOT EXISTS supporter_issuance (
 
 CREATE INDEX IF NOT EXISTS idx_supporter_issuance_created_at
     ON supporter_issuance (created_at);
+
+-- openspec/changes/add-bazibo-unlock: idempotency + delivery state for
+-- Bazibo unlock codes minted from a BMC Extra purchase. Its own table, not
+-- `supporter_issuance`: the two paths never share a row, so a transaction
+-- id can never move a netnl credential row into a Bazibo one or back.
+-- Holds no email and never the code itself — only the code id (the 10
+-- random payload bytes, hex); the code is re-derived from it plus the
+-- issued day (`created_at`) and the signing key when a retry re-sends it.
+CREATE TABLE IF NOT EXISTS bazibo_issuance (
+    id INTEGER PRIMARY KEY,
+    txn_id TEXT NOT NULL UNIQUE,
+    code_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bazibo_issuance_created_at
+    ON bazibo_issuance (created_at);
+
+-- Device count per code (`POST /bazibo/activate`). Only the code id, a
+-- keyed SHA-256 of the browser's random device id, and first/last-seen
+-- *dates* (no time of day). No IP, no user agent, no email. A device's
+-- rank (accepted = among the first NETNL_BAZIBO_DEVICE_LIMIT rows for the
+-- code, by `id`) is derived from insertion order, not stored.
+CREATE TABLE IF NOT EXISTS bazibo_device (
+    id INTEGER PRIMARY KEY,
+    code_id TEXT NOT NULL,
+    device_hash TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    UNIQUE (code_id, device_hash)
+);
+
+-- Revoked code ids: automatic (NETNL_BAZIBO_AUTO_REVOKE_AT distinct
+-- devices) or by hand (`netnl-admin bazibo revoke`).
+CREATE TABLE IF NOT EXISTS bazibo_revoked (
+    code_id TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    revoked_at TEXT NOT NULL
+);
 """
 
 # Valid values for `supporter_issuance.state` (openspec/changes/
@@ -548,5 +590,125 @@ def count_issuances_since(conn: sqlite3.Connection, cutoff_iso: str) -> int:
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM supporter_issuance WHERE created_at >= ?",
         (cutoff_iso,),
+    ).fetchone()
+    return int(row["n"])
+
+
+# --- Bazibo unlock codes (openspec/changes/add-bazibo-unlock) ---------------
+# `bazibo_issuance.state` reuses the SUPPORTER_* state names above.
+
+
+def find_bazibo_issuance(conn: sqlite3.Connection, txn_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM bazibo_issuance WHERE txn_id = ?", (txn_id,)
+    ).fetchone()
+
+
+def insert_bazibo_issuance(
+    conn: sqlite3.Connection,
+    *,
+    txn_id: str,
+    code_id: str,
+    state: str,
+    attempts: int,
+    created_at: str,
+    updated_at: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO bazibo_issuance "
+        "(txn_id, code_id, state, attempts, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (txn_id, code_id, state, attempts, created_at, updated_at),
+    )
+
+
+def update_bazibo_issuance(
+    conn: sqlite3.Connection,
+    txn_id: str,
+    *,
+    state: str,
+    attempts: int,
+    updated_at: str,
+    expected_attempts: int | None = None,
+) -> bool:
+    """`code_id` and `created_at` are never changed: a retry re-sends the
+    same code. `expected_attempts` makes an outcome write conditional on no
+    takeover having happened since this attempt started (compare-and-swap,
+    the same idea as `update_issuance`'s `expected_username`).
+    """
+    if expected_attempts is not None:
+        cur = conn.execute(
+            "UPDATE bazibo_issuance SET state = ?, attempts = ?, updated_at = ? "
+            "WHERE txn_id = ? AND attempts = ?",
+            (state, attempts, updated_at, txn_id, expected_attempts),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE bazibo_issuance SET state = ?, attempts = ?, updated_at = ? "
+            "WHERE txn_id = ?",
+            (state, attempts, updated_at, txn_id),
+        )
+    return cur.rowcount > 0
+
+
+def count_bazibo_issuances_since(conn: sqlite3.Connection, cutoff_iso: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM bazibo_issuance WHERE created_at >= ?",
+        (cutoff_iso,),
+    ).fetchone()
+    return int(row["n"])
+
+
+def bazibo_revocation(conn: sqlite3.Connection, code_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM bazibo_revoked WHERE code_id = ?", (code_id,)
+    ).fetchone()
+
+
+def revoke_bazibo_code(conn: sqlite3.Connection, code_id: str, *, reason: str, at: str) -> bool:
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO bazibo_revoked (code_id, reason, revoked_at) VALUES (?, ?, ?)",
+        (code_id, reason, at),
+    )
+    return cur.rowcount > 0
+
+
+def unrevoke_bazibo_code(conn: sqlite3.Connection, code_id: str) -> bool:
+    cur = conn.execute("DELETE FROM bazibo_revoked WHERE code_id = ?", (code_id,))
+    return cur.rowcount > 0
+
+
+def find_bazibo_device(conn: sqlite3.Connection, code_id: str, device_hash: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT id, first_seen, last_seen FROM bazibo_device WHERE code_id = ? AND device_hash = ?",
+        (code_id, device_hash),
+    ).fetchone()
+
+
+def insert_bazibo_device(conn: sqlite3.Connection, code_id: str, device_hash: str, day: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO bazibo_device (code_id, device_hash, first_seen, last_seen) VALUES (?, ?, ?, ?)",
+        (code_id, device_hash, day, day),
+    )
+    return int(cur.lastrowid)
+
+
+def touch_bazibo_device(conn: sqlite3.Connection, row_id: int, day: str) -> None:
+    conn.execute("UPDATE bazibo_device SET last_seen = ? WHERE id = ?", (day, row_id))
+
+
+def count_bazibo_devices(conn: sqlite3.Connection, code_id: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM bazibo_device WHERE code_id = ?", (code_id,)
+    ).fetchone()
+    return int(row["n"])
+
+
+def bazibo_device_rank(conn: sqlite3.Connection, code_id: str, row_id: int) -> int:
+    """1-based position of this device among the code's devices, by
+    insertion order. Accepted iff rank <= NETNL_BAZIBO_DEVICE_LIMIT."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM bazibo_device WHERE code_id = ? AND id <= ?",
+        (code_id, row_id),
     ).fetchone()
     return int(row["n"])

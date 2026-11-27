@@ -6,10 +6,12 @@ missing required variables refuse to start, naming the variable.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Mapping
 
@@ -177,6 +179,7 @@ class Settings:
     security_contact: str | None
     demo: DemoSettings | None
     supporter: SupporterSettings | None
+    bazibo: "BaziboSettings | None" = None
 
 
 def _resolve_numeric(env: Mapping[str, str], var: str, default: int) -> int:
@@ -258,7 +261,8 @@ def load(env: Mapping[str, str] | None = None) -> Settings:
         allow_http=allow_http,
         security_contact=_resolve_security_contact(env),
         demo=_load_demo(env, allow_http=allow_http),
-        supporter=_load_supporter(env),
+        supporter=(supporter := _load_supporter(env)),
+        bazibo=_load_bazibo(env, supporter=supporter),
         **kwargs,
     )
 
@@ -458,4 +462,170 @@ def _load_supporter(env: Mapping[str, str]) -> SupporterSettings | None:
         smtp_mode=smtp_mode,
         notify=notify,
         **supporter_kwargs,
+    )
+
+
+# --- Bazibo unlock codes (openspec/changes/add-bazibo-unlock) ---------------
+
+_BAZIBO_DEFAULT_ORIGINS = ("https://bazibo.nl", "https://mwest2020.github.io")
+
+# var -> (attribute, default)
+_BAZIBO_NUMERIC_DEFAULTS = {
+    "NETNL_BAZIBO_DEVICE_LIMIT": ("device_limit", 10),
+    "NETNL_BAZIBO_AUTO_REVOKE_AT": ("auto_revoke_at", 100),
+    "NETNL_BAZIBO_ACTIVATE_PER_MINUTE": ("activate_per_minute", 10),
+}
+
+# A salt shorter than this is an obviously-wrong value (a placeholder, a
+# typo), not a strength target — the same floor `NETNL_BMC_WEBHOOK_SECRET`
+# uses, for the same reason.
+_MIN_DEVICE_SALT_LEN = 32
+
+
+@dataclass(frozen=True)
+class BaziboSettings:
+    """Bazibo web unlock codes: issuance from a BMC Extra purchase and the
+    device-count activation check (openspec/changes/add-bazibo-unlock).
+
+    `None` on `Settings.bazibo` means `NETNL_BAZIBO_SIGNING_KEY` is unset:
+    neither `POST /bazibo/activate` nor the Extra routing exists. With the
+    key set but no Extra configured the subsystem is *dormant*: the
+    activation route answers 503 `{"error": "off"}` and an Extra purchase
+    is ignored like any other unknown event. `enabled` is the one switch.
+    """
+
+    # The raw 32-byte Ed25519 seed. `repr=False`: a settings object that
+    # ends up in a traceback or a debug print must never carry it.
+    signing_seed: bytes = field(repr=False)
+    public_key: bytes
+    enabled: bool
+    extra_id: str | None
+    extra_title: str | None
+    min_amount: Decimal
+    device_salt: bytes | None = field(repr=False)
+    device_limit: int
+    auto_revoke_at: int
+    activate_per_minute: int
+    allowed_origins: tuple[str, ...]
+    client_ip_header: str
+
+
+def _decode_seed(raw: str) -> bytes:
+    """`NETNL_BAZIBO_SIGNING_KEY`: base64 (standard or url-safe, padding
+    optional) of exactly 32 raw bytes. The error never echoes the value.
+    """
+    value = raw.strip()
+    padded = value + "=" * (-len(value) % 4)
+    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+        try:
+            seed = decoder(padded)
+        except (binascii.Error, ValueError):
+            continue
+        if len(seed) == 32:
+            return seed
+    raise SettingsError(
+        "NETNL_BAZIBO_SIGNING_KEY must be the base64 encoding of a raw 32-byte "
+        "Ed25519 seed (value not shown)"
+    )
+
+
+def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None) -> BaziboSettings | None:
+    """Fail-fast on every half-configured state:
+
+    - an Extra configured (`NETNL_BAZIBO_EXTRA_ID`/`_TITLE`) without the
+      signing key, without the BMC bridge itself (`NETNL_BMC_WEBHOOK_SECRET`
+      and its mail settings), or without `NETNL_BAZIBO_DEVICE_SALT`;
+    - a signing key that is not a 32-byte seed, or that does not match
+      `NETNL_BAZIBO_PUBLIC_KEY` when that cross-check is set.
+
+    A key on its own (no Extra) is the documented dormant state, not an
+    error: it lets the key be deployed before the Extra exists.
+    """
+    from netnl import bazibo  # local: keeps `cryptography` off the CLI import path
+
+    raw_key = env.get("NETNL_BAZIBO_SIGNING_KEY") or None
+    extra_id = (env.get("NETNL_BAZIBO_EXTRA_ID") or "").strip() or None
+    extra_title = (env.get("NETNL_BAZIBO_EXTRA_TITLE") or "").strip() or None
+    wants_extra = extra_id is not None or extra_title is not None
+
+    if raw_key is None:
+        if wants_extra:
+            raise SettingsError(
+                "NETNL_BAZIBO_EXTRA_ID/NETNL_BAZIBO_EXTRA_TITLE is set but "
+                "NETNL_BAZIBO_SIGNING_KEY is missing"
+            )
+        return None
+
+    seed = _decode_seed(raw_key)
+    public_key = bazibo.public_key_from_seed(seed)
+
+    expected_pub = (env.get("NETNL_BAZIBO_PUBLIC_KEY") or "").strip()
+    if expected_pub:
+        if bazibo.b64url_encode(public_key) != expected_pub.rstrip("="):
+            raise SettingsError(
+                "NETNL_BAZIBO_SIGNING_KEY does not match NETNL_BAZIBO_PUBLIC_KEY "
+                "(wrong key in the secret?)"
+            )
+
+    if extra_id is not None and not extra_id.isdigit():
+        raise SettingsError(f"NETNL_BAZIBO_EXTRA_ID must be a numeric BMC extra id: got {extra_id!r}")
+    if extra_title is not None:
+        _reject_crlf("NETNL_BAZIBO_EXTRA_TITLE", extra_title)
+
+    raw_salt = env.get("NETNL_BAZIBO_DEVICE_SALT") or None
+    device_salt = raw_salt.encode("utf-8") if raw_salt else None
+    if device_salt is not None and len(raw_salt) < _MIN_DEVICE_SALT_LEN:
+        raise SettingsError(
+            f"NETNL_BAZIBO_DEVICE_SALT must be at least {_MIN_DEVICE_SALT_LEN} characters "
+            f"(got {len(raw_salt)}); generate one with: openssl rand -hex 32"
+        )
+
+    if wants_extra:
+        if supporter is None:
+            raise SettingsError(
+                "NETNL_BAZIBO_EXTRA_ID/NETNL_BAZIBO_EXTRA_TITLE requires the BMC bridge: "
+                "missing required environment variable: NETNL_BMC_WEBHOOK_SECRET"
+            )
+        if device_salt is None:
+            raise SettingsError(
+                "missing required environment variable: NETNL_BAZIBO_DEVICE_SALT"
+            )
+
+    numeric: dict = {}
+    for var, (attr, default) in _BAZIBO_NUMERIC_DEFAULTS.items():
+        numeric[attr] = _resolve_numeric(env, var, default)
+    if numeric["device_limit"] < 1:
+        raise SettingsError("NETNL_BAZIBO_DEVICE_LIMIT must be at least 1")
+    if numeric["auto_revoke_at"] <= numeric["device_limit"]:
+        raise SettingsError(
+            "NETNL_BAZIBO_AUTO_REVOKE_AT must be greater than NETNL_BAZIBO_DEVICE_LIMIT"
+        )
+    if numeric["activate_per_minute"] < 1:
+        raise SettingsError("NETNL_BAZIBO_ACTIVATE_PER_MINUTE must be at least 1")
+
+    raw_origins = env.get("NETNL_BAZIBO_ALLOWED_ORIGINS")
+    if raw_origins is None:
+        origins = _BAZIBO_DEFAULT_ORIGINS
+    else:
+        origins = tuple(o.strip() for o in raw_origins.split(",") if o.strip())
+        if not origins:
+            raise SettingsError("NETNL_BAZIBO_ALLOWED_ORIGINS must name at least one origin")
+        for origin in origins:
+            if not _ORIGIN_RE.fullmatch(origin):
+                raise SettingsError(
+                    "NETNL_BAZIBO_ALLOWED_ORIGINS entries must be bare https://host[:port] "
+                    f"origins: got {origin!r}"
+                )
+
+    return BaziboSettings(
+        signing_seed=seed,
+        public_key=public_key,
+        enabled=wants_extra,
+        extra_id=extra_id,
+        extra_title=extra_title,
+        min_amount=_resolve_decimal(env, "NETNL_BAZIBO_MIN_AMOUNT", Decimal("0")),
+        device_salt=device_salt,
+        allowed_origins=origins,
+        client_ip_header=env.get("NETNL_BAZIBO_CLIENT_IP_HEADER", "CF-Connecting-IP"),
+        **numeric,
     )

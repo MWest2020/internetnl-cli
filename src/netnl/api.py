@@ -27,7 +27,7 @@ from starlette.requests import ClientDisconnect
 from internetnl_cli.client import Opener, urllib_opener
 from internetnl_cli.errors import ApiError, TransportError
 
-from netnl import auth, demo, limits, mail, store, supporter, upstream
+from netnl import auth, bazibo_activation, demo, limits, mail, store, supporter, upstream
 from netnl.errors import NetnlHTTPError
 from netnl.replies import API_VERSION, NOTICE, error_body
 from netnl.settings import Settings
@@ -243,6 +243,9 @@ def create_app(
         response = await call_next(request)
         for name, value in demo.demo_response_headers(request, settings).items():
             response.headers[name] = value
+        # openspec/changes/add-bazibo-unlock: same idea for `/bazibo/*`.
+        for name, value in bazibo_activation.response_headers(request, settings).items():
+            response.headers[name] = value
         return response
 
     @app.exception_handler(NetnlHTTPError)
@@ -356,6 +359,7 @@ def create_app(
                 # the same helper the `demo_headers` middleware itself
                 # uses, called directly here.
                 **demo.demo_response_headers(request, settings),
+                **bazibo_activation.response_headers(request, settings),
             },
         )
 
@@ -513,6 +517,11 @@ def create_app(
     # routes simply do not exist and every `/demo/*` path falls through to
     # the ordinary 501 not-implemented catch-all above.
     demo.register_routes(app, settings, client, call_upstream)
+
+    # openspec/changes/add-bazibo-unlock: `POST /bazibo/activate` exists
+    # once `NETNL_BAZIBO_SIGNING_KEY` is set (answering 503 `off` until an
+    # Extra is configured); without the key it is the ordinary 501.
+    bazibo_activation.register_routes(app, settings)
 
     if settings.supporter is not None:
         # Opt-in `POST /webhooks/bmc` bridge (openspec/changes/

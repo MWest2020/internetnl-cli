@@ -54,6 +54,20 @@ def _build_parser():
 
     subparsers.add_parser("prune", help="apply retention windows")
 
+    # openspec/changes/add-bazibo-unlock: operator side of the unlock codes.
+    bz = subparsers.add_parser("bazibo", help="Bazibo unlock codes")
+    bz_sub = bz.add_subparsers(dest="bazibo_command", required=True)
+    bz_sub.add_parser(
+        "mint", help="mint one unlock code by hand and print it (e.g. for a lost mail)"
+    )
+    for name, text in (
+        ("revoke", "revoke a code id (refused on every device from now on)"),
+        ("unrevoke", "lift a revocation"),
+        ("show", "device count and revocation state of a code id"),
+    ):
+        cmd = bz_sub.add_parser(name, help=text)
+        cmd.add_argument("code_id", help="20 hex characters")
+
     return parser
 
 
@@ -175,6 +189,64 @@ def _prune(conn, settings, now: datetime, stdout: IO[str]) -> int:
     return 0
 
 
+def _valid_code_id(code_id: str, stderr: IO[str]) -> bool:
+    if len(code_id) == 20 and all(ch in "0123456789abcdef" for ch in code_id):
+        return True
+    print("error: a code id is 20 lowercase hex characters", file=stderr)
+    return False
+
+
+def _bazibo(conn, settings, args, now: datetime, stdout: IO[str], stderr: IO[str]) -> int:
+    from netnl import bazibo
+
+    bz = settings.bazibo
+    if bz is None:
+        print("error: NETNL_BAZIBO_SIGNING_KEY is not set", file=stderr)
+        return 1
+    at = store.utcnow_iso(lambda: now)
+    if args.bazibo_command == "mint":
+        code_id = bazibo.new_code_id()
+        code = bazibo.mint(bz.signing_seed, day=bazibo.day_number(now), code_id=code_id)
+        store.insert_bazibo_issuance(
+            conn, txn_id=f"manual-{code_id.hex()}", code_id=code_id.hex(),
+            state=store.SUPPORTER_DELIVERED, attempts=1, created_at=at, updated_at=at,
+        )
+        store.record_audit(
+            conn, at=at, credential=None, event="bazibo-manual-mint",
+            detail=f"code_id={code_id.hex()}",
+        )
+        # Shown once, here, like `user add`'s password; stored nowhere.
+        print(f"code_id {code_id.hex()}", file=stdout)
+        print(code, file=stdout)
+        for link in bazibo.links(code):
+            print(link, file=stdout)
+        return 0
+    if not _valid_code_id(args.code_id, stderr):
+        return 1
+    if args.bazibo_command == "revoke":
+        if not store.revoke_bazibo_code(conn, args.code_id, reason="manual", at=at):
+            print("error: already revoked", file=stderr)
+            return 1
+        store.record_audit(
+            conn, at=at, credential=None, event="bazibo-revoke", detail=f"code_id={args.code_id}"
+        )
+        return 0
+    if args.bazibo_command == "unrevoke":
+        if not store.unrevoke_bazibo_code(conn, args.code_id):
+            print("error: not revoked", file=stderr)
+            return 1
+        store.record_audit(
+            conn, at=at, credential=None, event="bazibo-unrevoke", detail=f"code_id={args.code_id}"
+        )
+        return 0
+    # show
+    devices = store.count_bazibo_devices(conn, args.code_id)
+    revoked = store.bazibo_revocation(conn, args.code_id)
+    state = f"revoked ({revoked['reason']}, {revoked['revoked_at']})" if revoked else "active"
+    print(f"devices {devices}\tlimit {bz.device_limit}\t{state}", file=stdout)
+    return 0
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -210,6 +282,8 @@ def main(
             return _user_list(conn, stdout)
     if args.command == "prune":
         return _prune(conn, settings, now, stdout)
+    if args.command == "bazibo":
+        return _bazibo(conn, settings, args, now, stdout, stderr)
 
     return 1  # unreachable: argparse enforces valid subcommands
 

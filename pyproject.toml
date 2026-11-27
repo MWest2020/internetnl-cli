@@ -11,7 +11,7 @@ netnl-serve = "netnl.server:main"
 netnl-admin = "netnl.admin:main"
 
 [project.optional-dependencies]
-api = ["fastapi>=0.115", "pydantic>=2", "uvicorn>=0.30"]
+api = ["fastapi>=0.115", "pydantic>=2", "uvicorn>=0.30", "cryptography>=44", "segno==1.6.6"]
 
 [dependency-groups]
 dev = ["pytest>=8", "httpx>=0.27", "internetnl-cli[api]"]
