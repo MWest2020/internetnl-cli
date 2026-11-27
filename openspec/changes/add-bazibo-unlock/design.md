@@ -106,7 +106,22 @@ signed code can create rows.
 
 The rate limit uses the same client-IP derivation as the demo
 (`CF-Connecting-IP` by default, `/32` or `/64`, missing header shares one
-bucket). It is in process memory only and bounded to 4096 keys.
+bucket). It is in process memory only and bounded to 4096 keys as an LRU
+with O(1) work per request. Security review round 1: the header is set by
+Cloudflare on the tunnel path, but the Tailscale Funnel ingress to the same
+Service passes it through from the client, so there a client can choose its
+key. The LRU makes that harmless for everyone else (a flood of fresh keys
+evicts old keys rather than starving new real clients in a shared overflow
+bucket, and costs ~1.5 µs per request); the spoofer only evades the limit
+for itself, which buys it nothing the signature check does not already
+stop: without a valid code nothing is stored, and with one the code's own
+device limit applies. See O5.
+
+An Extra purchase is matched on its `extras` before the strict parse
+(review round 1): a purchase of another shop item is 200 whatever its
+shape, and only a malformed Bazibo purchase is a 400, so an unexpected
+payload for an unrelated item cannot push BMC towards disabling the
+webhook.
 
 The route exists whenever the signing key is set, so the Bazibo web build
 gets a CORS-readable 503 `off` while the feature is dormant and can unlock
@@ -166,5 +181,14 @@ and transaction id, never the code), the SMTP settings.
   Bazibo path answers 200 for parked.
 - **O3** Revoke a code automatically on `extra_purchase.refunded`. Default:
   no; revoke by hand.
+- **O5** Close the Tailscale Funnel ingress for `/bazibo/*` (or entirely)
+  so `CF-Connecting-IP` can only come from Cloudflare. Default: leave it;
+  see D4 for why spoofing it only lets a client evade its own limit.
+- **O6** The deep link carries the code in the query (`?unlock=`), so it
+  lands in the access logs of bazibo.nl and GitHub Pages and in browser
+  history. A fragment (`#unlock=`) would stay in the browser. The format
+  note fixes `?unlock=`, and the Bazibo client reads it. Default: keep
+  `?unlock=`; if the Bazibo client also accepts `#unlock=`, the mail can
+  switch with a one-line change in `bazibo.py`.
 - **O4** Device rows never expire. A device not seen for a long time could
   free its slot. Default: keep them; 10 is generous.

@@ -141,10 +141,13 @@ def _record_outcome(
     race is harmless here (the other attempt mails the same code)."""
     at = store.utcnow_iso(lambda: now)
     state = store.SUPPORTER_DELIVERED if delivered else store.SUPPORTER_FAILED
-    store.update_bazibo_issuance(
+    updated = store.update_bazibo_issuance(
         conn, txn_id, state=state, attempts=attempts, updated_at=at,
         expected_attempts=attempts,
     )
+    if not updated:
+        _logger.info("event=bazibo-outcome-superseded txn_id=%s", sanitized_txn)
+        return
     store.record_audit(
         conn, at=at, credential=None,
         event="bazibo-deliver" if delivered else "bazibo-deliver-failed",
@@ -211,14 +214,17 @@ async def handle(payload: dict, request, settings: Settings, sanitize) -> dict:
     bz: BaziboSettings | None = settings.bazibo
     assert cfg is not None and bz is not None and bz.enabled
 
+    # Which Extra first, strict parse second: a purchase of some other shop
+    # item is 200 whatever its shape; only a malformed *Bazibo* purchase is
+    # a 400.
+    if not bmc.is_bazibo_cart(bmc.extract_extras(payload), bmc.BaziboMatch(bz.extra_id, bz.extra_title)):
+        _logger.info("event=ignored decision=other_extra")
+        return {"status": "ignored"}
+
     try:
         purchase = bmc.parse_extra_purchase(payload)
     except bmc.MalformedDelivery as exc:
         raise NetnlHTTPError(400, "bad-request", f"invalid field: {exc.field}") from exc
-
-    if not bmc.is_bazibo_purchase(purchase, bmc.BaziboMatch(bz.extra_id, bz.extra_title)):
-        _logger.info("event=ignored decision=other_extra")
-        return {"status": "ignored"}
 
     decision = bmc.qualifies_bazibo(purchase, bmc.QualifyConfig(
         accept_test_mode=cfg.accept_test_mode, min_amount=bz.min_amount, currency=cfg.currency,

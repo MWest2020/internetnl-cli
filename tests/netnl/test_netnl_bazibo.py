@@ -760,3 +760,57 @@ def test_issued_day_comes_from_the_first_attempt(bz_client, bz_conn, recording_s
     post_webhook(bz_client, extra_payload())
     code = _code_from_mail(recording_sender.sent[0])
     assert bazibo.verify(TEST_PUB, code).day == bazibo.day_number(clock())
+
+
+# --- security review round 1 -----------------------------------------------------------
+
+
+@pytest.mark.parametrize("payload", [
+    {"type": "extra_purchase.created", "live_mode": True, "data": {"extras": [{"id": 7}]}},
+    {"type": "extra_purchase.created", "data": {"something": "else"}},
+    {"type": "extra_purchase.created", "data": {"extras": "nope"}},
+])
+def test_odd_payload_for_another_extra_is_200_not_400(bz_client, bz_conn, payload):
+    # A 400 would make BMC retry and count toward disabling the webhook.
+    before = _counts(bz_conn)
+    resp = post_webhook(bz_client, payload)
+    assert resp.status_code == 200 and resp.json() == {"status": "ignored"}
+    assert _counts(bz_conn) == before
+
+
+def test_malformed_bazibo_purchase_is_still_400(bz_client, bz_conn):
+    payload = extra_payload()
+    del payload["data"]["transaction_id"]
+    assert post_webhook(bz_client, payload).status_code == 400
+    assert _counts(bz_conn)["bazibo_issuance"] == 0
+
+
+def test_spoofed_ip_flood_cannot_lock_out_a_real_client(bz_client, monkeypatch):
+    monkeypatch.setattr(bazibo_activation, "_MAX_BUCKETS", 50)
+    code = _code()
+    # A real client that has used part of its budget.
+    for _ in range(3):
+        assert _activate(bz_client, code, _device(1), ip="198.51.100.1").status_code == 200
+    # A flood of fresh, spoofed addresses fills and churns the table.
+    for n in range(200):
+        bazibo_activation._allow(f"spoof-{n}", 10, bazibo_activation.time.monotonic())
+    assert len(bazibo_activation._rate) <= 50
+    # The real client and a brand-new real client still get through.
+    assert _activate(bz_client, code, _device(1), ip="198.51.100.1").status_code == 200
+    assert _activate(bz_client, code, _device(1), ip="198.51.100.2").status_code == 200
+
+
+def test_manual_unrevoke_of_an_auto_revoked_code_holds(bazibo_env, fake_opener, clock, recording_sender):
+    import io
+
+    from netnl import admin
+
+    env = dict(bazibo_env, NETNL_BAZIBO_DEVICE_LIMIT="1", NETNL_BAZIBO_AUTO_REVOKE_AT="3",
+               NETNL_BAZIBO_ACTIVATE_PER_MINUTE="1000")
+    client = TestClient(_app(env, fake_opener, clock, recording_sender), raise_server_exceptions=False)
+    code = _code()
+    assert [_activate(client, code, _device(n)).status_code for n in (1, 2, 3)] == [200, 409, 403]
+    assert admin.main(["bazibo", "unrevoke", (b"\x01" * 10).hex()], stdout=io.StringIO(), env=env) == 0
+    assert _activate(client, code, _device(1)).status_code == 200
+    assert _activate(client, code, _device(4)).status_code == 409  # not re-revoked
+    assert _activate(client, code, _device(1)).status_code == 200

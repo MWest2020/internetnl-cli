@@ -290,13 +290,19 @@ the code number, a keyed fingerprint of that random number (it cannot be
 turned back without our secret key), and the dates we first and last saw
 the device. No time of day, no IP address, no browser details, no email
 address. That is how we count how many devices use a code: ten is fine.
-Only when one code turns
-up on a hundred different devices do we switch it off. To slow down abuse
+Only when one code turns up on a hundred different devices do we switch it off. To slow down abuse
 we remember, briefly, in memory only and never on disk, how often a network
 address tried in the last minute. Your email address is used only to send
 the code; we do not keep it. The request travels through Cloudflare, which
 sees your IP address in order to deliver the traffic; our own server does
 not write it down.
+
+(Operator notes behind that text: the per-address limit keys on
+`CF-Connecting-IP`, which Cloudflare sets; on the Tailscale Funnel ingress
+to the same Service a client can set it itself and so dodge its own limit,
+but not affect anyone else's (the table is a bounded LRU). The code sits in
+the link's query string, so it also appears in the access logs of
+bazibo.nl and GitHub Pages; see design.md O6.
 
 (Operator notes behind that text: device rows and purchase rows are kept
 for as long as the code exists; there is no expiry. uvicorn's access log
@@ -321,7 +327,10 @@ salt are in the `netnl-bridge` Secret, the public-key cross-check and
    ```
 
    and merge; Argo syncs and the pod restarts. A missing salt or key now
-   fails the startup loudly instead of running half-configured.
+   fails the startup loudly instead of running half-configured. That also
+   holds for every other process that reads the same ConfigMap and loads
+   the facade settings (`netnl-prune` runs `netnl-admin prune`): it must
+   mount the `netnl-bridge` Secret too, as the Deployment does.
 3. BMC dashboard → Integrations → Webhooks: the existing webhook must have
    the **extra purchase** event (`extra_purchase.created`) ticked, next to
    `donation.created`. URL and secret stay as they are.

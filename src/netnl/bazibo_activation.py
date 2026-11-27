@@ -31,6 +31,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections import OrderedDict, deque
 from datetime import datetime
 
 from fastapi import FastAPI, Request
@@ -64,13 +65,23 @@ def _error(status: int, label: str, headers: dict | None = None) -> JSONResponse
 
 
 # --- per-IP rate limit, memory only -----------------------------------------
+#
+# Keyed on the configured client-IP header (`CF-Connecting-IP` behind the
+# Cloudflare tunnel). On an ingress that passes that header through from the
+# client (the Tailscale Funnel path, a plain reverse proxy) a client can pick
+# its own key; the structure is therefore built so that spoofed keys can at
+# worst evade the limit for themselves, never lock real clients out: a
+# bounded LRU (the least recently used key is evicted, so a flood of fresh
+# keys pushes out old ones instead of folding new real clients into one
+# shared bucket) with O(1) work per request (each bucket prunes only its own
+# timestamps, holding at most `per_minute` of them), so even a flood of
+# refused requests stays cheap on the event loop.
 
 _MAX_BUCKETS = 4096
-_OVERFLOW_KEY = "<overflow>"
 _WINDOW_SECONDS = 60.0
 
 _rate_lock = threading.Lock()
-_rate: dict[str, list[float]] = {}
+_rate: "OrderedDict[str, deque[float]]" = OrderedDict()
 
 
 def reset_state() -> None:
@@ -79,20 +90,18 @@ def reset_state() -> None:
 
 
 def _allow(key: str, per_minute: int, now: float) -> bool:
-    """Sliding one-minute window; sweep, check and record under one lock.
-    Bounded to `_MAX_BUCKETS` distinct keys (new keys beyond that share one
-    overflow bucket), so a flood of spoofed addresses cannot grow it."""
     cutoff = now - _WINDOW_SECONDS
     with _rate_lock:
-        for k in list(_rate):
-            kept = [t for t in _rate[k] if t > cutoff]
-            if kept:
-                _rate[k] = kept
-            else:
-                del _rate[k]
-        if key not in _rate and len(_rate) >= _MAX_BUCKETS:
-            key = _OVERFLOW_KEY
-        bucket = _rate.setdefault(key, [])
+        bucket = _rate.get(key)
+        if bucket is None:
+            bucket = deque()
+            _rate[key] = bucket
+            while len(_rate) > _MAX_BUCKETS:
+                _rate.popitem(last=False)
+        else:
+            _rate.move_to_end(key)
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
         if len(bucket) >= per_minute:
             return False
         bucket.append(now)
@@ -170,7 +179,10 @@ def record_activation(
         else:
             seen = store.count_bazibo_devices(conn, code_id)
             store.insert_bazibo_device(conn, code_id, hashed, today)
-            if seen + 1 >= bz.auto_revoke_at:
+            # Exactly at the crossing, not `>=`: a code an operator has
+            # unrevoked (`netnl-admin bazibo unrevoke`) stays unrevoked; new
+            # devices beyond the limit still get 409.
+            if seen + 1 == bz.auto_revoke_at:
                 store.revoke_bazibo_code(
                     conn, code_id, reason="auto", at=store.utcnow_iso(lambda: now)
                 )

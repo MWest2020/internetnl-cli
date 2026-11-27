@@ -392,23 +392,37 @@ def _extra_id(value: Any) -> str | None:
     return None
 
 
-def parse_extra_purchase(payload: dict) -> ExtraPurchase:
-    delivery = parse_delivery(payload)
-    data = payload.get("data") if isinstance(payload, dict) else None
+def extract_extras(payload: object) -> tuple[ExtraItem, ...] | None:
+    """The cart's items, or `None` when there is no usable `extras` list.
+    Tolerant and side-effect free: used to decide *whether* a purchase is
+    the Bazibo Extra before any strict parse, so an odd payload for some
+    other shop item is acknowledged (200) instead of failing with a 400
+    that BMC would retry (and count toward disabling the webhook).
+    """
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
     if not isinstance(data, dict):
         data = {}
     raw = _lookup(payload, data, "extras")
     if raw is _MISSING or not isinstance(raw, list) or len(raw) > _MAX_EXTRAS:
-        raise MalformedDelivery("extras")
+        return None
     items = []
     for entry in raw:
         if not isinstance(entry, dict):
-            raise MalformedDelivery("extras")
+            continue
         title = entry.get("title")
         if not isinstance(title, str) or len(title) > _MAX_FIELD_LEN:
             title = None
         items.append(ExtraItem(id=_extra_id(entry.get("id")), title=title))
-    return ExtraPurchase(delivery=delivery, extras=tuple(items))
+    return tuple(items)
+
+
+def parse_extra_purchase(payload: dict) -> ExtraPurchase:
+    extras = extract_extras(payload)
+    if extras is None:
+        raise MalformedDelivery("extras")
+    return ExtraPurchase(delivery=parse_delivery(payload), extras=extras)
 
 
 def _norm_title(title: str) -> str:
@@ -431,8 +445,8 @@ class BaziboMatch:
         return False
 
 
-def is_bazibo_purchase(purchase: ExtraPurchase, match: BaziboMatch) -> bool:
-    return any(match.matches(item) for item in purchase.extras)
+def is_bazibo_cart(extras: tuple[ExtraItem, ...] | None, match: BaziboMatch) -> bool:
+    return bool(extras) and any(match.matches(item) for item in extras)
 
 
 def qualifies_bazibo(purchase: ExtraPurchase, cfg: QualifyConfig) -> Decision:
