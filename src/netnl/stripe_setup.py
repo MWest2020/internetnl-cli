@@ -41,6 +41,7 @@ UNIT_AMOUNT, CURRENCY = 100, "eur"
 CONFIRMATION = "Bedankt! Je code komt binnen een paar minuten per mail. / Thanks! Your code arrives by email within minutes."
 ENDPOINT = "https://api.westerweel.work/webhooks/stripe"
 EVENTS = ("checkout.session.completed", "checkout.session.async_payment_succeeded")
+API_VERSION = "2024-06-20"
 
 Requester = Callable[[str, str, list[tuple[str, str]]], dict]
 
@@ -58,7 +59,7 @@ def urllib_requester(key: str, timeout: int = 30) -> Requester:
         req = urllib.request.Request(url, data=data, method=method, headers={
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/x-www-form-urlencoded",
-            "Stripe-Version": "2024-06-20",
+            "Stripe-Version": API_VERSION,
         })
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed https host
@@ -122,17 +123,24 @@ def ensure(request: Requester, *, endpoint: str = ENDPOINT, new_secret: bool = F
         made.append("payment link")
 
     secret = None
-    hooks = [h for h in _list(request, "/v1/webhook_endpoints", []) if h.get("url") == endpoint and _tagged(h)]
-    if hooks and new_secret:
-        for h in hooks:
-            request("DELETE", f"/v1/webhook_endpoints/{h['id']}", [])
-        hooks = []
-    if not hooks:
-        hook = request("POST", "/v1/webhook_endpoints", [("url", endpoint)] + [
+    same_url = [h for h in _list(request, "/v1/webhook_endpoints", []) if h.get("url") == endpoint]
+    foreign = [h for h in same_url if not _tagged(h)]
+    if foreign:
+        # A second endpoint on the same URL would get every event twice with
+        # another secret (401s and Stripe failure mails for days).
+        raise StripeError(
+            f"an endpoint for {endpoint} exists without metadata {TAG_KEY}={TAG_VALUE} "
+            f"({foreign[0]['id']}): tag it or delete it in the Dashboard, then run this again"
+        )
+    if not same_url or new_secret:
+        # create first, delete the old ones after: never left without one
+        hook = request("POST", "/v1/webhook_endpoints", [("url", endpoint), ("api_version", API_VERSION)] + [
             (f"enabled_events[{i}]", e) for i, e in enumerate(EVENTS)
         ] + tag)
         secret = hook.get("secret")
         made.append("webhook endpoint")
+        for h in same_url:
+            request("DELETE", f"/v1/webhook_endpoints/{h['id']}", [])
 
     return {
         "made": made,

@@ -131,6 +131,15 @@ def test_within_tolerance_and_a_second_v1_are_accepted(s_client, clock, recordin
     assert resp.status_code == 200 and len(codes(recording_sender)) == 1
 
 
+def test_a_non_ascii_signature_is_401_not_500(s_client, s_conn, clock, recording_sender):
+    ts = int(clock().timestamp())
+    body = json.dumps(session_event()).encode()
+    resp = s_client.post("/webhooks/stripe", content=body,
+                         headers={"Stripe-Signature": f"t={ts},v1=\u00e9".encode("latin-1")})
+    assert resp.status_code == 401 and recording_sender.sent == []
+    assert not stripe_webhook.verify_signature(WHSEC, f"t={ts},v1=" + "\u00e9" * 64, body, ts)
+
+
 def test_verify_signature_unit():
     raw = b'{"a":1}'
     header = sign(raw, 1000)

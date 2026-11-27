@@ -69,7 +69,10 @@ def verify_signature(secret: str, header: str | None, raw: bytes, now: float) ->
                 return False
             timestamp = int(value)
         elif key == "v1":
-            candidates.append(value)
+            # 64 lowercase hex characters, or it cannot match (and a
+            # non-ASCII string would make compare_digest raise).
+            if len(value) == 64 and all(ch in "0123456789abcdef" for ch in value):
+                candidates.append(value)
     if timestamp is None or not candidates:
         return False
     if abs(now - timestamp) > TOLERANCE_SECONDS:

@@ -37,7 +37,8 @@ class FakeStripe:
         if kind == "payment_links":
             obj.update(url=f"https://buy.stripe.com/test_{self.n}", params=p)
         if kind == "webhook_endpoints":
-            obj.update(url=p["url"], secret=f"whsec_new{self.n}", events=[v for k, v in p.items() if k.startswith("enabled_events")])
+            obj.update(url=p["url"], secret=f"whsec_new{self.n}", api_version=p.get("api_version"),
+                       events=[v for k, v in p.items() if k.startswith("enabled_events")])
         self.objects[kind].append(obj)
         return obj
 
@@ -67,6 +68,7 @@ def test_first_run_creates_all_four_and_prints_what_the_secret_needs():
     [hook] = fake.objects["webhook_endpoints"]
     assert hook["url"] == "https://api.westerweel.work/webhooks/stripe"
     assert hook["events"] == ["checkout.session.completed", "checkout.session.async_payment_succeeded"]
+    assert hook["api_version"] == "2024-06-20"
 
 
 def test_second_run_reuses_everything_and_prints_no_secret():
@@ -94,6 +96,23 @@ def test_untagged_objects_of_the_account_are_left_alone():
     fake.objects["payment_links"].append({"id": "plink_other", "metadata": {}, "active": True})
     run(fake)
     assert len(fake.objects["products"]) == 2 and len(fake.objects["payment_links"]) == 2
+
+
+def test_an_untagged_endpoint_on_the_same_url_is_not_duplicated():
+    fake = FakeStripe()
+    fake.objects["webhook_endpoints"].append(
+        {"id": "we_hand", "url": stripe_setup.ENDPOINT, "metadata": {}, "active": True})
+    rc, _, err = run(fake)
+    assert rc == 1 and "we_hand" in err
+    assert len(fake.objects["webhook_endpoints"]) == 1
+
+
+def test_new_secret_creates_before_it_deletes():
+    fake = FakeStripe()
+    run(fake)
+    run(fake, "--new-webhook-secret")
+    hook_calls = [(m, p) for m, p in fake.calls if "webhook_endpoints" in p and m != "GET"]
+    assert [m for m, _ in hook_calls] == ["POST", "POST", "DELETE"]
 
 
 def test_live_mode_is_said_plainly():
