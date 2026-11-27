@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Bazibo codes from plain donations: with `NETNL_BAZIBO_FROM_DONATIONS=1`
+  a live `donation.created` of at least `NETNL_BAZIBO_DONATION_MIN`
+  (default 1) mints and mails a Bazibo code ("Bedankt voor je donatie!"),
+  next to the unchanged netnl credential at `NETNL_SUPPORTER_MIN_AMOUNT`.
+  Each product has its own idempotency row per transaction id, so a
+  donation of 2 or more gives one mail of each, once, and a retry re-sends
+  only the mail that failed. BMC sends this account no Extra webhooks.
+
 - Bazibo: an Extra purchase delivered as "support created"
   (`donation.created` with `support_type: "Extra"` or a non-empty
   `extras[]`) mints a code when `extras[]` names the configured Extra, and

@@ -290,6 +290,21 @@ Mark, Bazibo
 
 # Mail-client HTML: no external resource of any kind (the QR code is an
 # inline `cid:` part), no script/form, inline CSS only, single column.
+# The thank-you sentences a donation's mail swaps in (Mark, 27 Nov 2026).
+_BAZIBO_THANKS_NL = "Dank je wel voor het kopen van de volledige versie van Bazibo (web)."
+_BAZIBO_THANKS_EN = "Thank you for buying the full version of Bazibo (web)."
+_BAZIBO_DONATION_NL = (
+    "Bedankt voor je donatie! Hier is je code voor de volledige versie van Bazibo in de browser."
+)
+_BAZIBO_DONATION_EN = (
+    "Thank you for your donation! Here is your code for the full version of Bazibo in the browser."
+)
+_BAZIBO_HTML_THANKS_NL = (
+    "Je hebt de volledige versie van Bazibo (web) gekocht. Open deze link op het apparaat "
+    "waarop gespeeld wordt:"
+)
+_BAZIBO_HTML_THANKS_EN = "You bought the full version of Bazibo (web). Open"
+
 _BAZIBO_HTML_TEMPLATE = """\
 <!DOCTYPE html>
 <html lang="nl">
@@ -340,15 +355,24 @@ def qr_png(text: str) -> bytes:
     return buffer.getvalue()
 
 
-def build_bazibo_mail(*, to: str, code: str, link: str, link_pages: str, device_limit: int) -> Mail:
+def build_bazibo_mail(
+    *, to: str, code: str, link: str, link_pages: str, device_limit: int, donation: bool = False,
+) -> Mail:
     """Interpolates only the code, its two links (fixed prefixes plus the
     code, which is base64url/`.` only) and an operator-configured integer —
     nothing from the BMC delivery. Every value is still HTML-escaped in the
     HTML part.
+
+    `donation`: the code came from a plain BMC donation, not an Extra
+    purchase; the thank-you line says so (Dutch and English).
     """
     body = _BAZIBO_BODY_TEMPLATE.format(
         link=link, link_pages=link_pages, code=code, device_limit=device_limit
     )
+    if donation:
+        body = body.replace(_BAZIBO_THANKS_NL, _BAZIBO_DONATION_NL).replace(
+            _BAZIBO_THANKS_EN, _BAZIBO_DONATION_EN
+        )
     html_body = _BAZIBO_HTML_TEMPLATE.format(
         link=_html.escape(link, quote=True),
         link_pages=_html.escape(link_pages, quote=True),
@@ -356,6 +380,10 @@ def build_bazibo_mail(*, to: str, code: str, link: str, link_pages: str, device_
         device_limit=int(device_limit),
         qr_cid=_html.escape(_BAZIBO_QR_CID, quote=True),
     )
+    if donation:
+        html_body = html_body.replace(_BAZIBO_HTML_THANKS_NL, _BAZIBO_DONATION_NL + " Open deze link op het apparaat waarop gespeeld wordt:").replace(
+            _BAZIBO_HTML_THANKS_EN, _BAZIBO_DONATION_EN + " Open"
+        )
     image = InlineImage(cid=_BAZIBO_QR_CID, data=qr_png(link))
     return Mail(to=to, subject=_BAZIBO_SUBJECT, body=body, html=html_body, inline_images=(image,))
 

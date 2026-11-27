@@ -83,3 +83,11 @@
 - [x] 10.5 Tests: `tests/netnl/test_netnl_bazibo_poll.py`
 - [ ] 10.6 First real purchase: read the `event=bmc-shape` line, confirm
       the routing (owner action)
+
+## T11. Round 3: codes from plain donations (design D12)
+
+- [x] 11.1 `NETNL_BAZIBO_FROM_DONATIONS`, `NETNL_BAZIBO_DONATION_MIN` (settings, refusal without key, bridge or salt)
+- [x] 11.2 `bazibo_issuance.handle_donation`; both paths run per donation, 503 if either failed
+- [x] 11.3 Donation wording in the code mail
+- [x] 11.4 Tests: `tests/netnl/test_netnl_bazibo_donations.py` (1 → code only, 2 → both, replay, mail failure and retry per path, off = before)
+- [x] 11.5 Homelab ConfigMap `NETNL_BAZIBO_FROM_DONATIONS: "1"` and the image digest bump

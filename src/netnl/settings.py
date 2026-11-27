@@ -494,7 +494,9 @@ class BaziboSettings:
     neither `POST /bazibo/activate` nor the Extra routing exists. With the
     key set but no Extra configured the subsystem is *dormant*: the
     activation route answers 503 `{"error": "off"}` and an Extra purchase
-    is ignored like any other unknown event. `enabled` is the one switch.
+    is ignored like any other unknown event. `enabled` is the one switch:
+    true with an Extra configured, or with `NETNL_BAZIBO_FROM_DONATIONS=1`
+    (a plain donation of at least `NETNL_BAZIBO_DONATION_MIN` mints a code).
     """
 
     # The raw 32-byte Ed25519 seed. `repr=False`: a settings object that
@@ -519,6 +521,12 @@ class BaziboSettings:
     poll_max_pages: int = 10
     source: str = "webhook"
     poll_not_before: "datetime | None" = None
+    # A plain BMC donation ("support created", `donation.created`) of at
+    # least `donation_min` also mints a code (Mark, 27 Nov 2026: BMC sends
+    # this account no webhook for Extra purchases, only for donations).
+    # `NETNL_BAZIBO_FROM_DONATIONS=1` switches it on; off by default.
+    from_donations: bool = False
+    donation_min: Decimal = Decimal("1")
 
 
 def _decode_seed(raw: str) -> bytes:
@@ -558,12 +566,22 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
     extra_id = (env.get("NETNL_BAZIBO_EXTRA_ID") or "").strip() or None
     extra_title = (env.get("NETNL_BAZIBO_EXTRA_TITLE") or "").strip() or None
     wants_extra = extra_id is not None or extra_title is not None
+    raw_from_donations = env.get("NETNL_BAZIBO_FROM_DONATIONS", "0")
+    if raw_from_donations not in ("0", "1"):
+        raise SettingsError(
+            f"NETNL_BAZIBO_FROM_DONATIONS must be '0' or '1': got {raw_from_donations!r}"
+        )
+    from_donations = raw_from_donations == "1"
 
     if raw_key is None:
         if wants_extra:
             raise SettingsError(
                 "NETNL_BAZIBO_EXTRA_ID/NETNL_BAZIBO_EXTRA_TITLE is set but "
                 "NETNL_BAZIBO_SIGNING_KEY is missing"
+            )
+        if from_donations:
+            raise SettingsError(
+                "NETNL_BAZIBO_FROM_DONATIONS=1 is set but NETNL_BAZIBO_SIGNING_KEY is missing"
             )
         return None
 
@@ -591,10 +609,14 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
             f"(got {len(raw_salt)}); generate one with: openssl rand -hex 32"
         )
 
-    if wants_extra:
+    if wants_extra or from_donations:
         if supporter is None:
+            what = (
+                "NETNL_BAZIBO_EXTRA_ID/NETNL_BAZIBO_EXTRA_TITLE" if wants_extra
+                else "NETNL_BAZIBO_FROM_DONATIONS=1"
+            )
             raise SettingsError(
-                "NETNL_BAZIBO_EXTRA_ID/NETNL_BAZIBO_EXTRA_TITLE requires the BMC bridge: "
+                f"{what} requires the BMC bridge: "
                 "missing required environment variable: NETNL_BMC_WEBHOOK_SECRET"
             )
         if device_salt is None:
@@ -676,7 +698,7 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
     return BaziboSettings(
         signing_seed=seed,
         public_key=public_key,
-        enabled=wants_extra,
+        enabled=wants_extra or from_donations,
         extra_id=extra_id,
         extra_title=extra_title,
         min_amount=_resolve_decimal(env, "NETNL_BAZIBO_MIN_AMOUNT", Decimal("0")),
@@ -687,5 +709,7 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
         bmc_api_base=api_base,
         source=source,
         poll_not_before=poll_not_before,
+        from_donations=from_donations,
+        donation_min=_resolve_decimal(env, "NETNL_BAZIBO_DONATION_MIN", Decimal("1")),
         **numeric,
     )

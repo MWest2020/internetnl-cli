@@ -260,3 +260,36 @@ follows a URL from a response), redirects are refused.
 
 - **O7** Get a working BMC API token, and deploy the poller CronJob
   instead of relying on the webhook. Default: no; webhook plus hand issue.
+
+## Round 3 (2026-11-27): codes from plain donations
+
+A real purchase of the Extra (27 Nov 2026, 10:43Z) produced no webhook at
+all: on this account BMC sends webhooks only for "support created"
+(donations), which the netnl supporter-key path has received since
+September. Mark chose to sell the Bazibo web unlock as a plain donation
+("1 is goed als de flow maar duidelijk is").
+
+### D12 — A donation of at least 1 mints a code
+
+`NETNL_BAZIBO_FROM_DONATIONS=1` (default off) makes a live
+`donation.created` that is not Extra-marked, at or above
+`NETNL_BAZIBO_DONATION_MIN` (default `1`), mint and mail a code through
+the same `_persist`/`_process` step as an Extra, with the donation's
+thank-you line in the mail. The switch alone enables the subsystem
+(`enabled`, so `/bazibo/activate` answers), and needs the bridge and the
+device salt like an Extra does.
+
+Idempotency per product: the Bazibo code keeps its `bazibo_issuance` row
+and the netnl credential its `supporter_issuance` row, both keyed on BMC's
+transaction id. One donation of 2 or more gives one mail of each, once; a
+replay finds both rows delivered. Both paths run before the reply; if
+either raised a 503 (mail failure, hourly cap, lease) the reply is that
+503, and BMC's retry re-sends only the mail that failed, because the other
+row is already `delivered`. An Extra purchase reported both ways would find
+the same `bazibo_issuance` row and never get a second code. The Extra
+routing (D1, D8) stays: harmless, and useful if BMC ever sends Extra
+webhooks.
+
+The note or message of a donation still decides nothing; only the amount
+does. Anyone who donates 1 or more gets a code, which is the intent.
+
