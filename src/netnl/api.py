@@ -184,15 +184,7 @@ def create_app(
     # supporter` only when that opt-in is configured — unused (never even
     # constructed) otherwise.
     if settings.supporter is not None:
-        app.state.sender = sender or mail.smtp_sender(
-            host=settings.supporter.smtp_host,
-            port=settings.supporter.smtp_port,
-            username=settings.supporter.smtp_username,
-            password=settings.supporter.smtp_password,
-            from_addr=settings.supporter.smtp_from,
-            mode=settings.supporter.smtp_mode,
-            timeout=settings.supporter.smtp_timeout,
-        )
+        app.state.sender = sender or mail.build_sender(settings)
 
     @app.middleware("http")
     async def enforce_body_size(request: Request, call_next):

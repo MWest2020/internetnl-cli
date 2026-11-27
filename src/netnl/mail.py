@@ -22,6 +22,7 @@ import smtplib
 import ssl
 from dataclasses import dataclass
 from email.message import EmailMessage
+from email.utils import formataddr, parseaddr
 from typing import Callable
 
 from netnl.errors import NetnlError
@@ -56,6 +57,9 @@ class Mail:
     body: str
     html: str | None = None
     inline_images: tuple[InlineImage, ...] = ()
+    # Which sender identity carries this mail (see `build_sender`):
+    # "netnl" (the bridge's SMTP config) or "bazibo" (the buyer's code mail).
+    product: str = "netnl"
 
 
 # `Sender` is the seam every test in this package uses instead of a real
@@ -368,7 +372,10 @@ def build_bazibo_mail(*, to: str, code: str, link: str, link_pages: str, device_
         thanks_en=_html.escape(thanks_en, quote=True),
     )
     image = InlineImage(cid=_BAZIBO_QR_CID, data=qr_png(link))
-    return Mail(to=to, subject=_BAZIBO_SUBJECT, body=body, html=html_body, inline_images=(image,))
+    return Mail(
+        to=to, subject=_BAZIBO_SUBJECT, body=body, html=html_body, inline_images=(image,),
+        product="bazibo",
+    )
 
 
 def build_bazibo_notify_mail(*, to: str, code_id: str, txn_id: str, source: str = "bmc") -> Mail:
@@ -439,8 +446,14 @@ def smtp_sender(
     from_addr: str,
     mode: str,
     timeout: int,
+    reply_to: str | None = None,
 ) -> Sender:
     """Builds a `Sender` for the given SMTP configuration.
+
+    - `from_addr` is the `From:` header as given (it may carry a display
+      name, `Bazibo <hallo@bazibo.nl>`); the envelope sender is its bare
+      address. `reply_to`, when set, becomes the `Reply-To:` header. Both
+      are operator configuration, validated in `netnl.settings`.
 
     - `mode="ssl"`: connects with implicit TLS (`SMTP_SSL`).
     - `mode="starttls"`: connects plain, then upgrades with `starttls()`
@@ -474,6 +487,7 @@ def smtp_sender(
     """
     if mode not in _SMTP_MODES:
         raise ValueError(f"unknown SMTP mode: {mode!r}")
+    envelope_from = parseaddr(from_addr)[1] or from_addr
 
     def _send(mail: Mail) -> None:
         try:
@@ -493,6 +507,8 @@ def smtp_sender(
                 message["Subject"] = mail.subject
                 message["From"] = from_addr
                 message["To"] = mail.to
+                if reply_to:
+                    message["Reply-To"] = reply_to
                 message.set_content(mail.body)
                 if mail.html is not None:
                     message.add_alternative(mail.html, subtype="html")
@@ -503,9 +519,55 @@ def smtp_sender(
                                 image.data, maintype="image", subtype=image.subtype,
                                 cid=f"<{image.cid}>", disposition="inline",
                             )
-                conn.sendmail(from_addr, [mail.to], message.as_string())
+                conn.sendmail(envelope_from, [mail.to], message.as_string())
         except Exception as exc:
             _logger.warning("supporter mail delivery failed: %s", type(exc).__name__)
-            raise DeliveryError("failed to deliver supporter credential mail") from exc
+            # `from None`: the cause can quote the host, the username or a
+            # server reply; a later traceback must not print it.
+            raise DeliveryError("failed to deliver supporter credential mail") from None
 
     return _send
+
+
+def build_sender(settings) -> Sender:
+    """The production `Sender` for `settings` (which must have the bridge's
+    mail settings, `settings.supporter`): routes each `Mail` on its
+    `product` (openspec/changes/add-bazibo-mail-identity).
+
+    - "netnl" (supporter key, operator notifications and alerts): the
+      bridge's `NETNL_SMTP_*` config, unchanged.
+    - "bazibo" (the buyer's code mail): Bazibo's own relay when one is
+      configured, else the bridge's relay; From is
+      `<from_name> <from_addr>` (the address falls back to that of
+      `NETNL_SMTP_FROM`), plus `Reply-To` when set.
+    """
+    cfg = settings.supporter
+    main = smtp_sender(
+        host=cfg.smtp_host, port=cfg.smtp_port, username=cfg.smtp_username,
+        password=cfg.smtp_password, from_addr=cfg.smtp_from, mode=cfg.smtp_mode,
+        timeout=cfg.smtp_timeout,
+    )
+    bz = settings.bazibo
+    if bz is None:
+        return main
+    identity = bz.mail
+    address = identity.from_addr or parseaddr(cfg.smtp_from)[1] or cfg.smtp_from
+    from_header = formataddr((identity.from_name, address))
+    relay = identity.relay
+    if relay is None:
+        bazibo = smtp_sender(
+            host=cfg.smtp_host, port=cfg.smtp_port, username=cfg.smtp_username,
+            password=cfg.smtp_password, from_addr=from_header, mode=cfg.smtp_mode,
+            timeout=cfg.smtp_timeout, reply_to=identity.reply_to,
+        )
+    else:
+        bazibo = smtp_sender(
+            host=relay.host, port=relay.port, username=relay.username,
+            password=relay.password, from_addr=from_header, mode=relay.mode,
+            timeout=cfg.smtp_timeout, reply_to=identity.reply_to,
+        )
+
+    def _route(mail: Mail) -> None:
+        (bazibo if mail.product == "bazibo" else main)(mail)
+
+    return _route

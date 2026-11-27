@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Bazibo code mails get their own sender identity
+  (`openspec/changes/add-bazibo-mail-identity`):
+  `NETNL_BAZIBO_SMTP_HOST/PORT/USERNAME/PASSWORD/MODE/FROM`,
+  `NETNL_BAZIBO_SMTP_FROM_NAME` (default "Bazibo") and
+  `NETNL_BAZIBO_MAIL_REPLY_TO`. Without a host the bridge's relay carries
+  the mail under the Bazibo From and Reply-To; a half-configured relay
+  refuses startup. The netnl supporter mail is unchanged.
+
 - `netnl-admin bazibo watch` (CronJob, every 5 min): one alert mail to
   `NETNL_BAZIBO_ALERT_TO` per transaction that qualified for a Bazibo code
   and has none delivered after `NETNL_BAZIBO_ALERT_AFTER_MINUTES` (15),

@@ -233,11 +233,7 @@ def _bazibo_poll(settings, now: datetime, stdout: IO[str], stderr: IO[str], *, o
         return 0
     assert cfg is not None  # Bazibo enabled implies the bridge (settings.py)
     if sender is None:
-        sender = mail.smtp_sender(
-            host=cfg.smtp_host, port=cfg.smtp_port, username=cfg.smtp_username,
-            password=cfg.smtp_password, from_addr=cfg.smtp_from, mode=cfg.smtp_mode,
-            timeout=cfg.smtp_timeout,
-        )
+        sender = mail.build_sender(settings)
     kwargs = {"opener": opener} if opener is not None else {}
     try:
         counts = bmc_poll.poll(settings, now, sender, **kwargs)
@@ -267,11 +263,7 @@ def _bazibo_watch(conn, settings, now: datetime, stdout: IO[str], stderr: IO[str
         print("watch off: no mail settings (NETNL_BMC_WEBHOOK_SECRET, NETNL_SMTP_*)", file=stdout)
         return 0
     if sender is None:
-        sender = mail.smtp_sender(
-            host=cfg.smtp_host, port=cfg.smtp_port, username=cfg.smtp_username,
-            password=cfg.smtp_password, from_addr=cfg.smtp_from, mode=cfg.smtp_mode,
-            timeout=cfg.smtp_timeout,
-        )
+        sender = mail.build_sender(settings)
     cutoff = store.utcnow_iso(lambda: now - timedelta(minutes=bz.alert_after_minutes))
     at = store.utcnow_iso(lambda: now)
     alerted = failed = 0
@@ -322,11 +314,7 @@ def _bazibo_mint_mail(settings, args, now: datetime, stdout: IO[str], stderr: IO
         print("error: --mail is not a usable single address", file=stderr)
         return 1
     if sender is None:
-        sender = mail.smtp_sender(
-            host=cfg.smtp_host, port=cfg.smtp_port, username=cfg.smtp_username,
-            password=cfg.smtp_password, from_addr=cfg.smtp_from, mode=cfg.smtp_mode,
-            timeout=cfg.smtp_timeout,
-        )
+        sender = mail.build_sender(settings)
     delivery = bmc.Delivery(
         event="manual", live_mode=True, transaction_id=ref, amount=Decimal("0"),
         currency="", email=args.mail,

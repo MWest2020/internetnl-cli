@@ -485,6 +485,23 @@ The revocation list is the `bazibo_revoked` table (`code_id`, `reason` =
 | `NETNL_BAZIBO_ACTIVATE_PER_MINUTE` | `10` | Per-address activation requests per minute. |
 | `NETNL_BAZIBO_ALLOWED_ORIGINS` | `https://bazibo.nl,https://mwest2020.github.io` | CORS origins. |
 | `NETNL_BAZIBO_CLIENT_IP_HEADER` | `CF-Connecting-IP` | Header the rate limit keys on. |
+| `NETNL_BAZIBO_SMTP_HOST` | unset | Bazibo's own relay for the buyer's code mail. Unset: the bridge's `NETNL_SMTP_*` relay carries it. |
+| `NETNL_BAZIBO_SMTP_PORT` | `587` (`465` with `ssl`) | Only with a host. |
+| `NETNL_BAZIBO_SMTP_USERNAME` / `_PASSWORD` | unset | Secret. Required with a host (this relay always logs in). |
+| `NETNL_BAZIBO_SMTP_MODE` | `starttls` | `starttls` or `ssl` (no plaintext for this relay). |
+| `NETNL_BAZIBO_SMTP_FROM` | address of `NETNL_SMTP_FROM` | Plain address of the code mail's From. Required with a host. |
+| `NETNL_BAZIBO_SMTP_FROM_NAME` | `Bazibo` | Display name of that From. |
+| `NETNL_BAZIBO_MAIL_REPLY_TO` | unset | `Reply-To` of the code mail. |
+
+Only the buyer's code mail uses the Bazibo identity; the supporter-key
+mail, the operator notification and the watch alerts keep the bridge's
+`NETNL_SMTP_*` settings unchanged. With a relay of its own, startup refuses
+a half configuration (a port, username, password or mode without a host; a
+host without `NETNL_BAZIBO_SMTP_FROM`, a username or a password). A
+relay that only accepts its own domain (Soverin, for one) cannot send as
+`hallo@bazibo.nl`: leave the host unset there, set the From to the relay
+account's own address and put the Bazibo address in
+`NETNL_BAZIBO_MAIL_REPLY_TO`.
 
 Rotating the signing key invalidates every code already sold (the Bazibo
 verifier carries the public key): don't, unless it has leaked.
