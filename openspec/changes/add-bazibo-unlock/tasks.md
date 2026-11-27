@@ -91,3 +91,10 @@
 - [x] 11.3 Donation wording in the code mail
 - [x] 11.4 Tests: `tests/netnl/test_netnl_bazibo_donations.py` (1 → code only, 2 → both, replay, mail failure and retry per path, off = before)
 - [x] 11.5 Homelab ConfigMap `NETNL_BAZIBO_FROM_DONATIONS: "1"` and the image digest bump
+
+## T12. The watch (design D13)
+
+- [x] 12.1 `bazibo_watch` table, written before `_persist`
+- [x] 12.2 `netnl-admin bazibo watch`, `NETNL_BAZIBO_ALERT_TO`, `NETNL_BAZIBO_ALERT_AFTER_MINUTES`
+- [x] 12.3 Tests: `tests/netnl/test_netnl_bazibo_watch.py`
+- [x] 12.4 Homelab CronJob `netnl-bazibo-watch` (every 5 min), `NETNL_BAZIBO_ALERT_TO` in the ConfigMap

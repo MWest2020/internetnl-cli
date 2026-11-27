@@ -74,6 +74,11 @@ def _build_parser():
     bz_sub.add_parser(
         "poll", help="mail codes for Bazibo Extra purchases listed by the BMC API (CronJob)"
     )
+    bz_sub.add_parser(
+        "watch",
+        help="mail NETNL_BAZIBO_ALERT_TO once per transaction whose code was not delivered "
+             "within NETNL_BAZIBO_ALERT_AFTER_MINUTES (CronJob)",
+    )
     for name, text in (
         ("revoke", "revoke a code id (refused on every device from now on)"),
         ("unrevoke", "lift a revocation"),
@@ -243,6 +248,53 @@ def _bazibo_poll(settings, now: datetime, stdout: IO[str], stderr: IO[str], *, o
     return 0
 
 
+def _bazibo_watch(conn, settings, now: datetime, stdout: IO[str], stderr: IO[str], *, sender=None) -> int:
+    """`bazibo watch`: one alert mail per transaction that qualified for a
+    code and has none delivered after `NETNL_BAZIBO_ALERT_AFTER_MINUTES`
+    (also failed, parked, crashed and undeliverable issuance rows). Marked
+    as alerted only after its mail went out, so a mail failure is retried on
+    the next run (exit 1). Off (exit 0) without `NETNL_BAZIBO_ALERT_TO` or
+    the bridge's mail settings."""
+    from datetime import timedelta
+
+    from netnl import mail
+
+    bz, cfg = settings.bazibo, settings.supporter
+    if bz is None or not bz.alert_to:
+        print("watch off: NETNL_BAZIBO_ALERT_TO is not set", file=stdout)
+        return 0
+    if cfg is None:
+        print("watch off: no mail settings (NETNL_BMC_WEBHOOK_SECRET, NETNL_SMTP_*)", file=stdout)
+        return 0
+    if sender is None:
+        sender = mail.smtp_sender(
+            host=cfg.smtp_host, port=cfg.smtp_port, username=cfg.smtp_username,
+            password=cfg.smtp_password, from_addr=cfg.smtp_from, mode=cfg.smtp_mode,
+            timeout=cfg.smtp_timeout,
+        )
+    cutoff = store.utcnow_iso(lambda: now - timedelta(minutes=bz.alert_after_minutes))
+    at = store.utcnow_iso(lambda: now)
+    alerted = failed = 0
+    for row in store.bazibo_alert_candidates(conn, cutoff):
+        message = mail.build_bazibo_alert_mail(
+            to=bz.alert_to, txn_id=row["txn_id"], state=row["state"], attempts=row["attempts"],
+            code_id=row["code_id"], seen_at=row["seen_at"],
+        )
+        try:
+            sender(message)
+        except Exception as exc:  # noqa: BLE001 - retried on the next run
+            failed += 1
+            print(f"error: alert not sent ({type(exc).__name__})", file=stderr)
+            continue
+        store.mark_bazibo_alerted(conn, row["txn_id"], at)
+        store.record_audit(
+            conn, at=at, credential=None, event="bazibo-alert", detail=f"state={row['state'] or 'none'}",
+        )
+        alerted += 1
+    print(f"alerted={alerted} failed={failed}", file=stdout)
+    return 1 if failed else 0
+
+
 def _bazibo_mint_mail(settings, args, now: datetime, stdout: IO[str], stderr: IO[str], *, sender=None) -> int:
     """`bazibo mint --mail ADDRESS --ref TRANSACTION_ID`: the webhook's own
     persist-then-mail step (`bazibo_issuance._process`), keyed on the BMC
@@ -306,6 +358,8 @@ def _bazibo(conn, settings, args, now: datetime, stdout: IO[str], stderr: IO[str
     at = store.utcnow_iso(lambda: now)
     if args.bazibo_command == "poll":
         return _bazibo_poll(settings, now, stdout, stderr)
+    if args.bazibo_command == "watch":
+        return _bazibo_watch(conn, settings, now, stdout, stderr)
     if args.bazibo_command == "mint" and (args.mail or args.ref):
         return _bazibo_mint_mail(settings, args, now, stdout, stderr)
     if args.bazibo_command == "mint":

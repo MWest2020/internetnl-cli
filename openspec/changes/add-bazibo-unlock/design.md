@@ -300,3 +300,19 @@ purchase the donation path already served.
 The note or message of a donation still decides nothing; only the amount
 does. Anyone who donates 1 or more gets a code, which is the intent.
 
+### D13 — The watch (`netnl-admin bazibo watch`)
+
+Mark, 27 Nov 2026: "geen zin in ad hoc oplossingen". A silent failure must
+be noticed without anyone looking at logs. `bazibo_issuance._process`
+writes a `bazibo_watch` row (transaction id, first seen; no email, no code)
+as its own autocommit write before `_persist`, so a transaction is watched
+even when no issuance row follows (hourly cap, crash, locked database).
+A CronJob runs `netnl-admin bazibo watch` every 5 minutes: every watched
+transaction without a delivered issuance after
+`NETNL_BAZIBO_ALERT_AFTER_MINUTES` (15), and every issuance row that is not
+delivered (failed, parked, pending past a crash, undeliverable), gets one
+mail to `NETNL_BAZIBO_ALERT_TO`. `alerted_at` is set only after the mail
+went out (alert once, retried on a failed send). The subject carries the
+transaction id reduced to `[A-Za-z0-9_.:-]` (`?` otherwise), so nothing
+from BMC reaches a header. Not covered: a payment BMC never sends a webhook
+for; BMC's own sale notifications remain the check for that.

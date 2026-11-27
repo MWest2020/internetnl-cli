@@ -120,6 +120,26 @@ purchase, only "support created".
   de volledige versie van Bazibo in de browser." (and the English line)
   instead of the purchase wording
 
+### Requirement: An undelivered code raises one alert
+
+With `NETNL_BAZIBO_ALERT_TO` set, `netnl-admin bazibo watch` SHALL mail that
+address once per transaction that qualified for a Bazibo code and has no
+delivered issuance `NETNL_BAZIBO_ALERT_AFTER_MINUTES` (default 15) after it
+was first seen, including a transaction with no issuance row and any
+failed, parked, pending or undeliverable issuance row. The alert SHALL NOT
+carry the buyer's address or the code.
+
+#### Scenario: A failed mail is alerted once
+
+- WHEN a code mail failed and no retry delivered it within 15 minutes
+- THEN one mail "Bazibo-code niet verstuurd voor transactie <txn> —
+  controleer" goes out, and later runs send nothing more for it
+
+#### Scenario: Nothing written but the watch row
+
+- WHEN a qualifying donation hit the hourly cap and no issuance row exists
+- THEN the watch still alerts for its transaction
+
 ### Requirement: The delivery shape is logged without personal data
 
 Every `donation.created` and `extra_purchase.created` delivery that passed

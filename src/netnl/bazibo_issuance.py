@@ -182,6 +182,10 @@ def _process(
 
     conn = store.connect(settings.db)
     try:
+        # Its own autocommit write, before anything that can fail: the watch
+        # (`netnl-admin bazibo watch`) then sees this transaction even if no
+        # issuance row is ever written (hourly cap, a crash, a locked DB).
+        store.watch_bazibo(conn, delivery.transaction_id, store.utcnow_iso(lambda: now))
         outcome = _persist(conn, cfg, delivery, decision, now, sanitized_txn, manual)
         if isinstance(outcome, str):
             return outcome, ""

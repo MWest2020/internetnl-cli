@@ -15,6 +15,7 @@ invariant above.
 
 from __future__ import annotations
 
+import re
 import html as _html
 import logging
 import smtplib
@@ -388,6 +389,38 @@ def build_bazibo_notify_mail(*, to: str, code_id: str, txn_id: str, source: str 
     never the code, never the buyer's address."""
     body = f"bazibo code issued ({source}): code id {code_id}, txn {txn_id}\n"
     return Mail(to=to, subject="netnl: bazibo code issued", body=body)
+
+
+_SAFE_REF = re.compile(r"[^A-Za-z0-9_.:-]")
+
+
+def build_bazibo_alert_mail(
+    *, to: str, txn_id: str, state: str | None, attempts: int | None, code_id: str | None,
+    seen_at: str,
+) -> Mail:
+    """`netnl-admin bazibo watch`: one alert per transaction whose code was
+    not delivered in time. The transaction id (reduced to plain token
+    characters, so nothing from BMC can reach a header), the issuance state
+    and attempts, the code id — never the buyer's address, never the code."""
+    ref = _SAFE_REF.sub("?", txn_id)[:128] or "?"
+    what = {
+        None: "geen uitgifte-rij: de code is nooit aangemaakt (limiet per uur, crash of databasefout)",
+        "pending": "pending: de mail is niet afgerond (crash tijdens versturen)",
+        "failed": "failed: de mail kon niet worden verstuurd",
+        "undeliverable": "undeliverable: geen bruikbaar e-mailadres in de webhook",
+    }.get(state, f"{state}")
+    body = (
+        f"Bazibo-code niet verstuurd voor transactie {ref}.\n\n"
+        f"Status: {what}\n"
+        f"Pogingen: {attempts if attempts is not None else 0}\n"
+        f"Code-id: {code_id or '-'}\n"
+        f"Eerst gezien: {seen_at}\n\n"
+        "Controleer de BMC-melding van deze donatie en stuur de code zo nodig met de hand\n"
+        "(dezelfde transactie, dus nooit een tweede code):\n\n"
+        f"  kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo mint --mail <adres> --ref {ref}\n\n"
+        "Deze melding komt één keer per transactie.\n"
+    )
+    return Mail(to=to, subject=f"Bazibo-code niet verstuurd voor transactie {ref} — controleer", body=body)
 
 
 def smtp_sender(

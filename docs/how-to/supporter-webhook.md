@@ -373,6 +373,30 @@ salt are in the `netnl-bridge` Secret, the public-key cross-check and
    with `live_mode: false` and is ignored unless
    `NETNL_BMC_ACCEPT_TEST_MODE=1` is set for the test.
 
+### The watch: a code that did not go out
+
+Mark, 27 Nov 2026: "geen zin in ad hoc oplossingen". `netnl-admin bazibo
+watch` runs as the CronJob `netnl-bazibo-watch` every 5 minutes. It mails
+`NETNL_BAZIBO_ALERT_TO` once per transaction that qualified for a code and
+has none delivered `NETNL_BAZIBO_ALERT_AFTER_MINUTES` (15) after it was
+first seen, with the subject "Bazibo-code niet verstuurd voor transactie
+<txn> — controleer". It covers:
+
+- a qualifying donation or Extra with no issuance row at all (hourly cap,
+  a crash or a database error before the row): the webhook writes a
+  `bazibo_watch` row (transaction id, first seen) before anything else;
+- an issuance row that is `failed`, parked (attempts used up), `pending`
+  past a crash, or `undeliverable` (no address in the webhook).
+
+The alert carries the transaction id (plain token characters only), the
+state, attempts and code id, and the hand-issue command for that
+transaction. Never the buyer's address, never the code. A transaction is
+marked alerted only after its mail went out; a failed alert mail is retried
+on the next run (exit 1). Without `NETNL_BAZIBO_ALERT_TO` the command says
+"watch off" and exits 0. What it cannot see: a donation BMC never sent a
+webhook for (that is what happened to the Extra); compare BMC's own sale
+notifications for those.
+
 ### Operator commands
 
 ```sh
@@ -420,6 +444,8 @@ The revocation list is the `bazibo_revoked` table (`code_id`, `reason` =
 | `NETNL_BAZIBO_PUBLIC_KEY` | unset | Startup refuses a key that does not match. |
 | `NETNL_BAZIBO_MIN_AMOUNT` | `0` | Minimum payment for the Extra (independent of the netnl minimum). |
 | `NETNL_BAZIBO_FROM_DONATIONS` | `0` | `1`: a plain donation also mints a code. Enables the subsystem on its own (no Extra needed). Refused together with `NETNL_BAZIBO_SOURCE=poll`. |
+| `NETNL_BAZIBO_ALERT_TO` | unset | `bazibo watch`: one alert per undelivered transaction to this address. Off while unset. |
+| `NETNL_BAZIBO_ALERT_AFTER_MINUTES` | `15` | How long a transaction may go without a delivered code before the alert. |
 | `NETNL_BAZIBO_DONATION_MIN` | `1` | Minimum donation for a code, in the account's currency (independent of the netnl minimum). |
 | `NETNL_BAZIBO_DEVICE_LIMIT` | `10` | Devices per code. |
 | `NETNL_BAZIBO_AUTO_REVOKE_AT` | `100` | Distinct devices that revoke a code. |

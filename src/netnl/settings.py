@@ -527,6 +527,10 @@ class BaziboSettings:
     # `NETNL_BAZIBO_FROM_DONATIONS=1` switches it on; off by default.
     from_donations: bool = False
     donation_min: Decimal = Decimal("1")
+    # `netnl-admin bazibo watch` (CronJob): one mail per transaction whose
+    # code was not delivered within `alert_after_minutes`. Off while unset.
+    alert_to: str | None = None
+    alert_after_minutes: int = 15
 
 
 def _decode_seed(raw: str) -> bytes:
@@ -687,6 +691,15 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
         if poll_not_before.tzinfo is None:
             poll_not_before = poll_not_before.replace(tzinfo=timezone.utc)
 
+    alert_to = (env.get("NETNL_BAZIBO_ALERT_TO") or "").strip() or None
+    if alert_to is not None:
+        from netnl import bmc  # local, like `bazibo` above
+        if not bmc.valid_recipient(alert_to):
+            raise SettingsError(f"NETNL_BAZIBO_ALERT_TO must be one plain address: got {alert_to!r}")
+    alert_after = _resolve_numeric(env, "NETNL_BAZIBO_ALERT_AFTER_MINUTES", 15)
+    if alert_after < 1:
+        raise SettingsError("NETNL_BAZIBO_ALERT_AFTER_MINUTES must be at least 1")
+
     raw_origins = env.get("NETNL_BAZIBO_ALLOWED_ORIGINS")
     if raw_origins is None:
         origins = _BAZIBO_DEFAULT_ORIGINS
@@ -717,5 +730,7 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
         poll_not_before=poll_not_before,
         from_donations=from_donations,
         donation_min=_resolve_decimal(env, "NETNL_BAZIBO_DONATION_MIN", Decimal("1")),
+        alert_to=alert_to,
+        alert_after_minutes=alert_after,
         **numeric,
     )
