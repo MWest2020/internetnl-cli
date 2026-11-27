@@ -38,8 +38,25 @@ class _FakeSMTP:
     def starttls(self, context=None):
         self.calls.append(("starttls",))
 
-    def login(self, username, password):
-        self.calls.append(("login", username, password))
+    # The slice of `smtplib.SMTP` that `mail._authenticate_once` uses. The
+    # server advertises PLAIN and LOGIN; each `auth()` call is one AUTH
+    # command, recorded with the credentials it carries.
+    esmtp_features = {"auth": "PLAIN LOGIN"}
+    user = password = None
+
+    def ehlo_or_helo_if_needed(self):
+        pass
+
+    def has_extn(self, name):
+        return name.lower() in self.esmtp_features
+
+    def auth_plain(self, challenge=None):
+        raise AssertionError("not called by the fake auth()")
+
+    auth_login = auth_plain
+
+    def auth(self, mechanism, authobject, *, initial_response_ok=True):
+        self.calls.append(("auth", mechanism, self.user, self.password))
 
     def sendmail(self, from_addr, to_addrs, msg):
         self.calls.append(("sendmail", from_addr, tuple(to_addrs)))
@@ -126,7 +143,7 @@ def test_bazibo_mail_uses_its_own_relay(own_relay_env, fake_smtp):
     conn = fake_smtp.instances[0]
     assert (conn.host, conn.port) == ("mail.bazibo.example", 2587)
     assert conn.calls[0] == ("starttls",)
-    assert ("login", "hallo@bazibo.example", BAZIBO_PASSWORD) in conn.calls
+    assert ("auth", "PLAIN", "hallo@bazibo.example", BAZIBO_PASSWORD) in conn.calls
     assert ("sendmail", "hallo@bazibo.example", ("buyer@example.org",)) in conn.calls
     msg = _headers(conn)
     assert msg["From"] == "Bazibo <hallo@bazibo.example>"
@@ -139,7 +156,7 @@ def test_supporter_mail_is_unchanged_when_bazibo_has_its_own_relay(own_relay_env
 
     conn = fake_smtp.instances[0]
     assert (conn.host, conn.port) == ("smtp.example.org", 587)
-    assert ("login", "netnl@example.org", MAIN_PASSWORD) in conn.calls
+    assert ("auth", "PLAIN", "netnl@example.org", MAIN_PASSWORD) in conn.calls
     assert ("sendmail", "netnl@example.org", ("donor@example.org",)) in conn.calls
     msg = _headers(conn)
     assert msg["From"] == "netnl@example.org"
@@ -174,7 +191,7 @@ def test_fallback_to_the_bridge_relay_with_the_bazibo_from_and_reply_to(env, fak
 
     conn = fake_smtp.instances[0]
     assert (conn.host, conn.port) == ("smtp.example.org", 587)
-    assert ("login", "netnl@example.org", MAIN_PASSWORD) in conn.calls
+    assert ("auth", "PLAIN", "netnl@example.org", MAIN_PASSWORD) in conn.calls
     assert ("sendmail", "mark@example.net", ("buyer@example.org",)) in conn.calls
     msg = _headers(conn)
     assert msg["From"] == "Bazibo <mark@example.net>"
@@ -315,9 +332,9 @@ def test_settings_repr_never_carries_the_relay_password(own_relay_env):
 
 def test_a_failing_bazibo_relay_logs_and_raises_nothing_secret(own_relay_env, monkeypatch, caplog):
     class _Refusing(_FakeSMTP):
-        def login(self, username, password):
+        def auth(self, mechanism, authobject, *, initial_response_ok=True):
             raise smtplib.SMTPAuthenticationError(
-                535, f"auth failed for {username} / {password} at mail.bazibo.example".encode()
+                535, f"auth failed for {self.user} / {self.password} at mail.bazibo.example".encode()
             )
 
     monkeypatch.setattr(smtplib, "SMTP", _Refusing)

@@ -34,8 +34,25 @@ class _FakeSMTP:
     def starttls(self, context=None):
         self.calls.append(("starttls",))
 
-    def login(self, username, password):
-        self.calls.append(("login", username, password))
+    # The slice of `smtplib.SMTP` that `mail._authenticate_once` uses. The
+    # server advertises PLAIN and LOGIN; each `auth()` call is one AUTH
+    # command, recorded with the credentials it carries.
+    esmtp_features = {"auth": "PLAIN LOGIN"}
+    user = password = None
+
+    def ehlo_or_helo_if_needed(self):
+        pass
+
+    def has_extn(self, name):
+        return name.lower() in self.esmtp_features
+
+    def auth_plain(self, challenge=None):
+        raise AssertionError("not called by the fake auth()")
+
+    auth_login = auth_plain
+
+    def auth(self, mechanism, authobject, *, initial_response_ok=True):
+        self.calls.append(("auth", mechanism, self.user, self.password))
 
     def sendmail(self, from_addr, to_addrs, msg):
         self.calls.append(("sendmail", from_addr, tuple(to_addrs)))
@@ -259,32 +276,32 @@ def test_credential_mail_is_sent_as_multipart_alternative_plain_then_html(fake_s
 # --- smtp_sender: connection shape -----------------------------------------
 
 
-def test_starttls_called_before_login(fake_smtp):
+def test_starttls_called_before_auth(fake_smtp):
     send = _sender(fake_smtp, username="mailer", password="hunter2")
     send(mail.Mail(to="donor@example.org", subject="s", body="b"))
 
     conn = fake_smtp.instances[0]
     names = [c[0] for c in conn.calls]
-    assert names.index("starttls") < names.index("login")
+    assert names.index("starttls") < names.index("auth")
 
 
-def test_login_skipped_without_username(fake_smtp):
+def test_auth_skipped_without_username(fake_smtp):
     send = _sender(fake_smtp, username=None)
     send(mail.Mail(to="donor@example.org", subject="s", body="b"))
 
     conn = fake_smtp.instances[0]
     names = [c[0] for c in conn.calls]
-    assert "login" not in names
+    assert "auth" not in names
     assert "starttls" in names  # starttls mode still upgrades the connection
 
 
-def test_login_attempted_with_configured_username(fake_smtp):
+def test_one_auth_plain_with_configured_username(fake_smtp):
     send = _sender(fake_smtp, username="mailer", password="hunter2")
     send(mail.Mail(to="donor@example.org", subject="s", body="b"))
 
     conn = fake_smtp.instances[0]
-    login_calls = [c for c in conn.calls if c[0] == "login"]
-    assert login_calls == [("login", "mailer", "hunter2")]
+    auth_calls = [c for c in conn.calls if c[0] == "auth"]
+    assert auth_calls == [("auth", "PLAIN", "mailer", "hunter2")]
 
 
 def test_ssl_mode_uses_smtp_ssl_and_skips_starttls(fake_smtp):
@@ -383,8 +400,9 @@ def test_plaintext_mode_skips_starttls(fake_smtp):
 # --- security review round: root-fix, `except Exception`, not a narrow list
 
 
-def test_unicode_encode_error_from_login_becomes_delivery_error(monkeypatch):
-    """Security review finding: `smtplib.SMTP.login` raises a bare
+def test_unicode_encode_error_from_auth_becomes_delivery_error(monkeypatch):
+    """Security review finding: `smtplib.SMTP.login` (and `auth()`, which
+    `smtp_sender` now calls directly) raises a bare
     `UnicodeEncodeError` (not `SMTPException`/`OSError`/`ssl.SSLError`) when
     the configured username/password contains a non-ASCII character — this
     used to escape `smtp_sender` entirely as an unhandled exception. Proves
@@ -393,7 +411,7 @@ def test_unicode_encode_error_from_login_becomes_delivery_error(monkeypatch):
     """
 
     class _NonAsciiLoginSMTP(_FakeSMTP):
-        def login(self, username, password):
+        def auth(self, mechanism, authobject, *, initial_response_ok=True):
             raise UnicodeEncodeError(
                 "ascii", "wächter", 0, 1, "ordinal not in range(128)"
             )

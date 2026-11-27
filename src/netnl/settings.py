@@ -358,7 +358,7 @@ def _load_supporter(env: Mapping[str, str]) -> SupporterSettings | None:
     `NETNL_SMTP_USERNAME`/`NETNL_SMTP_PASSWORD` are deliberately optional:
     some relays authenticate by network origin or client certificate, not a
     username/password pair. `netnl.mail.smtp_sender` only attempts
-    `login()` when a username is configured — see that module.
+    to authenticate (one AUTH command, PLAIN or LOGIN) when a username is configured — see that module.
     """
     secret = env.get("NETNL_BMC_WEBHOOK_SECRET")
     if not secret:
