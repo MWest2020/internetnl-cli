@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The mail sender authenticates with exactly one AUTH command per mail:
+  PLAIN (after STARTTLS, or inside implicit TLS), LOGIN only when PLAIN is
+  not offered, and no other mechanism. `smtplib.SMTP.login()` tried
+  CRAM-MD5 first and fell through to the next mechanism after each failure,
+  so a server offering CRAM-MD5 it cannot verify logged a failed login on
+  every mail, and a wrong password logged one per mechanism: a risk with a
+  hosting firewall that blocks IPs after failed logins. The same for the
+  bridge's relay and the Bazibo relay.
+
 ### Added
 
 - Bazibo code mails get their own sender identity

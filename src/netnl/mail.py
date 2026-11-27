@@ -437,6 +437,48 @@ def build_bazibo_alert_mail(
     return Mail(to=to, subject=f"Bazibo-code niet verstuurd voor transactie {ref} — controleer", body=body)
 
 
+# Only these two, in this order of preference. `smtplib.SMTP.login()` is
+# deliberately not used: it tries CRAM-MD5, then PLAIN, then LOGIN, moving to
+# the next one after every SMTPAuthenticationError. A server that offers
+# CRAM-MD5 but cannot check it (Plesk, with hashed mailbox passwords) then
+# logs a failed login on every mail before PLAIN succeeds, and a wrong
+# password costs one failure per advertised mechanism — enough to trip a
+# fail2ban-style IP block at the hosting provider.
+_AUTH_PREFERENCE = ("PLAIN", "LOGIN")
+
+
+class _NoUsableAuthMechanism(smtplib.SMTPException):
+    """The server offers no AUTH, or none of `_AUTH_PREFERENCE`."""
+
+
+def _authenticate_once(conn: smtplib.SMTP, username: str, password: str) -> None:
+    """Sends exactly one AUTH command: PLAIN when the server advertises it,
+    else LOGIN, else nothing at all (`_NoUsableAuthMechanism`). A failure
+    is never followed by another mechanism or another attempt — the caller
+    turns it into `DeliveryError`.
+
+    Called after `starttls()` in starttls mode; `ehlo_or_helo_if_needed`
+    then re-reads the post-TLS EHLO, which is the list a server that only
+    offers AUTH inside TLS advertises."""
+    conn.ehlo_or_helo_if_needed()
+    if not conn.has_extn("auth"):
+        raise _NoUsableAuthMechanism("server offers no AUTH")
+    advertised = conn.esmtp_features["auth"].upper().split()
+    mechanism = next((m for m in _AUTH_PREFERENCE if m in advertised), None)
+    if mechanism is None:
+        raise _NoUsableAuthMechanism("server offers neither AUTH PLAIN nor AUTH LOGIN")
+    # `auth_plain`/`auth_login` read these two attributes, the same ones
+    # `login()` would have set.
+    conn.user, conn.password = username, password
+    if mechanism == "PLAIN":
+        # One round trip: `AUTH PLAIN <base64>`.
+        conn.auth("PLAIN", conn.auth_plain, initial_response_ok=True)
+    else:
+        # No initial response: a server that ignores it and still asks
+        # "Username:" would otherwise get the password as the username.
+        conn.auth("LOGIN", conn.auth_login, initial_response_ok=False)
+
+
 def smtp_sender(
     *,
     host: str,
@@ -457,12 +499,15 @@ def smtp_sender(
 
     - `mode="ssl"`: connects with implicit TLS (`SMTP_SSL`).
     - `mode="starttls"`: connects plain, then upgrades with `starttls()`
-      *before* any `login()` call.
+      *before* authenticating.
     - `mode="plaintext"`: neither — the caller (`netnl.settings`) already
       required an explicit `NETNL_SMTP_ALLOW_PLAINTEXT=1` opt-in for this.
-    - `login()` is attempted only when `username` is set — some relays
-      authenticate by network origin or client certificate, not a
-      username/password pair (see `netnl.settings._load_supporter`).
+    - Authentication is attempted only when `username` is set — some
+      relays authenticate by network origin or client certificate, not a
+      username/password pair (see `netnl.settings._load_supporter`). When
+      it is, exactly one AUTH command is sent per mail: see
+      `_authenticate_once` (never `smtplib.SMTP.login()`, which walks every
+      advertised mechanism after a failure).
     - Sends to exactly `[mail.to]` — no cc/bcc, no additional envelope
       recipient ever added.
     - **Every** exception raised while connecting, authenticating, or
@@ -499,10 +544,10 @@ def smtp_sender(
                 connection = smtplib.SMTP(host, port, timeout=timeout)
             with connection as conn:
                 if mode == "starttls":
-                    # starttls() before login() — never the other order.
+                    # starttls() before AUTH — never the other order.
                     conn.starttls(context=ssl.create_default_context())
                 if username:
-                    conn.login(username, password or "")
+                    _authenticate_once(conn, username, password or "")
                 message = EmailMessage()
                 message["Subject"] = mail.subject
                 message["From"] = from_addr
