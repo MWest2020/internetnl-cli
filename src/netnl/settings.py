@@ -486,6 +486,33 @@ _MIN_DEVICE_SALT_LEN = 32
 
 
 @dataclass(frozen=True)
+class BaziboRelay:
+    """Bazibo's own SMTP relay (`NETNL_BAZIBO_SMTP_HOST` and friends,
+    openspec/changes/add-bazibo-mail-identity). The timeout is the bridge's
+    `NETNL_SMTP_TIMEOUT`, so the pending lease derived from it still holds.
+    """
+
+    host: str
+    port: int
+    username: str | None
+    password: str | None = field(repr=False)
+    mode: str
+
+
+@dataclass(frozen=True)
+class BaziboMail:
+    """Who the buyer's code mail comes from. `relay=None` means the
+    bridge's own SMTP config (`NETNL_SMTP_*`) carries it; the From address
+    is then still `from_addr` when set (else the address of
+    `NETNL_SMTP_FROM`), always under `from_name`."""
+
+    relay: BaziboRelay | None = None
+    from_addr: str | None = None
+    from_name: str = "Bazibo"
+    reply_to: str | None = None
+
+
+@dataclass(frozen=True)
 class BaziboSettings:
     """Bazibo web unlock codes: issuance from a BMC Extra purchase and the
     device-count activation check (openspec/changes/add-bazibo-unlock).
@@ -529,6 +556,8 @@ class BaziboSettings:
     # code was not delivered within `alert_after_minutes`. Off while unset.
     alert_to: str | None = None
     alert_after_minutes: int = 15
+    # Sender identity of the buyer's code mail (add-bazibo-mail-identity).
+    mail: BaziboMail = field(default_factory=BaziboMail)
 
 
 def _decode_seed(raw: str) -> bytes:
@@ -548,6 +577,84 @@ def _decode_seed(raw: str) -> bytes:
         "NETNL_BAZIBO_SIGNING_KEY must be the base64 encoding of a raw 32-byte "
         "Ed25519 seed (value not shown)"
     )
+
+
+_BAZIBO_RELAY_MODES = ("starttls", "ssl")
+_BAZIBO_RELAY_PARTS = (
+    "NETNL_BAZIBO_SMTP_PORT",
+    "NETNL_BAZIBO_SMTP_USERNAME",
+    "NETNL_BAZIBO_SMTP_PASSWORD",
+    "NETNL_BAZIBO_SMTP_MODE",
+)
+
+
+def _load_bazibo_mail(env: Mapping[str, str]) -> BaziboMail:
+    """`NETNL_BAZIBO_SMTP_*` / `NETNL_BAZIBO_MAIL_REPLY_TO`. Fail-fast on a
+    half configuration; no error ever echoes the username or password.
+
+    - No `NETNL_BAZIBO_SMTP_HOST`: the bridge's relay carries the mail, and
+      any other relay part set on its own (port, username, password, mode)
+      is refused rather than silently ignored.
+    - A host needs `NETNL_BAZIBO_SMTP_FROM` (a relay of its own almost
+      always refuses the bridge's From domain), and a username needs a
+      password and vice versa. Plaintext is not offered for this relay.
+    """
+    from_addr = (env.get("NETNL_BAZIBO_SMTP_FROM") or "").strip() or None
+    if from_addr is not None and not bmc.valid_recipient(from_addr):
+        raise SettingsError(
+            "NETNL_BAZIBO_SMTP_FROM must be one plain address (the display name goes in "
+            f"NETNL_BAZIBO_SMTP_FROM_NAME): got {from_addr!r}"
+        )
+    raw_name = env.get("NETNL_BAZIBO_SMTP_FROM_NAME")
+    from_name = (raw_name or "").strip() or "Bazibo"
+    if len(from_name) > 64 or not from_name.isprintable():
+        raise SettingsError(
+            "NETNL_BAZIBO_SMTP_FROM_NAME must be printable text of at most 64 characters, "
+            "without CR/LF"
+        )
+    reply_to = (env.get("NETNL_BAZIBO_MAIL_REPLY_TO") or "").strip() or None
+    if reply_to is not None and not bmc.valid_recipient(reply_to):
+        raise SettingsError(
+            f"NETNL_BAZIBO_MAIL_REPLY_TO must be one plain address: got {reply_to!r}"
+        )
+
+    host = (env.get("NETNL_BAZIBO_SMTP_HOST") or "").strip() or None
+    if host is None:
+        stray = [var for var in _BAZIBO_RELAY_PARTS if env.get(var)]
+        if stray:
+            raise SettingsError(
+                f"{', '.join(stray)} set but NETNL_BAZIBO_SMTP_HOST is missing "
+                "(the Bazibo relay is half configured)"
+            )
+        return BaziboMail(relay=None, from_addr=from_addr, from_name=from_name, reply_to=reply_to)
+
+    if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host):
+        raise SettingsError(
+            "NETNL_BAZIBO_SMTP_HOST must be a bare host name (the port goes in "
+            f"NETNL_BAZIBO_SMTP_PORT): got {host!r}"
+        )
+    if from_addr is None:
+        raise SettingsError(
+            "NETNL_BAZIBO_SMTP_HOST is set but NETNL_BAZIBO_SMTP_FROM is missing "
+            "(the Bazibo relay is half configured)"
+        )
+    port = _resolve_numeric(env, "NETNL_BAZIBO_SMTP_PORT", 587)
+    if not 1 <= port <= 65535:
+        raise SettingsError(f"NETNL_BAZIBO_SMTP_PORT must be 1-65535: got {port}")
+    mode = env.get("NETNL_BAZIBO_SMTP_MODE") or "starttls"
+    if mode not in _BAZIBO_RELAY_MODES:
+        raise SettingsError(
+            f"NETNL_BAZIBO_SMTP_MODE must be one of {list(_BAZIBO_RELAY_MODES)}: got {mode!r}"
+        )
+    username = env.get("NETNL_BAZIBO_SMTP_USERNAME") or None
+    password = env.get("NETNL_BAZIBO_SMTP_PASSWORD") or None
+    if (username is None) != (password is None):
+        missing = "NETNL_BAZIBO_SMTP_PASSWORD" if password is None else "NETNL_BAZIBO_SMTP_USERNAME"
+        raise SettingsError(
+            f"the Bazibo relay is half configured: missing {missing} (values not shown)"
+        )
+    relay = BaziboRelay(host=host, port=port, username=username, password=password, mode=mode)
+    return BaziboMail(relay=relay, from_addr=from_addr, from_name=from_name, reply_to=reply_to)
 
 
 def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None) -> BaziboSettings | None:
@@ -701,6 +808,8 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
     if alert_after < 1:
         raise SettingsError("NETNL_BAZIBO_ALERT_AFTER_MINUTES must be at least 1")
 
+    bazibo_mail = _load_bazibo_mail(env)
+
     raw_origins = env.get("NETNL_BAZIBO_ALLOWED_ORIGINS")
     if raw_origins is None:
         origins = _BAZIBO_DEFAULT_ORIGINS
@@ -734,5 +843,6 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
         stripe_allow_test_mode=raw_test == "1",
         alert_to=alert_to,
         alert_after_minutes=alert_after,
+        mail=bazibo_mail,
         **numeric,
     )
