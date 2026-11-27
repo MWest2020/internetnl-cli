@@ -96,7 +96,7 @@ class _Handler(socketserver.BaseRequestHandler):
                 features = ["fake.example"]
                 if self.cfg.tls == "starttls" and not self.tls:
                     features.append("STARTTLS")
-                if self.cfg.tls != "starttls" or self.tls:
+                if self.cfg.mechanisms and (self.cfg.tls != "starttls" or self.tls):
                     features.append("AUTH " + " ".join(self.cfg.mechanisms))
                 features.append("8BITMIME")
                 for f in features[:-1]:

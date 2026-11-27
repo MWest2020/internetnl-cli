@@ -470,8 +470,13 @@ def _authenticate_once(conn: smtplib.SMTP, username: str, password: str) -> None
     # `auth_plain`/`auth_login` read these two attributes, the same ones
     # `login()` would have set.
     conn.user, conn.password = username, password
-    authobject = conn.auth_plain if mechanism == "PLAIN" else conn.auth_login
-    conn.auth(mechanism, authobject, initial_response_ok=True)
+    if mechanism == "PLAIN":
+        # One round trip: `AUTH PLAIN <base64>`.
+        conn.auth("PLAIN", conn.auth_plain, initial_response_ok=True)
+    else:
+        # No initial response: a server that ignores it and still asks
+        # "Username:" would otherwise get the password as the username.
+        conn.auth("LOGIN", conn.auth_login, initial_response_ok=False)
 
 
 def smtp_sender(
@@ -494,7 +499,7 @@ def smtp_sender(
 
     - `mode="ssl"`: connects with implicit TLS (`SMTP_SSL`).
     - `mode="starttls"`: connects plain, then upgrades with `starttls()`
-      *before* any `login()` call.
+      *before* authenticating.
     - `mode="plaintext"`: neither — the caller (`netnl.settings`) already
       required an explicit `NETNL_SMTP_ALLOW_PLAINTEXT=1` opt-in for this.
     - Authentication is attempted only when `username` is set — some
@@ -539,7 +544,7 @@ def smtp_sender(
                 connection = smtplib.SMTP(host, port, timeout=timeout)
             with connection as conn:
                 if mode == "starttls":
-                    # starttls() before login() — never the other order.
+                    # starttls() before AUTH — never the other order.
                     conn.starttls(context=ssl.create_default_context())
                 if username:
                     _authenticate_once(conn, username, password or "")
