@@ -184,11 +184,12 @@ and transaction id, never the code), the SMTP settings.
 - **O5** Close the Tailscale Funnel ingress for `/bazibo/*` (or entirely)
   so `CF-Connecting-IP` can only come from Cloudflare. Default: leave it;
   see D4 for why spoofing it only lets a client evade its own limit.
-- **O6** The deep link carries the code in the query (`?unlock=`), so it
-  lands in the access logs of bazibo.nl and GitHub Pages and in browser
-  history. A fragment (`#unlock=`) would stay in the browser. The format
-  note fixes `?unlock=`, and the Bazibo client reads it. Default: keep
-  `?unlock=`; if the Bazibo client also accepts `#unlock=`, the mail can
-  switch with a one-line change in `bazibo.py`.
+- **O6** Resolved 2026-11-27: the mail links use the fragment form,
+  `https://bazibo.nl/#unlock=<code>` and
+  `https://mwest2020.github.io/bazibo/#unlock=<code>`. A fragment is never
+  sent to the web server, so the code stays out of the access logs of
+  bazibo.nl and GitHub Pages (it still lands in local browser history). The
+  Bazibo verifier accepts both `#unlock=` and `?unlock=`; the format note
+  now names `#unlock=` as preferred.
 - **O4** Device rows never expire. A device not seen for a long time could
   free its slot. Default: keep them; 10 is generous.

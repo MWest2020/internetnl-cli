@@ -45,6 +45,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Bazibo mail links use the fragment form (`https://bazibo.nl/#unlock=<code>`,
+  and the same on GitHub Pages), so the code is never sent to, or logged
+  by, the web server. Bazibo accepts both `#unlock=` and `?unlock=`.
+
 - `POST /webhooks/bmc` answers 200 `ignored` for any event other than
   `donation.created` (and, when enabled, the Bazibo Extra) whatever its
   payload shape; before, such an event without donation fields got a 400,
