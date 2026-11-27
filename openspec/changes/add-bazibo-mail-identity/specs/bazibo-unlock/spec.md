@@ -35,7 +35,8 @@ the name defaulting to `Bazibo` and the address to
 The facade SHALL refuse to start, naming the variable, when a Bazibo relay
 part (`NETNL_BAZIBO_SMTP_PORT`, `_USERNAME`, `_PASSWORD`, `_MODE`) is set
 without `NETNL_BAZIBO_SMTP_HOST`; when a host is set without
-`NETNL_BAZIBO_SMTP_FROM`; when only one of username and password is set;
+`NETNL_BAZIBO_SMTP_FROM`, `NETNL_BAZIBO_SMTP_USERNAME` or
+`NETNL_BAZIBO_SMTP_PASSWORD`;
 when the mode is not `starttls` or `ssl`; or when the From or Reply-To is
 not one plain address. No startup error, log line or delivery error SHALL
 contain the relay's username or password.

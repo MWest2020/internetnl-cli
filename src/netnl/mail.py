@@ -522,7 +522,9 @@ def smtp_sender(
                 conn.sendmail(envelope_from, [mail.to], message.as_string())
         except Exception as exc:
             _logger.warning("supporter mail delivery failed: %s", type(exc).__name__)
-            raise DeliveryError("failed to deliver supporter credential mail") from exc
+            # `from None`: the cause can quote the host, the username or a
+            # server reply; a later traceback must not print it.
+            raise DeliveryError("failed to deliver supporter credential mail") from None
 
     return _send
 

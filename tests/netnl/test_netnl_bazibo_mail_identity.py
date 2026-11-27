@@ -260,6 +260,19 @@ def test_host_without_from_is_refused(own_relay_env):
         load(own_relay_env)
 
 
+def test_host_without_any_credentials_is_refused(own_relay_env):
+    del own_relay_env["NETNL_BAZIBO_SMTP_USERNAME"]
+    del own_relay_env["NETNL_BAZIBO_SMTP_PASSWORD"]
+    with pytest.raises(SettingsError, match="NETNL_BAZIBO_SMTP_USERNAME, NETNL_BAZIBO_SMTP_PASSWORD"):
+        load(own_relay_env)
+
+
+def test_ssl_mode_defaults_to_port_465(own_relay_env):
+    del own_relay_env["NETNL_BAZIBO_SMTP_PORT"]
+    own_relay_env["NETNL_BAZIBO_SMTP_MODE"] = "ssl"
+    assert load(own_relay_env).bazibo.mail.relay.port == 465
+
+
 @pytest.mark.parametrize("drop", ["NETNL_BAZIBO_SMTP_USERNAME", "NETNL_BAZIBO_SMTP_PASSWORD"])
 def test_username_without_password_and_vice_versa_is_refused(own_relay_env, drop):
     del own_relay_env[drop]
@@ -296,6 +309,8 @@ def test_settings_repr_never_carries_the_relay_password(own_relay_env):
     settings = load(own_relay_env)
     assert BAZIBO_PASSWORD not in repr(settings.bazibo)
     assert BAZIBO_PASSWORD not in repr(settings.bazibo.mail)
+    assert MAIN_PASSWORD not in repr(settings)
+    assert "test-webhook-secret" not in repr(settings)
 
 
 def test_a_failing_bazibo_relay_logs_and_raises_nothing_secret(own_relay_env, monkeypatch, caplog):
@@ -314,6 +329,7 @@ def test_a_failing_bazibo_relay_logs_and_raises_nothing_secret(own_relay_env, mo
         assert secret not in caplog.text
         assert secret not in str(exc.value)
     assert "SMTPAuthenticationError" in caplog.text
+    assert exc.value.__cause__ is None and exc.value.__suppress_context__
 
 
 def test_minted_code_never_appears_in_logs_of_a_routed_send(own_relay_env, fake_smtp, caplog):
@@ -324,3 +340,15 @@ def test_minted_code_never_appears_in_logs_of_a_routed_send(own_relay_env, fake_
                                link_pages="https://mwest2020.github.io/bazibo/#unlock=" + code, device_limit=10)
     mail.build_sender(load(own_relay_env))(m)
     assert code not in caplog.text and BAZIBO_PASSWORD not in caplog.text
+
+
+def test_app_without_injected_sender_routes_the_code_mail(own_relay_env, fake_smtp, fake_opener, clock):
+    """`create_app` builds its own sender: the Stripe/BMC path then mails
+    through the Bazibo relay and the netnl mail through the bridge's."""
+    from netnl.api import create_app
+
+    app = create_app(load(own_relay_env), opener=fake_opener, now=clock)
+    app.state.sender(_bazibo_mail())
+    app.state.sender(_credential_mail())
+    bz_conn, main_conn = fake_smtp.instances
+    assert bz_conn.host == "mail.bazibo.example" and main_conn.host == "smtp.example.org"

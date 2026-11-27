@@ -32,8 +32,8 @@ change has to work in two steps without a code change between them.
    - A host: Bazibo's own relay, same timeout as the bridge (the pending
      lease derived from it still holds).
 3. **Fail-fast on a half configuration:** a port, username, password or
-   mode without a host; a host without `NETNL_BAZIBO_SMTP_FROM`; a
-   username without a password or the reverse; a From or Reply-To that is
+   mode without a host; a host without `NETNL_BAZIBO_SMTP_FROM`, a
+   username or a password (this relay always logs in); a From or Reply-To that is
    not one plain address; a display name with CR/LF or over 64
    characters; a host with a port in it; mode `plaintext` (not offered
    for this relay). No error echoes a username or password; the password

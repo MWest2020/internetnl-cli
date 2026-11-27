@@ -138,7 +138,8 @@ class SupporterSettings:
     required alongside it is present.
     """
 
-    webhook_secret: str
+    # `repr=False`: a settings object in a traceback must not carry secrets.
+    webhook_secret: str = field(repr=False)
     signature_header: str
     max_body_bytes: int
     accept_test_mode: bool
@@ -151,7 +152,7 @@ class SupporterSettings:
     smtp_host: str
     smtp_port: int
     smtp_username: str | None
-    smtp_password: str | None
+    smtp_password: str | None = field(repr=False)
     smtp_from: str
     smtp_mode: str
     smtp_timeout: int
@@ -596,8 +597,9 @@ def _load_bazibo_mail(env: Mapping[str, str]) -> BaziboMail:
       any other relay part set on its own (port, username, password, mode)
       is refused rather than silently ignored.
     - A host needs `NETNL_BAZIBO_SMTP_FROM` (a relay of its own almost
-      always refuses the bridge's From domain), and a username needs a
-      password and vice versa. Plaintext is not offered for this relay.
+      always refuses the bridge's From domain) and both a username and a
+      password. Plaintext is not offered for this relay; `ssl` defaults to
+      port 465, `starttls` to 587.
     """
     from_addr = (env.get("NETNL_BAZIBO_SMTP_FROM") or "").strip() or None
     if from_addr is not None and not bmc.valid_recipient(from_addr):
@@ -638,20 +640,27 @@ def _load_bazibo_mail(env: Mapping[str, str]) -> BaziboMail:
             "NETNL_BAZIBO_SMTP_HOST is set but NETNL_BAZIBO_SMTP_FROM is missing "
             "(the Bazibo relay is half configured)"
         )
-    port = _resolve_numeric(env, "NETNL_BAZIBO_SMTP_PORT", 587)
-    if not 1 <= port <= 65535:
-        raise SettingsError(f"NETNL_BAZIBO_SMTP_PORT must be 1-65535: got {port}")
     mode = env.get("NETNL_BAZIBO_SMTP_MODE") or "starttls"
     if mode not in _BAZIBO_RELAY_MODES:
         raise SettingsError(
             f"NETNL_BAZIBO_SMTP_MODE must be one of {list(_BAZIBO_RELAY_MODES)}: got {mode!r}"
         )
+    port = _resolve_numeric(env, "NETNL_BAZIBO_SMTP_PORT", 465 if mode == "ssl" else 587)
+    if not 1 <= port <= 65535:
+        raise SettingsError(f"NETNL_BAZIBO_SMTP_PORT must be 1-65535: got {port}")
+    # Unlike the bridge relay, this one always logs in: a submission relay
+    # for a mail domain (Plesk, for one) refuses an unauthenticated sender,
+    # and that should fail at startup, not on a buyer's mail.
     username = env.get("NETNL_BAZIBO_SMTP_USERNAME") or None
     password = env.get("NETNL_BAZIBO_SMTP_PASSWORD") or None
-    if (username is None) != (password is None):
-        missing = "NETNL_BAZIBO_SMTP_PASSWORD" if password is None else "NETNL_BAZIBO_SMTP_USERNAME"
+    if username is None or password is None:
+        missing = [
+            var for var, value in (
+                ("NETNL_BAZIBO_SMTP_USERNAME", username), ("NETNL_BAZIBO_SMTP_PASSWORD", password),
+            ) if value is None
+        ]
         raise SettingsError(
-            f"the Bazibo relay is half configured: missing {missing} (values not shown)"
+            f"the Bazibo relay is half configured: missing {', '.join(missing)} (values not shown)"
         )
     relay = BaziboRelay(host=host, port=port, username=username, password=password, mode=mode)
     return BaziboMail(relay=relay, from_addr=from_addr, from_name=from_name, reply_to=reply_to)
