@@ -35,23 +35,13 @@ under the same cap.
 - THEN it is handled by the `bazibo-unlock` capability (or ignored while
   that is dormant) and never mints a netnl credential, whatever its amount
 
-#### Scenario: A donation's note never decides anything
+#### Scenario: A donation never mints a Bazibo code
 
 - WHEN a validly-signed, live `donation.created` delivery's note or message
   mentions Bazibo
 - THEN it is qualified exactly like any other donation (a netnl credential
-  at or above `NETNL_SUPPORTER_MIN_AMOUNT`, otherwise ignored); a Bazibo
-  code follows only from the amount, and only while
-  `NETNL_BAZIBO_FROM_DONATIONS=1` (see `bazibo-unlock`)
-
-#### Scenario: A donation's Bazibo code does not change the credential path
-
-- WHEN `NETNL_BAZIBO_FROM_DONATIONS=1` and a qualifying donation also mints
-  a Bazibo code
-- THEN the netnl credential is minted, mailed and recorded exactly as
-  without it, on its own `supporter_issuance` row; a mail failure on
-  either path answers 503 and BMC's retry re-sends only the mail that
-  failed
+  at or above `NETNL_SUPPORTER_MIN_AMOUNT`, otherwise ignored) and no Bazibo
+  unlock code is minted or mailed
 
 #### Scenario: An ignored event is logged without its content
 

@@ -1,16 +1,12 @@
-"""Bazibo unlock codes from a BMC Extra purchase or a plain donation
-(openspec/changes/add-bazibo-unlock). Called from
-`netnl.supporter.handle_webhook` *after* HMAC verification and JSON
-parsing: `handle` for an Extra purchase while `settings.bazibo.enabled`,
-`handle_donation` for a `donation.created` while
-`settings.bazibo.from_donations` (design.md D12).
+"""Bazibo unlock codes from a paid purchase (openspec/changes/
+add-bazibo-unlock): a Stripe Payment Link checkout (`netnl.stripe_webhook`,
+design.md D12) or a BMC Extra purchase (`handle` below, called from
+`netnl.supporter.handle_webhook` after HMAC verification and JSON parsing,
+while `settings.bazibo.enabled`).
 
-One `bazibo_issuance` row per BMC transaction id, whichever route reached
-it: an Extra purchase that BMC ever reports both as an Extra and as a
-donation still finds the same row and never gets a second code. The netnl
-credential for the same donation lives in its own table
-(`supporter_issuance`, also keyed on the transaction id), so one donation
-gives at most one Bazibo mail and one netnl mail, each once.
+One `bazibo_issuance` row per payment reference (BMC transaction id or
+Stripe Checkout Session id): a retry or replay finds the same row and
+never puts a second code into the world.
 
 Same shape as the netnl credential path in `netnl.supporter` — persist in
 one `BEGIN IMMEDIATE` step, mail outside it, record the outcome in its own
@@ -174,7 +170,7 @@ def _record_outcome(
 def _process(
     settings: Settings, delivery: bmc.Delivery, decision: bmc.Decision,
     now: datetime, sender, sanitized_txn: str, manual: bool = False,
-    donation: bool = False,
+    source: str = "bmc",
 ) -> tuple[str, str]:
     cfg = settings.supporter
     bz = settings.bazibo
@@ -197,7 +193,7 @@ def _process(
         link, link_pages = bazibo.links(code)
         code_mail = mail.build_bazibo_mail(
             to=delivery.email, code=code, link=link, link_pages=link_pages,
-            device_limit=bz.device_limit, donation=donation,
+            device_limit=bz.device_limit,
         )
         try:
             sender(code_mail)
@@ -220,7 +216,7 @@ def _process(
             try:
                 sender(mail.build_bazibo_notify_mail(
                     to=cfg.notify, code_id=code_id, txn_id=sanitized_txn,
-                    source="donation" if donation else "extra",
+                    source=source,
                 ))
             except Exception:
                 _logger.warning("event=bazibo-notify-failed txn_id=%s", sanitized_txn)
@@ -276,30 +272,3 @@ async def handle(payload: dict, request, settings: Settings, sanitize) -> dict:
         return {"status": "ok"}
     return {"status": "ignored"}
 
-
-async def handle_donation(
-    delivery: bmc.Delivery, decision: bmc.Decision, request, settings: Settings, sanitize,
-) -> dict:
-    """A live `donation.created` of at least `NETNL_BAZIBO_DONATION_MIN`
-    while `NETNL_BAZIBO_FROM_DONATIONS=1` (Mark, 27 Nov 2026: BMC sends this
-    account no webhook for an Extra purchase, only "support created").
-    The caller has already qualified the delivery against the Bazibo
-    minimum. Raises `NetnlHTTPError` (503) like `handle`, so BMC retries
-    the whole delivery; the netnl credential path is idempotent on its own
-    row and sends nothing twice."""
-    bz: BaziboSettings | None = settings.bazibo
-    assert bz is not None and bz.enabled and bz.from_donations
-    sanitized_txn = sanitize(delivery.transaction_id)
-    outcome, code_id = await run_in_threadpool(
-        _process, settings, delivery, decision, request.app.state.now(),
-        request.app.state.sender, sanitized_txn, False, True,
-    )
-    if code_id:
-        _logger.info(
-            "event=bazibo-%s source=donation txn_id=%s code_id=%s", outcome, sanitized_txn, code_id
-        )
-    else:
-        _logger.info("event=bazibo-%s source=donation txn_id=%s", outcome, sanitized_txn)
-    if outcome in ("issued", "duplicate"):
-        return {"status": "ok"}
-    return {"status": "ignored"}

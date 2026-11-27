@@ -291,18 +291,11 @@ Mark, Bazibo
 
 # Mail-client HTML: no external resource of any kind (the QR code is an
 # inline `cid:` part), no script/form, inline CSS only, single column.
-# The opening sentence: a purchase of the Extra, or a plain donation (Mark,
-# 27 Nov 2026). Filled into both templates.
-_BAZIBO_THANKS = {
-    False: (
-        "Dank je wel voor het kopen van de volledige versie van Bazibo (web).",
-        "Thank you for buying the full version of Bazibo (web).",
-    ),
-    True: (
-        "Bedankt voor je donatie! Hier is je code voor de volledige versie van Bazibo in de browser.",
-        "Thank you for your donation! Here is your code for the full version of Bazibo in the browser.",
-    ),
-}
+# The opening sentence of the code mail (text and HTML).
+_BAZIBO_THANKS = (
+    "Dank je wel voor het kopen van de volledige versie van Bazibo (web).",
+    "Thank you for buying the full version of Bazibo (web).",
+)
 
 _BAZIBO_HTML_TEMPLATE = """\
 <!DOCTYPE html>
@@ -354,18 +347,13 @@ def qr_png(text: str) -> bytes:
     return buffer.getvalue()
 
 
-def build_bazibo_mail(
-    *, to: str, code: str, link: str, link_pages: str, device_limit: int, donation: bool = False,
-) -> Mail:
+def build_bazibo_mail(*, to: str, code: str, link: str, link_pages: str, device_limit: int) -> Mail:
     """Interpolates only the code, its two links (fixed prefixes plus the
     code, which is base64url/`.` only) and an operator-configured integer —
     nothing from the BMC delivery. Every value is still HTML-escaped in the
     HTML part.
-
-    `donation`: the code came from a plain BMC donation, not an Extra
-    purchase; the thank-you line says so (Dutch and English).
     """
-    thanks_nl, thanks_en = _BAZIBO_THANKS[bool(donation)]
+    thanks_nl, thanks_en = _BAZIBO_THANKS
     body = _BAZIBO_BODY_TEMPLATE.format(
         link=link, link_pages=link_pages, code=code, device_limit=device_limit,
         thanks_nl=thanks_nl, thanks_en=thanks_en,
@@ -383,9 +371,9 @@ def build_bazibo_mail(
     return Mail(to=to, subject=_BAZIBO_SUBJECT, body=body, html=html_body, inline_images=(image,))
 
 
-def build_bazibo_notify_mail(*, to: str, code_id: str, txn_id: str, source: str = "extra") -> Mail:
+def build_bazibo_notify_mail(*, to: str, code_id: str, txn_id: str, source: str = "bmc") -> Mail:
     """Operator notification (`NETNL_SUPPORTER_NOTIFY`): the code id,
-    transaction id and where it came from (`extra` or `donation`) only —
+    payment reference and where it came from (`bmc` or `stripe`) only —
     never the code, never the buyer's address."""
     body = f"bazibo code issued ({source}): code id {code_id}, txn {txn_id}\n"
     return Mail(to=to, subject="netnl: bazibo code issued", body=body)
@@ -409,6 +397,11 @@ def build_bazibo_alert_mail(
     characters, so nothing from BMC can reach a header), the issuance state
     and attempts, the code id — never the buyer's address, never the code."""
     ref = safe_ref(txn_id)
+    where = (
+        f"Stripe-dashboard, Checkout Session {ref}" if ref.startswith("cs_")
+        else "BMC-verkoopmelding" if ref.startswith("pi_") or ref.isdigit()
+        else "de melding van de betaaldienst"
+    )
     # The command only when it names the exact transaction: a changed id
     # would make a new issuance row (and a second code).
     fix = (
@@ -429,7 +422,7 @@ def build_bazibo_alert_mail(
         f"Pogingen: {attempts if attempts is not None else 0}\n"
         f"Code-id: {code_id or '-'}\n"
         f"Eerst gezien: {seen_at}\n\n"
-        "Controleer de BMC-melding van deze donatie en stuur de code zo nodig met de hand\n"
+        f"Controleer de betaling ({where}) en stuur de code zo nodig met de hand\n"
         "(dezelfde transactie, dus nooit een tweede code):\n\n"
         f"{fix}"
         "Deze melding komt één keer per transactie.\n"

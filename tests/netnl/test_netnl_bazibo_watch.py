@@ -19,15 +19,14 @@ from netnl.api import create_app
 from netnl.errors import SettingsError
 from netnl.settings import load
 
-from test_netnl_bazibo import _reset_rate_limit, bazibo_env, extra_payload  # noqa: F401
-from test_netnl_bazibo_donations import DONOR, donation
+from test_netnl_bazibo import BUYER, _reset_rate_limit, bazibo_env, extra_payload  # noqa: F401
 
 ALERT_TO = "mark@example.org"
 
 
 @pytest.fixture
 def w_env(bazibo_env) -> dict:
-    return dict(bazibo_env, NETNL_BAZIBO_FROM_DONATIONS="1", NETNL_BAZIBO_ALERT_TO=ALERT_TO)
+    return dict(bazibo_env, NETNL_BAZIBO_ALERT_TO=ALERT_TO, NETNL_BAZIBO_MIN_AMOUNT="1")
 
 
 @pytest.fixture
@@ -58,14 +57,14 @@ def alerts(sender):
 
 
 def test_delivered_code_never_alerts(w_app, w_client, w_conn, clock, recording_sender):
-    post_webhook(w_client, donation(amount=1.0))
+    post_webhook(w_client, extra_payload())
     rc, out, _ = watch(w_app, w_conn, clock() + timedelta(hours=2), recording_sender)
     assert rc == 0 and "alerted=0" in out and alerts(recording_sender) == []
 
 
 def test_failed_mail_alerts_once_after_15_minutes(w_app, w_client, w_conn, clock, recording_sender):
     recording_sender.fail_on_calls = {0}
-    assert post_webhook(w_client, donation(txn="pi_fail", amount=1.0)).status_code == 503
+    assert post_webhook(w_client, extra_payload(txn="pi_fail")).status_code == 503
     # within the window: nothing yet (BMC may still retry)
     watch(w_app, w_conn, clock() + timedelta(minutes=14), recording_sender)
     assert alerts(recording_sender) == []
@@ -74,7 +73,7 @@ def test_failed_mail_alerts_once_after_15_minutes(w_app, w_client, w_conn, clock
     [m] = alerts(recording_sender)
     assert m.subject == "Bazibo-code niet verstuurd voor transactie pi_fail — controleer"
     assert "failed" in m.body and "--ref pi_fail" in m.body
-    assert DONOR not in m.body and DONOR not in m.subject and "BZB1." not in m.body
+    assert BUYER not in m.body and BUYER not in m.subject and "BZB1." not in m.body
     # once per transaction
     watch(w_app, w_conn, clock() + timedelta(hours=3), recording_sender)
     assert len(alerts(recording_sender)) == 1
@@ -87,8 +86,8 @@ def test_no_issuance_row_at_all_still_alerts(w_env, fake_opener, clock, recordin
     client = TestClient(app, raise_server_exceptions=False)
     conn = store.connect(app.state.settings.db)
     try:
-        post_webhook(client, donation(txn="t1", amount=1.0))
-        assert post_webhook(client, donation(txn="t2", amount=1.0)).status_code == 503
+        post_webhook(client, extra_payload(txn="t1"))
+        assert post_webhook(client, extra_payload(txn="t2")).status_code == 503
         assert store.find_bazibo_issuance(conn, "t2") is None
         watch(app, conn, clock() + timedelta(minutes=20), recording_sender)
         [m] = alerts(recording_sender)
@@ -99,7 +98,7 @@ def test_no_issuance_row_at_all_still_alerts(w_env, fake_opener, clock, recordin
 
 def test_a_crash_after_persist_alerts(w_app, w_client, w_conn, clock, recording_sender, monkeypatch):
     monkeypatch.setattr(bazibo, "mint", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
-    post_webhook(w_client, donation(txn="pi_crash", amount=1.0))
+    post_webhook(w_client, extra_payload(txn="pi_crash"))
     watch(w_app, w_conn, clock() + timedelta(minutes=16), recording_sender)
     [m] = alerts(recording_sender)
     assert "pending" in m.body
@@ -112,11 +111,11 @@ def test_cap_then_failed_retry_alerts_once(w_env, fake_opener, clock, recording_
     client = TestClient(app, raise_server_exceptions=False)
     conn = store.connect(app.state.settings.db)
     try:
-        post_webhook(client, donation(txn="t1", amount=1.0))
-        assert post_webhook(client, donation(txn="t2", amount=1.0)).status_code == 503
+        post_webhook(client, extra_payload(txn="t1"))
+        assert post_webhook(client, extra_payload(txn="t2")).status_code == 503
         clock.advance(3700)
         recording_sender.fail_always = True
-        assert post_webhook(client, donation(txn="t2", amount=1.0)).status_code == 503
+        assert post_webhook(client, extra_payload(txn="t2")).status_code == 503
         recording_sender.fail_always = False
         assert store.find_bazibo_issuance(conn, "t2")["state"] == "failed"
         watch(app, conn, clock() + timedelta(minutes=20), recording_sender)
@@ -150,14 +149,14 @@ def test_a_changed_id_gets_no_copy_paste_command(w_app, w_conn, clock, recording
 
 def test_the_alert_is_audited_with_its_transaction(w_app, w_client, w_conn, clock, recording_sender):
     recording_sender.fail_on_calls = {0}
-    post_webhook(w_client, donation(txn="pi_aud", amount=1.0))
+    post_webhook(w_client, extra_payload(txn="pi_aud"))
     watch(w_app, w_conn, clock() + timedelta(minutes=16), recording_sender)
     row = w_conn.execute("SELECT detail FROM audit WHERE event = 'bazibo-alert'").fetchone()
     assert row["detail"] == "txn=pi_aud state=failed"
 
 
 def test_undeliverable_and_parked_rows_alert(w_app, w_client, w_conn, clock, recording_sender):
-    post_webhook(w_client, donation(txn="pi_nomail", amount=1.0, email_addr=None))
+    post_webhook(w_client, extra_payload(txn="pi_nomail", email_addr=None))
     recording_sender.fail_always = True
     for _ in range(3):
         post_webhook(w_client, extra_payload(txn="pi_parked"))
@@ -170,7 +169,7 @@ def test_undeliverable_and_parked_rows_alert(w_app, w_client, w_conn, clock, rec
 
 def test_an_alert_that_fails_to_send_is_retried(w_app, w_client, w_conn, clock, recording_sender):
     recording_sender.fail_on_calls = {0, 1}  # the code mail, then the first alert
-    post_webhook(w_client, donation(txn="pi_r", amount=1.0))
+    post_webhook(w_client, extra_payload(txn="pi_r"))
     rc, out, err = watch(w_app, w_conn, clock() + timedelta(minutes=16), recording_sender)
     assert rc == 1 and "failed=1" in out and "DeliveryError" in err
     rc, out, _ = watch(w_app, w_conn, clock() + timedelta(minutes=21), recording_sender)
@@ -178,8 +177,8 @@ def test_an_alert_that_fails_to_send_is_retried(w_app, w_client, w_conn, clock, 
 
 
 def test_test_mode_and_below_minimum_are_not_watched(w_app, w_client, w_conn, clock, recording_sender):
-    post_webhook(w_client, donation(txn="a", amount=5.0, live=False))
-    post_webhook(w_client, donation(txn="b", amount=0.5))
+    post_webhook(w_client, extra_payload(txn="a", live=False))
+    post_webhook(w_client, extra_payload(txn="b", amount=0.5))
     watch(w_app, w_conn, clock() + timedelta(hours=1), recording_sender)
     assert alerts(recording_sender) == []
 
@@ -215,7 +214,7 @@ def test_window_is_configurable(w_env, fake_opener, clock, recording_sender):
     conn = store.connect(app.state.settings.db)
     try:
         recording_sender.fail_on_calls = {0}
-        post_webhook(client, donation(txn="w", amount=1.0))
+        post_webhook(client, extra_payload(txn="w"))
         watch(app, conn, clock() + timedelta(minutes=30), recording_sender)
         assert alerts(recording_sender) == []
         watch(app, conn, clock() + timedelta(minutes=61), recording_sender)

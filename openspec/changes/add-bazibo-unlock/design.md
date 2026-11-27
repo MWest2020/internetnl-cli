@@ -261,44 +261,56 @@ follows a URL from a response), redirects are refused.
 - **O7** Get a working BMC API token, and deploy the poller CronJob
   instead of relying on the webhook. Default: no; webhook plus hand issue.
 
-## Round 3 (2026-11-27): codes from plain donations
+## Round 3 (2026-11-27): a Stripe Payment Link
 
-A real purchase of the Extra (27 Nov 2026, 10:43Z) produced no webhook at
-all: on this account BMC sends webhooks only for "support created"
-(donations), which the netnl supporter-key path has received since
-September. Mark chose to sell the Bazibo web unlock as a plain donation
-("1 is goed als de flow maar duidelijk is").
+A real purchase of the Extra (27 Nov 2026, 10:43Z, and a second one later)
+produced no webhook at all: on this account BMC sends webhooks only for
+"support created" (donations). A plain €1 donation was built and briefly
+deployed (internetnl-cli#15), but BMC's coffee price can only be 3, 5 or 10,
+so a €1 donation is impossible. Mark chose a Stripe Payment Link at €1. The
+donation routing is withdrawn (its code removed again; donations behave as
+before #15). The Extra routing (D1, D8) stays.
 
-### D12 — A donation of at least 1 mints a code
+### D12 — `POST /webhooks/stripe`
 
-`NETNL_BAZIBO_FROM_DONATIONS=1` (default off) makes a live
-`donation.created` that is not Extra-marked, at or above
-`NETNL_BAZIBO_DONATION_MIN` (default `1`), mint and mail a code through
-the same `_persist`/`_process` step as an Extra, with the donation's
-thank-you line in the mail. The switch alone enables the subsystem
-(`enabled`, so `/bazibo/activate` answers), and needs the bridge and the
-device salt like an Extra does.
+Exists while `NETNL_STRIPE_WEBHOOK_SECRET` (the endpoint's `whsec_…`) and
+`NETNL_STRIPE_PAYMENT_LINK_ID` (`plink_…`) are both set; one without the
+other, either without the Bazibo key, the device salt or the mail settings
+(which live with the BMC bridge) refuses to start. The switch alone enables
+the subsystem (`/bazibo/activate` answers).
 
-Idempotency per product: the Bazibo code keeps its `bazibo_issuance` row
-and the netnl credential its `supporter_issuance` row, both keyed on BMC's
-transaction id. One donation of 2 or more gives one mail of each, once; a
-replay finds both rows delivered. Both paths run before the reply, the
-netnl credential first (so nothing on the Bazibo side, not even an
-unexpected exception, can delay or block a key; such an exception is logged
-by type only and answered 503); if
-either raised a 503 (mail failure, hourly cap, lease) the reply is that
-503, and BMC's retry re-sends only the mail that failed, because the other
-row is already `delivered`. An Extra purchase reported both ways would find
-the same `bazibo_issuance` row and never get a second code. The Extra
-routing (D1, D8) stays: harmless, and useful if BMC ever sends Extra
-webhooks.
-
-`NETNL_BAZIBO_SOURCE=poll` together with the switch is refused at startup:
-the poller keys on the API's purchase id and could mail a second code for a
-purchase the donation path already served.
-
-The note or message of a donation still decides nothing; only the amount
-does. Anyone who donates 1 or more gets a code, which is the intent.
+- **Signature first.** `Stripe-Signature: t=…,v1=…[,v1=…]`; `v1` is
+  HMAC-SHA256 with the endpoint secret over `"<t>." + raw body`; the
+  timestamp must be within 300 s of now; every `v1` is compared in constant
+  time. Standard library only (the `stripe` package is not a dependency).
+  Nothing is parsed, written or logged (beyond one `signature-rejected` line)
+  before it passes.
+- **Events.** `checkout.session.completed` with `payment_status: "paid"`
+  (cards, iDEAL) and `checkout.session.async_payment_succeeded` (a method
+  that settles later). Every other event is 200 and ignored, so Stripe does
+  not retry it.
+- **The product.** The session's `payment_link` must equal
+  `NETNL_STRIPE_PAYMENT_LINK_ID`; any other link of the account is 200 and
+  ignored. A match on the line item's price would need an API call with a
+  key (line items are not in the event), so it is not done.
+- **Test mode.** A session with `livemode: false` is ignored unless
+  `NETNL_STRIPE_ALLOW_TEST_MODE=1`, because a code minted from a test
+  payment is a real code. Mark tests with a test key first.
+- **Issuance.** The shared persist-then-mail step (`bazibo_issuance._process`,
+  D3), keyed on the Checkout Session id (`cs_…`) in `bazibo_issuance`: a
+  replay finds the row and sends nothing; a mail failure answers 503 and
+  Stripe's retry re-sends the same code; a session without a usable
+  `customer_details.email` is recorded `undeliverable`. The address is used
+  to send and never stored; logs carry the session id and the code id.
+- **Setup.** `netnl-stripe-setup` (with `STRIPE_API_KEY`, a restricted key:
+  Products, Prices, Payment Links and Webhook Endpoints write) finds or
+  creates, by metadata `bazibo=web-unlock`, the product "Bazibo volledige
+  versie (web)", a one-time price of EUR 1.00, a payment link with the
+  confirmation "Bedankt! Je code komt binnen een paar minuten per mail. /
+  Thanks! Your code arrives by email within minutes." and the webhook
+  endpoint. It prints the link URL, the link id and (only for a new
+  endpoint) the secret; Stripe shows a secret only at creation, so
+  `--new-webhook-secret` recreates the endpoint.
 
 ### D13 — The watch (`netnl-admin bazibo watch`)
 
@@ -307,7 +319,8 @@ be noticed without anyone looking at logs. `bazibo_issuance._process`
 writes a `bazibo_watch` row (transaction id, first seen; no email, no code)
 as its own autocommit write before `_persist`, so a transaction is watched
 even when no issuance row follows (hourly cap, crash, locked database).
-A CronJob runs `netnl-admin bazibo watch` every 5 minutes: every watched
+The watch is the same for every payment source (BMC, Stripe, a hand
+issue): it keys on the payment reference. A CronJob runs `netnl-admin bazibo watch` every 5 minutes: every watched
 transaction without a delivered issuance after
 `NETNL_BAZIBO_ALERT_AFTER_MINUTES` (15), and every issuance row that is not
 delivered (failed, parked, pending past a crash, undeliverable), gets one

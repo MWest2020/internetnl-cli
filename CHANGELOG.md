@@ -14,13 +14,12 @@ All notable changes to this project are documented here. The format follows
   also for failed, parked, crashed and undeliverable rows. New table
   `bazibo_watch` (transaction id and timestamps only).
 
-- Bazibo codes from plain donations: with `NETNL_BAZIBO_FROM_DONATIONS=1`
-  a live `donation.created` of at least `NETNL_BAZIBO_DONATION_MIN`
-  (default 1) mints and mails a Bazibo code ("Bedankt voor je donatie!"),
-  next to the unchanged netnl credential at `NETNL_SUPPORTER_MIN_AMOUNT`.
-  Each product has its own idempotency row per transaction id, so a
-  donation of 2 or more gives one mail of each, once, and a retry re-sends
-  only the mail that failed. BMC sends this account no Extra webhooks.
+- Bazibo codes from a Stripe Payment Link: `POST /webhooks/stripe`
+  (signature checked first, 300 s tolerance; a paid
+  `checkout.session.completed` of `NETNL_STRIPE_PAYMENT_LINK_ID` mints and
+  mails one code, keyed on the Checkout Session id; everything else 200
+  ignored), and `netnl-stripe-setup`, which creates the product, the EUR 1
+  price, the payment link and the webhook endpoint (idempotent by metadata).
 
 - Bazibo: an Extra purchase delivered as "support created"
   (`donation.created` with `support_type: "Extra"` or a non-empty
@@ -65,6 +64,12 @@ All notable changes to this project are documented here. The format follows
   API generation, the instance's hostname, and the batch's own request
   id). `--json` and the plain-text table are unchanged. See
   [docs/netnl-findings-v1.md](docs/netnl-findings-v1.md) for the schema.
+
+### Removed
+
+- The BMC donation routing for Bazibo codes (`NETNL_BAZIBO_FROM_DONATIONS`,
+  `NETNL_BAZIBO_DONATION_MIN`), built and withdrawn on 27 Nov 2026: BMC's
+  coffee price cannot be €1. Donations behave as before.
 
 ### Changed
 

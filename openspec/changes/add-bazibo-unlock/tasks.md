@@ -84,14 +84,14 @@
 - [ ] 10.6 First real purchase: read the `event=bmc-shape` line, confirm
       the routing (owner action)
 
-## T11. Round 3: codes from plain donations (design D12)
+## T11. Round 3: Stripe Payment Link (design D12)
 
-- [x] 11.1 `NETNL_BAZIBO_FROM_DONATIONS`, `NETNL_BAZIBO_DONATION_MIN` (settings, refusal without key, bridge or salt)
-- [x] 11.2 `bazibo_issuance.handle_donation`; both paths run per donation, 503 if either failed
-- [x] 11.3 Donation wording in the code mail
-- [x] 11.4 Tests: `tests/netnl/test_netnl_bazibo_donations.py` (1 → code only, 2 → both, replay, mail failure and retry per path, off = before)
-- [x] 11.5 Homelab ConfigMap `NETNL_BAZIBO_FROM_DONATIONS: "1"` and the image digest bump
-
+- [x] 11.1 Withdraw the BMC donation routing of #15 (settings, routing, mail wording, tests)
+- [x] 11.2 `NETNL_STRIPE_WEBHOOK_SECRET`, `NETNL_STRIPE_PAYMENT_LINK_ID`, `NETNL_STRIPE_ALLOW_TEST_MODE`; half-config refused
+- [x] 11.3 `netnl/stripe_webhook.py`: signature (stdlib, 300 s), events, link, paid, test mode, `_process` keyed on the session id
+- [x] 11.4 `netnl-stripe-setup` (`netnl/stripe_setup.py`), idempotent by metadata
+- [x] 11.5 Tests: `tests/netnl/test_netnl_stripe.py`, `tests/netnl/test_netnl_stripe_setup.py`
+- [ ] 11.6 Mark's restricted key (test mode first): run the setup, put the link id and secret in `netnl-bridge`, a test payment, then live
 ## T12. The watch (design D13)
 
 - [x] 12.1 `bazibo_watch` table, written before `_persist`

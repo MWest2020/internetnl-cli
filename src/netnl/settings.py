@@ -495,8 +495,7 @@ class BaziboSettings:
     key set but no Extra configured the subsystem is *dormant*: the
     activation route answers 503 `{"error": "off"}` and an Extra purchase
     is ignored like any other unknown event. `enabled` is the one switch:
-    true with an Extra configured, or with `NETNL_BAZIBO_FROM_DONATIONS=1`
-    (a plain donation of at least `NETNL_BAZIBO_DONATION_MIN` mints a code).
+    an Extra configured, or the Stripe Payment Link (`NETNL_STRIPE_*`).
     """
 
     # The raw 32-byte Ed25519 seed. `repr=False`: a settings object that
@@ -521,12 +520,11 @@ class BaziboSettings:
     poll_max_pages: int = 10
     source: str = "webhook"
     poll_not_before: "datetime | None" = None
-    # A plain BMC donation ("support created", `donation.created`) of at
-    # least `donation_min` also mints a code (Mark, 27 Nov 2026: BMC sends
-    # this account no webhook for Extra purchases, only for donations).
-    # `NETNL_BAZIBO_FROM_DONATIONS=1` switches it on; off by default.
-    from_donations: bool = False
-    donation_min: Decimal = Decimal("1")
+    # Stripe Payment Link (openspec/changes/add-bazibo-unlock D12):
+    # `POST /webhooks/stripe` exists while both are set.
+    stripe_webhook_secret: str | None = field(default=None, repr=False)
+    stripe_payment_link_id: str | None = None
+    stripe_allow_test_mode: bool = False
     # `netnl-admin bazibo watch` (CronJob): one mail per transaction whose
     # code was not delivered within `alert_after_minutes`. Off while unset.
     alert_to: str | None = None
@@ -570,12 +568,24 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
     extra_id = (env.get("NETNL_BAZIBO_EXTRA_ID") or "").strip() or None
     extra_title = (env.get("NETNL_BAZIBO_EXTRA_TITLE") or "").strip() or None
     wants_extra = extra_id is not None or extra_title is not None
-    raw_from_donations = env.get("NETNL_BAZIBO_FROM_DONATIONS", "0")
-    if raw_from_donations not in ("0", "1"):
-        raise SettingsError(
-            f"NETNL_BAZIBO_FROM_DONATIONS must be '0' or '1': got {raw_from_donations!r}"
-        )
-    from_donations = raw_from_donations == "1"
+    stripe_secret = (env.get("NETNL_STRIPE_WEBHOOK_SECRET") or "").strip() or None
+    stripe_link = (env.get("NETNL_STRIPE_PAYMENT_LINK_ID") or "").strip() or None
+    if (stripe_secret is None) != (stripe_link is None):
+        missing = "NETNL_STRIPE_PAYMENT_LINK_ID" if stripe_link is None else "NETNL_STRIPE_WEBHOOK_SECRET"
+        raise SettingsError(f"the Stripe bridge is half configured: missing {missing}")
+    wants_stripe = stripe_secret is not None
+    if wants_stripe:
+        if not stripe_secret.startswith("whsec_") or not stripe_secret.isprintable() or any(
+            ch.isspace() for ch in stripe_secret
+        ):
+            raise SettingsError(
+                "NETNL_STRIPE_WEBHOOK_SECRET must be a Stripe endpoint secret (whsec_..., value not shown)"
+            )
+        if not (stripe_link.startswith("plink_") and stripe_link[6:].isalnum() and len(stripe_link) <= 64):
+            raise SettingsError(f"NETNL_STRIPE_PAYMENT_LINK_ID must be a Payment Link id (plink_...): got {stripe_link!r}")
+    raw_test = env.get("NETNL_STRIPE_ALLOW_TEST_MODE", "0")
+    if raw_test not in ("0", "1"):
+        raise SettingsError(f"NETNL_STRIPE_ALLOW_TEST_MODE must be '0' or '1': got {raw_test!r}")
 
     if raw_key is None:
         if wants_extra:
@@ -583,9 +593,9 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
                 "NETNL_BAZIBO_EXTRA_ID/NETNL_BAZIBO_EXTRA_TITLE is set but "
                 "NETNL_BAZIBO_SIGNING_KEY is missing"
             )
-        if from_donations:
+        if wants_stripe:
             raise SettingsError(
-                "NETNL_BAZIBO_FROM_DONATIONS=1 is set but NETNL_BAZIBO_SIGNING_KEY is missing"
+                "NETNL_STRIPE_WEBHOOK_SECRET is set but NETNL_BAZIBO_SIGNING_KEY is missing"
             )
         return None
 
@@ -613,14 +623,11 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
             f"(got {len(raw_salt)}); generate one with: openssl rand -hex 32"
         )
 
-    if wants_extra or from_donations:
+    if wants_extra or wants_stripe:
         if supporter is None:
-            what = (
-                "NETNL_BAZIBO_EXTRA_ID/NETNL_BAZIBO_EXTRA_TITLE" if wants_extra
-                else "NETNL_BAZIBO_FROM_DONATIONS=1"
-            )
+            what = "NETNL_BAZIBO_EXTRA_ID/NETNL_BAZIBO_EXTRA_TITLE" if wants_extra else "NETNL_STRIPE_WEBHOOK_SECRET"
             raise SettingsError(
-                f"{what} requires the BMC bridge: "
+                f"{what} requires the mail settings of the BMC bridge: "
                 "missing required environment variable: NETNL_BMC_WEBHOOK_SECRET"
             )
         if device_salt is None:
@@ -667,12 +674,6 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
     if source not in ("webhook", "poll"):
         raise SettingsError(f"NETNL_BAZIBO_SOURCE must be 'webhook' or 'poll': got {source!r}")
     poll_not_before = None
-    if source == "poll" and from_donations:
-        # The poller keys on the API's purchase id, the donation path on the
-        # transaction id: together they could mail two codes for one purchase.
-        raise SettingsError(
-            "NETNL_BAZIBO_SOURCE=poll cannot be combined with NETNL_BAZIBO_FROM_DONATIONS=1"
-        )
     if source == "poll":
         if token is None:
             raise SettingsError(
@@ -717,7 +718,7 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
     return BaziboSettings(
         signing_seed=seed,
         public_key=public_key,
-        enabled=wants_extra or from_donations,
+        enabled=wants_extra or wants_stripe,
         extra_id=extra_id,
         extra_title=extra_title,
         min_amount=_resolve_decimal(env, "NETNL_BAZIBO_MIN_AMOUNT", Decimal("0")),
@@ -728,8 +729,9 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
         bmc_api_base=api_base,
         source=source,
         poll_not_before=poll_not_before,
-        from_donations=from_donations,
-        donation_min=_resolve_decimal(env, "NETNL_BAZIBO_DONATION_MIN", Decimal("1")),
+        stripe_webhook_secret=stripe_secret,
+        stripe_payment_link_id=stripe_link,
+        stripe_allow_test_mode=raw_test == "1",
         alert_to=alert_to,
         alert_after_minutes=alert_after,
         **numeric,

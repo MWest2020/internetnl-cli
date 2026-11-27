@@ -9,6 +9,7 @@ readme = "README.md"
 internetnl = "internetnl_cli.cli:main"
 netnl-serve = "netnl.server:main"
 netnl-admin = "netnl.admin:main"
+netnl-stripe-setup = "netnl.stripe_setup:main"
 
 [project.optional-dependencies]
 api = ["fastapi>=0.115", "pydantic>=2", "uvicorn>=0.30", "cryptography>=44", "segno==1.6.6"]
