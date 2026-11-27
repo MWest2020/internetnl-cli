@@ -46,8 +46,8 @@ CODE_LEN = len(PREFIX) + 22 + 1 + 86
 
 _EPOCH = date(1970, 1, 1)
 
-LINK_PRIMARY = "https://bazibo.nl/?unlock="
-LINK_PAGES = "https://mwest2020.github.io/bazibo/?unlock="
+LINK_PRIMARY = "https://bazibo.nl/#unlock="
+LINK_PAGES = "https://mwest2020.github.io/bazibo/#unlock="
 
 
 def b64url_encode(raw: bytes) -> str:

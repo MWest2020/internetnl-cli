@@ -118,8 +118,8 @@ code id.
 ### Requirement: The code mail is bilingual, inline and untracked
 
 The mail SHALL be Dutch and English in one message, plaintext with an HTML
-alternative, and carry the link `https://bazibo.nl/?unlock=<code>`, the
-alternative `https://mwest2020.github.io/bazibo/?unlock=<code>`, the code as
+alternative, and carry the link `https://bazibo.nl/#unlock=<code>`, the
+alternative `https://mwest2020.github.io/bazibo/#unlock=<code>`, the code as
 text, a QR code of the first link as an inline PNG (`multipart/related`,
 referenced by `cid:`), and one line saying the code works in every browser
 of the family up to the device limit, is kept on the device, and can be

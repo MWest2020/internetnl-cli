@@ -446,15 +446,15 @@ def test_mail_content_links_code_qr_and_no_remote_resources(bz_client, recording
     post_webhook(bz_client, extra_payload())
     m = recording_sender.sent[0]
     code = _code_from_mail(m)
-    assert f"https://bazibo.nl/?unlock={code}" in m.body
-    assert f"https://mwest2020.github.io/bazibo/?unlock={code}" in m.body
+    assert f"https://bazibo.nl/#unlock={code}" in m.body
+    assert f"https://mwest2020.github.io/bazibo/#unlock={code}" in m.body
     assert "Dank je wel" in m.body and "Thank you" in m.body
     assert "tot 10 apparaten" in m.body and "up to 10 devices" in m.body
-    assert m.html is not None and f'href="https://bazibo.nl/?unlock={code}"' in m.html
+    assert m.html is not None and f'href="https://bazibo.nl/#unlock={code}"' in m.html
     assert len(m.inline_images) == 1
     image = m.inline_images[0]
     assert image.data.startswith(b"\x89PNG\r\n\x1a\n")
-    assert image.data == mail.qr_png(f"https://bazibo.nl/?unlock={code}")
+    assert image.data == mail.qr_png(f"https://bazibo.nl/#unlock={code}")
     # Every image is inline; nothing is fetched when the mail is opened.
     import re
     srcs = re.findall(r'<img[^>]+src="([^"]+)"', m.html)
@@ -734,7 +734,8 @@ def test_admin_mint_revoke_show(bazibo_env, act_client, capsys):
     code_id = lines[0].split()[1]
     code = lines[1]
     assert bazibo.verify(TEST_PUB, code).code_id_hex == code_id
-    assert lines[2] == f"https://bazibo.nl/?unlock={code}"
+    assert lines[2] == f"https://bazibo.nl/#unlock={code}"
+    assert lines[3] == f"https://mwest2020.github.io/bazibo/#unlock={code}"
     assert _activate(act_client, code, _device(1)).status_code == 200
 
     assert admin.main(["bazibo", "revoke", code_id], env=bazibo_env) == 0
@@ -814,3 +815,18 @@ def test_manual_unrevoke_of_an_auto_revoked_code_holds(bazibo_env, fake_opener, 
     assert _activate(client, code, _device(1)).status_code == 200
     assert _activate(client, code, _device(4)).status_code == 409  # not re-revoked
     assert _activate(client, code, _device(1)).status_code == 200
+
+
+def test_mail_links_keep_the_code_out_of_the_query_string(bz_client, recording_sender):
+    # The fragment is never sent to the web server, so the code stays out of
+    # bazibo.nl's and GitHub Pages' access logs (design.md O6).
+    post_webhook(bz_client, extra_payload())
+    m = recording_sender.sent[0]
+    code = _code_from_mail(m)
+    from urllib.parse import urlsplit
+
+    for link in bazibo.links(code):
+        parts = urlsplit(link)
+        assert parts.query == "" and parts.fragment == f"unlock={code}"
+        assert link in m.body
+    assert "?unlock=" not in m.body and "?unlock=" not in m.html

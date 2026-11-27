@@ -224,7 +224,7 @@ first one with the steps under "Switching it on".
 The code is `BZB1.<payload>.<signature>` (format v1, shared with the Bazibo
 verifier): 16 bytes of payload (version, product, issued day, 10 random
 bytes = the **code id**) signed with Ed25519. The mail is Dutch and English
-in one message, with the link `https://bazibo.nl/?unlock=<code>`, the
+in one message, with the link `https://bazibo.nl/#unlock=<code>`, the
 GitHub Pages alternative, the code as text, a QR code as an inline image,
 and one line on how the code behaves. It loads nothing from the internet
 when opened.
@@ -300,9 +300,10 @@ not write it down.
 (Operator notes behind that text: the per-address limit keys on
 `CF-Connecting-IP`, which Cloudflare sets; on the Tailscale Funnel ingress
 to the same Service a client can set it itself and so dodge its own limit,
-but not affect anyone else's (the table is a bounded LRU). The code sits in
-the link's query string, so it also appears in the access logs of
-bazibo.nl and GitHub Pages; see design.md O6.
+but not affect anyone else's (the table is a bounded LRU). The mail links
+put the code in the fragment (`#unlock=`), which browsers never send to the
+web server, so it does not appear in the access logs of bazibo.nl or GitHub
+Pages; Bazibo still accepts the older `?unlock=` form. See design.md O6.
 
 (Operator notes behind that text: device rows and purchase rows are kept
 for as long as the code exists; there is no expiry. uvicorn's access log
