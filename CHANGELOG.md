@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Bazibo: an Extra purchase delivered as "support created"
+  (`donation.created` with `support_type: "Extra"` or a non-empty
+  `extras[]`) mints a code when `extras[]` names the configured Extra, and
+  never a netnl credential. A shape-only log line (`event=bmc-shape`) per
+  delivery. `netnl-admin bazibo mint --mail ADDRESS --ref TRANSACTION_ID`
+  issues and mails a code by hand through the webhook's idempotency table.
+  `netnl-admin bazibo poll` (BMC developer API) is built but off without
+  `NETNL_BMC_API_TOKEN`.
+
 - Bazibo web unlock codes (`openspec/changes/add-bazibo-unlock`). The BMC
   webhook now routes on event type first: `donation.created` keeps the
   netnl path unchanged; `extra_purchase.created` for the configured Extra

@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import math
+from datetime import datetime, timezone
 import os
 import re
 from dataclasses import dataclass, field
@@ -474,6 +475,8 @@ _BAZIBO_NUMERIC_DEFAULTS = {
     "NETNL_BAZIBO_DEVICE_LIMIT": ("device_limit", 10),
     "NETNL_BAZIBO_AUTO_REVOKE_AT": ("auto_revoke_at", 100),
     "NETNL_BAZIBO_ACTIVATE_PER_MINUTE": ("activate_per_minute", 10),
+    "NETNL_BMC_POLL_LOOKBACK_HOURS": ("poll_lookback_hours", 168),
+    "NETNL_BMC_POLL_MAX_PAGES": ("poll_max_pages", 10),
 }
 
 # A salt shorter than this is an obviously-wrong value (a placeholder, a
@@ -508,6 +511,14 @@ class BaziboSettings:
     activate_per_minute: int
     allowed_origins: tuple[str, ...]
     client_ip_header: str
+    # API poller (`netnl-admin bazibo poll`, openspec/changes/
+    # add-bazibo-support-created): off while the token is unset.
+    bmc_api_token: str | None = field(default=None, repr=False)
+    bmc_api_base: str = "https://developers.buymeacoffee.com/api/v1"
+    poll_lookback_hours: int = 168
+    poll_max_pages: int = 10
+    source: str = "webhook"
+    poll_not_before: "datetime | None" = None
 
 
 def _decode_seed(raw: str) -> bytes:
@@ -602,6 +613,51 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
         )
     if numeric["activate_per_minute"] < 1:
         raise SettingsError("NETNL_BAZIBO_ACTIVATE_PER_MINUTE must be at least 1")
+    if numeric["poll_max_pages"] < 1:
+        raise SettingsError("NETNL_BMC_POLL_MAX_PAGES must be at least 1")
+
+    token = (env.get("NETNL_BMC_API_TOKEN") or "").strip() or None
+    if token is not None and (any(ch.isspace() for ch in token) or not token.isprintable()):
+        raise SettingsError(
+            "NETNL_BMC_API_TOKEN must be a single printable token without whitespace "
+            "(value not shown)"
+        )
+    api_base = env.get("NETNL_BMC_API_BASE", "https://developers.buymeacoffee.com/api/v1").rstrip("/")
+    if not api_base.startswith("https://") and not (
+        env.get("NETNL_ALLOW_HTTP") == "1" and api_base.startswith("http://")
+    ):
+        raise SettingsError("NETNL_BMC_API_BASE must be an https:// URL (value not shown)")
+    if any(ch in api_base for ch in "\r\n@") or not api_base.isprintable():
+        raise SettingsError(
+            "NETNL_BMC_API_BASE must be a plain https://host/path URL, no credentials "
+            "(value not shown)"
+        )
+
+    # Which channel mints Bazibo codes for Extra purchases. The webhook (and
+    # a hand issue) key on BMC's transaction id, the API poller on the API's
+    # purchase id; they cannot recognise each other's purchases, so exactly
+    # one of them is ever active (design.md D11).
+    source = env.get("NETNL_BAZIBO_SOURCE", "webhook")
+    if source not in ("webhook", "poll"):
+        raise SettingsError(f"NETNL_BAZIBO_SOURCE must be 'webhook' or 'poll': got {source!r}")
+    poll_not_before = None
+    if source == "poll":
+        if token is None:
+            raise SettingsError(
+                "NETNL_BAZIBO_SOURCE=poll requires NETNL_BMC_API_TOKEN"
+            )
+        raw_nb = env.get("NETNL_BMC_POLL_NOT_BEFORE") or ""
+        try:
+            poll_not_before = datetime.fromisoformat(raw_nb)
+        except ValueError:
+            raise SettingsError(
+                "NETNL_BAZIBO_SOURCE=poll requires NETNL_BMC_POLL_NOT_BEFORE, an ISO "
+                "timestamp (UTC unless it says otherwise) before which purchases are "
+                "never mailed by the poller (no backfill of purchases another channel "
+                f"already served): got {raw_nb!r}"
+            ) from None
+        if poll_not_before.tzinfo is None:
+            poll_not_before = poll_not_before.replace(tzinfo=timezone.utc)
 
     raw_origins = env.get("NETNL_BAZIBO_ALLOWED_ORIGINS")
     if raw_origins is None:
@@ -627,5 +683,9 @@ def _load_bazibo(env: Mapping[str, str], *, supporter: SupporterSettings | None)
         device_salt=device_salt,
         allowed_origins=origins,
         client_ip_header=env.get("NETNL_BAZIBO_CLIENT_IP_HEADER", "CF-Connecting-IP"),
+        bmc_api_token=token,
+        bmc_api_base=api_base,
+        source=source,
+        poll_not_before=poll_not_before,
         **numeric,
     )

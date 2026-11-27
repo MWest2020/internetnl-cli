@@ -651,6 +651,15 @@ def update_bazibo_issuance(
     return cur.rowcount > 0
 
 
+def set_bazibo_issuance_code_id(conn: sqlite3.Connection, txn_id: str, code_id: str) -> None:
+    """Only for a row that has none yet (an `undeliverable` row taken over
+    by a manual issue); never replaces an existing code id."""
+    conn.execute(
+        "UPDATE bazibo_issuance SET code_id = ? WHERE txn_id = ? AND code_id = ''",
+        (code_id, txn_id),
+    )
+
+
 def count_bazibo_issuances_since(conn: sqlite3.Connection, cutoff_iso: str) -> int:
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM bazibo_issuance WHERE created_at >= ?",

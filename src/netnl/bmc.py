@@ -387,7 +387,10 @@ def _extra_id(value: Any) -> str | None:
         return None
     if isinstance(value, int) and value >= 0:
         return str(value)
-    if isinstance(value, str) and value.isdigit() and len(value) <= 32:
+    # ASCII digits only: `str.isdigit()` is also true for "²" (which `int`
+    # then refuses) and for other scripts' digits (which `int` silently maps
+    # onto ASCII ones).
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 32:
         return str(int(value))
     return None
 
@@ -416,6 +419,75 @@ def extract_extras(payload: object) -> tuple[ExtraItem, ...] | None:
             title = None
         items.append(ExtraItem(id=_extra_id(entry.get("id")), title=title))
     return tuple(items)
+
+
+def is_extra_marked(payload: object) -> bool:
+    """Whether a delivery says of itself that it is a shop (Extra) purchase:
+    `support_type` is `"Extra"` (case-insensitive), or it carries a
+    non-empty `extras` list. Used for `donation.created` ("support
+    created") deliveries, which some BMC accounts send for Extra purchases
+    too because their dashboard offers no separate extra-purchase event.
+    Only these two structured fields count; a note or message that
+    mentions anything never does.
+    """
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    support_type = _lookup(payload, data, "support_type")
+    if isinstance(support_type, str) and support_type.strip().casefold() == "extra":
+        return True
+    extras = _lookup(payload, data, "extras")
+    return isinstance(extras, list) and len(extras) > 0
+
+
+# `support_type` values worth naming in a log line; anything else is
+# logged as `other` so a free-form value can never reach the log.
+_KNOWN_SUPPORT_TYPES = {
+    t.casefold(): t
+    for t in ("Supporter", "Extra", "Membership", "Subscription", "Wishlist", "Commission")
+}
+
+
+def shape_summary(payload: object) -> str:
+    """Never raises (it runs before routing on every signed delivery); see
+    `_shape_summary`."""
+    try:
+        return _shape_summary(payload)
+    except Exception:  # pragma: no cover - defensive
+        return "shape=unreadable"
+
+
+def _shape_summary(payload: object) -> str:
+    """A log-safe description of a delivery's *shape*, for learning what a
+    real "support created" delivery of an Extra purchase looks like:
+    `support_type` (only if it is a short plain token, else `other`),
+    whether `extras` exists, and the extra ids (integers only, at most 10).
+    Never an email, a name, a note, an amount or a title.
+    """
+    if not isinstance(payload, dict):
+        return "shape=not-an-object"
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    support_type = _lookup(payload, data, "support_type")
+    if support_type is _MISSING:
+        st = "absent"
+    elif isinstance(support_type, str) and support_type.strip().casefold() in _KNOWN_SUPPORT_TYPES:
+        st = _KNOWN_SUPPORT_TYPES[support_type.strip().casefold()]
+    else:
+        st = "other"
+    extras = _lookup(payload, data, "extras")
+    if extras is _MISSING:
+        ex, ids = "absent", "-"
+    elif isinstance(extras, list):
+        ex = f"list({len(extras)})"
+        found = [_extra_id(e.get("id")) for e in extras[:10] if isinstance(e, dict)]
+        ids = ",".join(i for i in found if i is not None) or "-"
+    else:
+        ex, ids = "other", "-"
+    return f"support_type={st} extras={ex} extra_ids={ids}"
 
 
 def parse_extra_purchase(payload: dict) -> ExtraPurchase:

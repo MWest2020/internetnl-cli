@@ -204,12 +204,25 @@ payload:
 |---|---|
 | `donation.created` | Unchanged: a netnl credential at or above `NETNL_SUPPORTER_MIN_AMOUNT` (default 2). |
 | `extra_purchase.created` whose `data.extras[]` holds the configured Extra | One Bazibo unlock code, mailed. Never a netnl credential. |
+| `donation.created` ("support created") with `support_type: "Extra"` or a non-empty `extras[]` | An Extra purchase delivered as support: same as the row above, never a netnl credential. Without the Bazibo Extra in `extras[]` (or while dormant): 200 `ignored`. |
 | `extra_purchase.created` for any other Extra | 200 `ignored`, nothing written. |
 | anything else (memberships, refunds, commissions, unknown types) | 200 `ignored`, nothing written, whatever the payload looks like. Logged by type only (`type=other` for a type BMC does not list). |
 
 A donation that says "for Bazibo" in its note is still a donation: it
-follows the donation rules and never mints a code. If that happens, mint a
-code by hand (below) and mail it.
+follows the donation rules and never mints a code. Only the structured
+fields `support_type` and `extras[]` decide. If that happens, issue a code
+by hand (below).
+
+Every signed `donation.created`/`extra_purchase.created` logs its shape,
+without personal data:
+
+```text
+event=bmc-shape type=donation.created support_type=Extra extras=list(1) extra_ids=603413
+```
+
+On Mark's account the BMC dashboard offers only "support created" as a
+webhook event. Whether an Extra purchase arrives that way, and with which
+fields, is learnt from that line on the first real purchase.
 
 The payload shape comes from BMC's published webhook spec
 (`https://cdn.buymeacoffee.com/assets/integrations/bmc-webhooks-openapi.json`):
@@ -318,13 +331,11 @@ salt are in the `netnl-bridge` Secret, the public-key cross-check and
 `NETNL_BAZIBO_MIN_AMOUNT=1` are in the ConfigMap, and
 `NETNL_BAZIBO_EXTRA_ID` is absent. To switch on:
 
-1. In BMC, create the Extra "Bazibo volledige versie (web)" at €1. Its id
-   is the number at the end of the Extra's page URL
-   (`buymeacoffee.com/<page>/e/<id>`).
+1. The Extra exists: "Bazibo full version unlock!", €1, id **603413**.
 2. In homelab, `cluster-config/infra/netnl/configmap.yaml`, add the one line
 
    ```yaml
-   NETNL_BAZIBO_EXTRA_ID: "<id>"
+   NETNL_BAZIBO_EXTRA_ID: "603413"
    ```
 
    and merge; Argo syncs and the pod restarts. A missing salt or key now
@@ -332,30 +343,55 @@ salt are in the `netnl-bridge` Secret, the public-key cross-check and
    holds for every other process that reads the same ConfigMap and loads
    the facade settings (`netnl-prune` runs `netnl-admin prune`): it must
    mount the `netnl-bridge` Secret too, as the Deployment does.
-3. BMC dashboard → Integrations → Webhooks: the existing webhook must have
-   the **extra purchase** event (`extra_purchase.created`) ticked, next to
-   `donation.created`. URL and secret stay as they are.
+3. BMC dashboard → Integrations → Webhooks: keep **support created**
+   ticked (it is the netnl donation path, and the only event this account
+   offers). If an extra-purchase event ever appears there, tick it too;
+   both events of one purchase share a transaction id and mail once.
 4. Check: `curl -s -X POST https://api.westerweel.work/bazibo/activate -H
    'Origin: https://bazibo.nl' -d '{}'` answers 400 `invalid` (no longer
    503 `off`).
-5. First real purchase: buy the Extra once yourself. Look for
-   `event=bazibo-issued txn_id=… code_id=…` in
-   `kubectl -n netnl logs deploy/netnl`, and the mail. If instead you see
-   `event=ignored decision=other_extra`, the id does not match: compare it
-   with the Extra's URL. If the dashboard's test event is used, it arrives
+5. First real purchase: buy the Extra once yourself, then
+   `kubectl -n netnl logs deploy/netnl | grep -E 'bmc-shape|bazibo|ignored'`.
+   - `event=bazibo-issued txn_id=… code_id=…` and a mail: done.
+   - `event=bmc-shape … extras=absent` with `support_type=Extra` or
+     `absent`: the delivery does not identify the Extra. Issue the code by
+     hand from BMC's sale notification (below) and report the shape line.
+   - No `bmc-shape` line at all: BMC sent no webhook for the purchase.
+     Issue by hand. If the dashboard's test event is used, it arrives
    with `live_mode: false` and is ignored unless
    `NETNL_BMC_ACCEPT_TEST_MODE=1` is set for the test.
 
 ### Operator commands
 
 ```sh
-kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo mint            # hand-mint one code (lost mail, a "for Bazibo" donation)
+# Issue and mail a code for a purchase, from BMC's sale-notification mail.
+# Same idempotency table as the webhook: re-running it, or a webhook that
+# arrives later for the same transaction, sends nothing new.
+kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo mint --mail <buyer address> --ref <BMC transaction id>
+kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo mint            # print one code (lost mail, a "for Bazibo" donation)
 kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo show <code-id>  # devices and revocation state
 kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo revoke <code-id>
 kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo unrevoke <code-id>
 ```
 
-`mint` prints the code and its links once; it is stored nowhere. To find
+`mint --mail --ref` prints only the transaction id and code id; it works
+while the feature is dormant, and it can take over a transaction the
+webhook recorded as undeliverable (no address) or parked. Plain `mint`
+prints the code and its links once; it is stored nowhere.
+
+**API poller (dormant).** `netnl-admin bazibo poll` reads BMC's legacy
+developer API (`GET /v1/extras`: `purchase_id`, `purchased_on`,
+`purchase_is_revoked`, `purchase_amount`, `purchase_currency`,
+`payer_email`, `extra.reward_id`, `extra.reward_title`) and mails codes for
+recent purchases of the Extra. It does nothing without
+`NETNL_BMC_API_TOKEN` (in `netnl-bridge`), and no CronJob runs it: the
+developer site did not issue a token. It keys on the API's `purchase_id`,
+not the transaction id, so it runs only with `NETNL_BAZIBO_SOURCE=poll`,
+which turns the webhook's Bazibo path off, and only for purchases dated at
+or after `NETNL_BMC_POLL_NOT_BEFORE`. Settings: `NETNL_BAZIBO_SOURCE`
+(`webhook`), `NETNL_BMC_API_TOKEN`, `NETNL_BMC_POLL_NOT_BEFORE`,
+`NETNL_BMC_API_BASE`, `NETNL_BMC_POLL_LOOKBACK_HOURS` (168),
+`NETNL_BMC_POLL_MAX_PAGES` (10). To find
 the code id of a purchase (for example after a refund):
 `sqlite3 /data/netnl.sqlite3 "SELECT code_id, state FROM bazibo_issuance WHERE txn_id = '<pi_…>'"`.
 The revocation list is the `bazibo_revoked` table (`code_id`, `reason` =
