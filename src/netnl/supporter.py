@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from fastapi import Request
 from starlette.concurrency import run_in_threadpool
 
-from netnl import bmc, issue, mail, store
+from netnl import bazibo_issuance, bmc, issue, mail, store
 from netnl.errors import NetnlHTTPError
 from netnl.settings import Settings, SupporterSettings
 
@@ -498,6 +498,27 @@ async def handle_webhook(request: Request, settings: Settings) -> dict:
         payload = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise NetnlHTTPError(400, "bad-request", "malformed JSON body") from exc
+
+    # Routing (openspec/changes/add-bazibo-unlock): on the event type
+    # alone, before any event-specific parse. Exactly one path can mint:
+    # `donation.created` -> a netnl credential (below, unchanged);
+    # `extra_purchase.created` while Bazibo is enabled -> a Bazibo code
+    # (`netnl.bazibo_issuance`, which never touches the credential tables);
+    # every other event -> 200 and nothing else, whatever its shape. A
+    # donation is never routed to Bazibo, whatever its note or message
+    # says: the Extra is the only way to buy a code.
+    event = bmc.event_type(payload)
+    if event is None:
+        raise NetnlHTTPError(400, "bad-request", "invalid field: type")
+    bazibo_cfg = settings.bazibo
+    if event == bmc.EXTRA_PURCHASE_CREATED and bazibo_cfg is not None and bazibo_cfg.enabled:
+        return await bazibo_issuance.handle(payload, request, settings, _sanitize)
+    if event != bmc._DONATION_CREATED:
+        _logger.info(
+            "event=ignored decision=%s type=%s",
+            bmc.Decision.IGNORE_EVENT.value, bmc.loggable_event(event),
+        )
+        return {"status": "ignored"}
 
     try:
         delivery = bmc.parse_delivery(payload)

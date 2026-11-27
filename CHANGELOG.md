@@ -8,6 +8,21 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Bazibo web unlock codes (`openspec/changes/add-bazibo-unlock`). The BMC
+  webhook now routes on event type first: `donation.created` keeps the
+  netnl path unchanged; `extra_purchase.created` for the configured Extra
+  (`NETNL_BAZIBO_EXTRA_ID`) mints an Ed25519-signed `BZB1.` code and mails
+  it (Dutch and English, link, code, inline QR, no remote content), never a
+  netnl credential; every other event is answered 200 and ignored. New
+  `POST /bazibo/activate` counts devices per code (10 allowed, 409 beyond,
+  auto-revoke at 100), keeping only the code id, a keyed hash of a random
+  device id and first/last-seen dates. New `netnl-admin bazibo
+  mint|revoke|unrevoke|show`. Off without `NETNL_BAZIBO_SIGNING_KEY`,
+  dormant with only the key, and a half configuration refuses to start.
+  New dependencies in the `api` extra: `cryptography` (Ed25519) and
+  `segno` (QR as PNG without Pillow). See
+  [docs/how-to/supporter-webhook.md](docs/how-to/supporter-webhook.md#bazibo-unlock-codes).
+
 - `internetnl results <id> --format findings` (`openspec/changes/2026-09-22-findings-export`),
   plus `--findings-out FILE`: a new, versioned output shape
   (`"schema": "netnl-findings/v1"`) carrying every subtest of a completed
@@ -29,6 +44,12 @@ All notable changes to this project are documented here. The format follows
   [docs/netnl-findings-v1.md](docs/netnl-findings-v1.md) for the schema.
 
 ### Changed
+
+- `POST /webhooks/bmc` answers 200 `ignored` for any event other than
+  `donation.created` (and, when enabled, the Bazibo Extra) whatever its
+  payload shape; before, such an event without donation fields got a 400,
+  which made BMC retry. uvicorn's access log no longer records
+  `/bazibo/*` requests.
 
 - Nothing a user receives calls this a demo any more. The four
   visitor-facing literals on the anonymous browser surface now name the

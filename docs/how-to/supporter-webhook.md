@@ -1,6 +1,6 @@
 ---
 status: current
-last_reviewed: 2026-09-03
+last_reviewed: 2026-11-27
 ---
 
 # Automatic supporter-key issuance
@@ -187,6 +187,198 @@ credential.
   failure to send this notification is logged and never turns a successful
   delivery into a failure.
 
+## Bazibo unlock codes
+
+The same webhook also sells the full web version of
+[Bazibo](https://github.com/MWest2020/bazibo): a €1 BMC **Extra**,
+"Bazibo volledige versie (web)", gets the buyer a mailed unlock code
+(owner decision, 27 Nov 2026). Design:
+`openspec/changes/add-bazibo-unlock/design.md`.
+
+### How routing works
+
+The bridge looks at the event type first, before anything else in the
+payload:
+
+| BMC event | What happens |
+|---|---|
+| `donation.created` | Unchanged: a netnl credential at or above `NETNL_SUPPORTER_MIN_AMOUNT` (default 2). |
+| `extra_purchase.created` whose `data.extras[]` holds the configured Extra | One Bazibo unlock code, mailed. Never a netnl credential. |
+| `extra_purchase.created` for any other Extra | 200 `ignored`, nothing written. |
+| anything else (memberships, refunds, commissions, unknown types) | 200 `ignored`, nothing written, whatever the payload looks like. Logged by type only (`type=other` for a type BMC does not list). |
+
+A donation that says "for Bazibo" in its note is still a donation: it
+follows the donation rules and never mints a code. If that happens, mint a
+code by hand (below) and mail it.
+
+The payload shape comes from BMC's published webhook spec
+(`https://cdn.buymeacoffee.com/assets/integrations/bmc-webhooks-openapi.json`):
+envelope `type`/`live_mode`/`attempt`/`data`; for Extras `data.transaction_id`,
+`data.amount`, `data.currency`, `data.supporter_email` and
+`data.extras[] = {id, title, amount, quantity, ...}`. A real
+`extra_purchase.created` from this account has not been seen yet; check the
+first one with the steps under "Switching it on".
+
+### The code and the mail
+
+The code is `BZB1.<payload>.<signature>` (format v1, shared with the Bazibo
+verifier): 16 bytes of payload (version, product, issued day, 10 random
+bytes = the **code id**) signed with Ed25519. The mail is Dutch and English
+in one message, with the link `https://bazibo.nl/?unlock=<code>`, the
+GitHub Pages alternative, the code as text, a QR code as an inline image,
+and one line on how the code behaves. It loads nothing from the internet
+when opened.
+
+Per purchase the database keeps the transaction id, the code id, state,
+an attempt counter and timestamps (`bazibo_issuance`). Not the buyer's
+email, not the code. A mail failure answers 503 so BMC retries; the retry
+re-sends the same code. A transaction that has used all
+`NETNL_SUPPORTER_MAX_ATTEMPTS` is parked and answered 200 (no use letting
+BMC retry: after 10 consecutive failures BMC disables the whole webhook).
+
+### Activation: `POST /bazibo/activate`
+
+Bazibo's web build calls this once per browser:
+
+```http
+POST https://api.westerweel.work/bazibo/activate
+Origin: https://bazibo.nl
+Content-Type: application/json
+
+{"code": "BZB1.…", "device": "<32 hex characters, random, kept in the browser>"}
+```
+
+| Reply | Meaning |
+|---|---|
+| 200 `{"status":"ok"}` | Counted (or already counted) device. |
+| 409 `{"error":"limit"}` | This code already has `NETNL_BAZIBO_DEVICE_LIMIT` (10) other devices. |
+| 403 `{"error":"revoked"}` | The code is revoked (by hand, or automatically after 100 distinct devices). |
+| 400 `{"error":"invalid"}` | Not a valid signed code, or not exactly `{code, device}`. |
+| 429 `{"error":"rate"}` | More than 10 requests a minute from one address. |
+| 403 `{"error":"origin"}` | Called from a page other than `https://bazibo.nl` or `https://mwest2020.github.io`. |
+| 503 `{"error":"off"}` | Feature not switched on yet. Bazibo unlocks anyway (lenient). |
+
+The signature is checked before anything touches the database. A device
+already counted keeps succeeding. The eleventh distinct device gets 409.
+At 100 distinct devices on one code the code is revoked for everyone; its
+code id is logged (`event=bazibo-auto-revoked code_id=…`), as it is the first
+time a code passes the limit (`event=bazibo-device-limit`). CORS allows only
+the two Bazibo origins, `POST` and `OPTIONS`, no credentials.
+
+### Hoe we het bijhouden / How we keep track
+
+*Nederlands.* Als je je code invoert, vraagt Bazibo onze server één keer per
+browser of de code klopt. Je browser maakt daarvoor zelf een willekeurig
+nummer aan dat alleen op dat apparaat bewaard wordt. Op de server bewaren we
+per code alleen: het code-nummer, een versleutelde vingerafdruk van dat
+willekeurige nummer (zonder onze geheime sleutel valt die niet terug te
+rekenen), en de datum waarop we het apparaat voor het eerst en voor het
+laatst zagen. Geen tijdstip, geen IP-adres, geen browsergegevens, geen
+e-mailadres. Zo tellen we hoeveel apparaten een code gebruiken: tien is
+prima. Pas als één
+code op honderd verschillende apparaten opduikt, zetten we hem uit. Om
+misbruik af te remmen onthouden we heel kort, alleen in het werkgeheugen en
+nooit op schijf, hoe vaak een netwerkadres het in de laatste minuut
+probeerde. Je e-mailadres gebruiken we alleen om de code te sturen; we
+bewaren het niet. Het verzoek loopt via Cloudflare, dat je IP-adres ziet
+om het verkeer af te leveren; onze eigen server schrijft het niet op.
+
+*English.* When you enter your code, Bazibo asks our server once per
+browser whether the code is valid. For that, your browser makes up a random
+number that stays on that device. On the server we keep, per code, only:
+the code number, a keyed fingerprint of that random number (it cannot be
+turned back without our secret key), and the dates we first and last saw
+the device. No time of day, no IP address, no browser details, no email
+address. That is how we count how many devices use a code: ten is fine.
+Only when one code turns up on a hundred different devices do we switch it off. To slow down abuse
+we remember, briefly, in memory only and never on disk, how often a network
+address tried in the last minute. Your email address is used only to send
+the code; we do not keep it. The request travels through Cloudflare, which
+sees your IP address in order to deliver the traffic; our own server does
+not write it down.
+
+(Operator notes behind that text: the per-address limit keys on
+`CF-Connecting-IP`, which Cloudflare sets; on the Tailscale Funnel ingress
+to the same Service a client can set it itself and so dodge its own limit,
+but not affect anyone else's (the table is a bounded LRU). The code sits in
+the link's query string, so it also appears in the access logs of
+bazibo.nl and GitHub Pages; see design.md O6.
+
+(Operator notes behind that text: device rows and purchase rows are kept
+for as long as the code exists; there is no expiry. uvicorn's access log
+skips `/bazibo/*`, and in the production topology its peer address is the
+cloudflared pod anyway. cloudflared at its default log level writes no
+per-request lines.)
+
+### Switching it on
+
+Production runs the code path **dormant**: the signing key and the device
+salt are in the `netnl-bridge` Secret, the public-key cross-check and
+`NETNL_BAZIBO_MIN_AMOUNT=1` are in the ConfigMap, and
+`NETNL_BAZIBO_EXTRA_ID` is absent. To switch on:
+
+1. In BMC, create the Extra "Bazibo volledige versie (web)" at €1. Its id
+   is the number at the end of the Extra's page URL
+   (`buymeacoffee.com/<page>/e/<id>`).
+2. In homelab, `cluster-config/infra/netnl/configmap.yaml`, add the one line
+
+   ```yaml
+   NETNL_BAZIBO_EXTRA_ID: "<id>"
+   ```
+
+   and merge; Argo syncs and the pod restarts. A missing salt or key now
+   fails the startup loudly instead of running half-configured. That also
+   holds for every other process that reads the same ConfigMap and loads
+   the facade settings (`netnl-prune` runs `netnl-admin prune`): it must
+   mount the `netnl-bridge` Secret too, as the Deployment does.
+3. BMC dashboard → Integrations → Webhooks: the existing webhook must have
+   the **extra purchase** event (`extra_purchase.created`) ticked, next to
+   `donation.created`. URL and secret stay as they are.
+4. Check: `curl -s -X POST https://api.westerweel.work/bazibo/activate -H
+   'Origin: https://bazibo.nl' -d '{}'` answers 400 `invalid` (no longer
+   503 `off`).
+5. First real purchase: buy the Extra once yourself. Look for
+   `event=bazibo-issued txn_id=… code_id=…` in
+   `kubectl -n netnl logs deploy/netnl`, and the mail. If instead you see
+   `event=ignored decision=other_extra`, the id does not match: compare it
+   with the Extra's URL. If the dashboard's test event is used, it arrives
+   with `live_mode: false` and is ignored unless
+   `NETNL_BMC_ACCEPT_TEST_MODE=1` is set for the test.
+
+### Operator commands
+
+```sh
+kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo mint            # hand-mint one code (lost mail, a "for Bazibo" donation)
+kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo show <code-id>  # devices and revocation state
+kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo revoke <code-id>
+kubectl -n netnl exec deploy/netnl -- netnl-admin bazibo unrevoke <code-id>
+```
+
+`mint` prints the code and its links once; it is stored nowhere. To find
+the code id of a purchase (for example after a refund):
+`sqlite3 /data/netnl.sqlite3 "SELECT code_id, state FROM bazibo_issuance WHERE txn_id = '<pi_…>'"`.
+The revocation list is the `bazibo_revoked` table (`code_id`, `reason` =
+`auto` or `manual`, `revoked_at`).
+
+### Settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `NETNL_BAZIBO_SIGNING_KEY` | unset | Secret. base64 raw 32-byte Ed25519 seed. Presence switch (dormant without an Extra). |
+| `NETNL_BAZIBO_EXTRA_ID` | unset | On switch: the BMC Extra id. |
+| `NETNL_BAZIBO_EXTRA_TITLE` | unset | Title match, only used when no id is set. |
+| `NETNL_BAZIBO_DEVICE_SALT` | unset | Secret, ≥ 32 characters. Required once on. |
+| `NETNL_BAZIBO_PUBLIC_KEY` | unset | Startup refuses a key that does not match. |
+| `NETNL_BAZIBO_MIN_AMOUNT` | `0` | Minimum payment for the Extra (independent of the netnl minimum). |
+| `NETNL_BAZIBO_DEVICE_LIMIT` | `10` | Devices per code. |
+| `NETNL_BAZIBO_AUTO_REVOKE_AT` | `100` | Distinct devices that revoke a code. |
+| `NETNL_BAZIBO_ACTIVATE_PER_MINUTE` | `10` | Per-address activation requests per minute. |
+| `NETNL_BAZIBO_ALLOWED_ORIGINS` | `https://bazibo.nl,https://mwest2020.github.io` | CORS origins. |
+| `NETNL_BAZIBO_CLIENT_IP_HEADER` | `CF-Connecting-IP` | Header the rate limit keys on. |
+
+Rotating the signing key invalidates every code already sold (the Bazibo
+verifier carries the public key): don't, unless it has leaked.
+
 ## See also
 
 - [Supporter keys](supporter-key.md) — the issuance model this bridge
@@ -196,3 +388,5 @@ credential.
   operates.
 - [deploy-facade.md](deploy-facade.md) — where the facade's own secrets
   live in each supported topology.
+- `openspec/changes/add-bazibo-unlock/design.md` — Bazibo routing, code
+  format, activation and the payload shape from BMC's published spec.

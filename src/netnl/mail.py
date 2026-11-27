@@ -38,11 +38,23 @@ class DeliveryError(NetnlError):
 
 
 @dataclass(frozen=True)
+class InlineImage:
+    """An image carried inside the mail itself (`multipart/related`,
+    referenced from the HTML part as `cid:<cid>`) — never a remote URL, so
+    opening the mail makes no network request (no tracking pixel)."""
+
+    cid: str
+    data: bytes
+    subtype: str = "png"
+
+
+@dataclass(frozen=True)
 class Mail:
     to: str
     subject: str
     body: str
     html: str | None = None
+    inline_images: tuple[InlineImage, ...] = ()
 
 
 # `Sender` is the seam every test in this package uses instead of a real
@@ -223,6 +235,138 @@ def build_notify_mail(*, to: str, username: str, txn_id: str) -> Mail:
     return Mail(to=to, subject="netnl: supporter key issued", body=body)
 
 
+# --- Bazibo unlock code mail (openspec/changes/add-bazibo-unlock) ----------
+
+_BAZIBO_SUBJECT = "Je Bazibo-code / Your Bazibo code"
+_BAZIBO_QR_CID = "bazibo-qr@bazibo.nl"
+
+_BAZIBO_BODY_TEMPLATE = """\
+(English below)
+
+Hoi!
+
+Dank je wel voor het kopen van de volledige versie van Bazibo (web).
+
+Open deze link op het apparaat waarop gespeeld wordt:
+
+  {link}
+
+Werkt die niet? Gebruik dan deze:
+
+  {link_pages}
+
+Of vul de code zelf in bij Bazibo:
+
+  {code}
+
+De code werkt in alle browsers van je gezin (tot {device_limit} apparaten), wordt op het apparaat zelf bewaard en je kunt hem altijd opnieuw invoeren vanuit deze mail.
+
+Veel speelplezier!
+Mark, Bazibo
+
+------------------------------------------------------------
+
+Hi!
+
+Thank you for buying the full version of Bazibo (web).
+
+Open this link on the device your child plays on:
+
+  {link}
+
+If that does not work, use this one:
+
+  {link_pages}
+
+Or enter the code in Bazibo yourself:
+
+  {code}
+
+The code works in every browser of your family (up to {device_limit} devices), is kept on the device itself, and you can always enter it again from this mail.
+
+Have fun playing!
+Mark, Bazibo
+"""
+
+# Mail-client HTML: no external resource of any kind (the QR code is an
+# inline `cid:` part), no script/form, inline CSS only, single column.
+_BAZIBO_HTML_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bazibo</title>
+</head>
+<body style="margin:0; padding:0; background-color:#fdf8f0; font-family:-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color:#1a1a1a;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr>
+    <td align="center" style="padding:24px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px; width:100%; background-color:#ffffff; border:1px solid #eadfcf; border-radius:12px;">
+        <tr>
+          <td style="padding:28px;">
+            <h1 style="margin:0 0 12px 0; font-size:20px;">Dank je wel!</h1>
+            <p style="margin:0 0 16px 0; font-size:15px; line-height:1.5;">Je hebt de volledige versie van Bazibo (web) gekocht. Open deze link op het apparaat waarop gespeeld wordt:</p>
+            <p style="margin:0 0 16px 0;"><a href="{link}" style="display:inline-block; padding:12px 18px; background-color:#2f7d4f; color:#ffffff; text-decoration:none; border-radius:8px; font-size:15px;">Bazibo openen</a></p>
+            <p style="margin:0 0 16px 0; font-size:13px; line-height:1.5;">Werkt die niet? <a href="{link_pages}" style="color:#2f7d4f;">Gebruik deze link</a>. Of scan de QR-code, of vul de code zelf in:</p>
+            <p style="margin:0 0 16px 0; text-align:center;"><img src="cid:{qr_cid}" width="200" height="200" alt="QR-code met je Bazibo-link" style="display:inline-block; width:200px; height:200px;"></p>
+            <div style="margin:0 0 16px 0; padding:12px 14px; background-color:#f4f1ea; border-radius:6px; font-family:'SFMono-Regular', Consolas, Menlo, monospace; font-size:13px; word-break:break-all;">{code}</div>
+            <p style="margin:0 0 24px 0; font-size:13px; line-height:1.5; color:#555555;">De code werkt in alle browsers van je gezin (tot {device_limit} apparaten), wordt op het apparaat zelf bewaard en je kunt hem altijd opnieuw invoeren vanuit deze mail.</p>
+            <hr style="border:none; border-top:1px solid #eadfcf; margin:0 0 24px 0;">
+            <h1 lang="en" style="margin:0 0 12px 0; font-size:20px;">Thank you!</h1>
+            <p lang="en" style="margin:0 0 16px 0; font-size:15px; line-height:1.5;">You bought the full version of Bazibo (web). Open <a href="{link}" style="color:#2f7d4f;">this link</a> on the device your child plays on (or <a href="{link_pages}" style="color:#2f7d4f;">this one</a> if the first does not work), scan the QR code above, or enter the code above in Bazibo yourself.</p>
+            <p lang="en" style="margin:0 0 16px 0; font-size:13px; line-height:1.5; color:#555555;">The code works in every browser of your family (up to {device_limit} devices), is kept on the device itself, and you can always enter it again from this mail.</p>
+            <p style="margin:0; font-size:14px;">Veel speelplezier! / Have fun playing!<br>Mark, Bazibo</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>
+"""
+
+
+def qr_png(text: str) -> bytes:
+    """A QR code for `text` as PNG bytes. `segno` writes PNG itself (zlib
+    from the standard library), so this needs no Pillow."""
+    import io
+
+    import segno
+
+    buffer = io.BytesIO()
+    segno.make(text, error="m", micro=False).save(buffer, kind="png", scale=6, border=4)
+    return buffer.getvalue()
+
+
+def build_bazibo_mail(*, to: str, code: str, link: str, link_pages: str, device_limit: int) -> Mail:
+    """Interpolates only the code, its two links (fixed prefixes plus the
+    code, which is base64url/`.` only) and an operator-configured integer —
+    nothing from the BMC delivery. Every value is still HTML-escaped in the
+    HTML part.
+    """
+    body = _BAZIBO_BODY_TEMPLATE.format(
+        link=link, link_pages=link_pages, code=code, device_limit=device_limit
+    )
+    html_body = _BAZIBO_HTML_TEMPLATE.format(
+        link=_html.escape(link, quote=True),
+        link_pages=_html.escape(link_pages, quote=True),
+        code=_html.escape(code, quote=True),
+        device_limit=int(device_limit),
+        qr_cid=_html.escape(_BAZIBO_QR_CID, quote=True),
+    )
+    image = InlineImage(cid=_BAZIBO_QR_CID, data=qr_png(link))
+    return Mail(to=to, subject=_BAZIBO_SUBJECT, body=body, html=html_body, inline_images=(image,))
+
+
+def build_bazibo_notify_mail(*, to: str, code_id: str, txn_id: str) -> Mail:
+    """Operator notification (`NETNL_SUPPORTER_NOTIFY`): the code id and
+    transaction id only — never the code, never the buyer's address."""
+    body = f"bazibo code issued: code id {code_id}, txn {txn_id}\n"
+    return Mail(to=to, subject="netnl: bazibo code issued", body=body)
+
+
 def smtp_sender(
     *,
     host: str,
@@ -289,6 +433,13 @@ def smtp_sender(
                 message.set_content(mail.body)
                 if mail.html is not None:
                     message.add_alternative(mail.html, subtype="html")
+                    if mail.inline_images:
+                        html_part = message.get_payload()[-1]
+                        for image in mail.inline_images:
+                            html_part.add_related(
+                                image.data, maintype="image", subtype=image.subtype,
+                                cid=f"<{image.cid}>", disposition="inline",
+                            )
                 conn.sendmail(from_addr, [mail.to], message.as_string())
         except Exception as exc:
             _logger.warning("supporter mail delivery failed: %s", type(exc).__name__)
