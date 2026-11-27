@@ -735,6 +735,7 @@ def test_admin_mint_revoke_show(bazibo_env, act_client, capsys):
     code = lines[1]
     assert bazibo.verify(TEST_PUB, code).code_id_hex == code_id
     assert lines[2] == f"https://bazibo.nl/#unlock={code}"
+    assert lines[3] == f"https://mwest2020.github.io/bazibo/#unlock={code}"
     assert _activate(act_client, code, _device(1)).status_code == 200
 
     assert admin.main(["bazibo", "revoke", code_id], env=bazibo_env) == 0
