@@ -45,11 +45,17 @@ def _persist(
     decision: bmc.Decision,
     now: datetime,
     sanitized_txn: str,
+    manual: bool = False,
 ) -> tuple[str, str, int] | str:
     """Returns `"duplicate"`, `"ignored"` or `"parked"` (all 200), or
     `(code_id_hex, created_at, attempts)` for the caller to mint and mail.
     Raises `NetnlHTTPError` (503) for the hourly cap and for a `pending`
     row still inside its lease.
+
+    `manual` (`netnl-admin bazibo mint --mail --ref`): an operator acting
+    on a sale notification may also take over an `undeliverable` row (the
+    webhook carried no usable address) and a parked one (attempts used
+    up). A `delivered` row is still a no-op.
     """
     now_iso = store.utcnow_iso(lambda: now)
     txn_id = delivery.transaction_id
@@ -61,10 +67,10 @@ def _persist(
             if existing["state"] == store.SUPPORTER_DELIVERED:
                 conn.execute("COMMIT")
                 return "duplicate"
-            if existing["state"] == store.SUPPORTER_UNDELIVERABLE:
+            if existing["state"] == store.SUPPORTER_UNDELIVERABLE and not manual:
                 conn.execute("COMMIT")
                 return "ignored"
-            if existing["attempts"] >= cfg.max_attempts:
+            if existing["attempts"] >= cfg.max_attempts and not manual:
                 # Parked: no further attempt will be made for this
                 # transaction, so a 503 would only make BMC retry for
                 # nothing and count towards the consecutive failures that
@@ -114,13 +120,14 @@ def _persist(
             code_id = existing["code_id"] or bazibo.new_code_id().hex()
             created_at = existing["created_at"]
             attempts = existing["attempts"] + 1
-            if existing["code_id"]:
-                store.update_bazibo_issuance(
-                    conn, txn_id, state=store.SUPPORTER_PENDING, attempts=attempts,
-                    updated_at=now_iso,
-                )
-            else:  # pragma: no cover - a row without a code id is only ever undeliverable
-                raise _delivery_failed("inconsistent issuance row")
+            if not existing["code_id"]:
+                # Only an undeliverable row has no code id; a manual takeover
+                # draws one now, once, like a first attempt.
+                store.set_bazibo_issuance_code_id(conn, txn_id, code_id)
+            store.update_bazibo_issuance(
+                conn, txn_id, state=store.SUPPORTER_PENDING, attempts=attempts,
+                updated_at=now_iso,
+            )
         store.record_audit(
             conn, at=now_iso, credential=None, event="bazibo-issue",
             detail=f"txn={sanitized_txn} code_id={code_id}",
@@ -157,7 +164,7 @@ def _record_outcome(
 
 def _process(
     settings: Settings, delivery: bmc.Delivery, decision: bmc.Decision,
-    now: datetime, sender, sanitized_txn: str,
+    now: datetime, sender, sanitized_txn: str, manual: bool = False,
 ) -> tuple[str, str]:
     cfg = settings.supporter
     bz = settings.bazibo
@@ -165,7 +172,7 @@ def _process(
 
     conn = store.connect(settings.db)
     try:
-        outcome = _persist(conn, cfg, delivery, decision, now, sanitized_txn)
+        outcome = _persist(conn, cfg, delivery, decision, now, sanitized_txn, manual)
         if isinstance(outcome, str):
             return outcome, ""
         code_id, created_at, attempts = outcome
@@ -208,8 +215,11 @@ def _process(
 
 
 async def handle(payload: dict, request, settings: Settings, sanitize) -> dict:
-    """Route body for an `extra_purchase.created` delivery while Bazibo is
-    enabled. Never touches the netnl credential tables."""
+    """Route body for an Extra purchase delivered by webhook (an
+    `extra_purchase.created`, or a `donation.created` that marks itself as
+    an Extra) while Bazibo is enabled. Never touches the netnl credential
+    tables. The Extra must be identified in `extras[]` by id (or title);
+    `support_type: "Extra"` alone is not enough to mint."""
     cfg = settings.supporter
     bz: BaziboSettings | None = settings.bazibo
     assert cfg is not None and bz is not None and bz.enabled
@@ -218,7 +228,7 @@ async def handle(payload: dict, request, settings: Settings, sanitize) -> dict:
     # item is 200 whatever its shape; only a malformed *Bazibo* purchase is
     # a 400.
     if not bmc.is_bazibo_cart(bmc.extract_extras(payload), bmc.BaziboMatch(bz.extra_id, bz.extra_title)):
-        _logger.info("event=ignored decision=other_extra")
+        _logger.info("event=ignored decision=other_extra %s", bmc.shape_summary(payload))
         return {"status": "ignored"}
 
     try:
@@ -233,9 +243,14 @@ async def handle(payload: dict, request, settings: Settings, sanitize) -> dict:
         _logger.info("event=ignored decision=bazibo_%s", decision.value)
         return {"status": "ignored"}
 
-    sanitized_txn = sanitize(purchase.delivery.transaction_id)
+    # Keyed on BMC's transaction id: the same for both webhook events of one
+    # purchase, and what `netnl-admin bazibo mint --ref` takes from BMC's
+    # sale-notification mail, so a hand-issued code and a late webhook
+    # never both mail.
+    delivery = purchase.delivery
+    sanitized_txn = sanitize(delivery.transaction_id)
     outcome, code_id = await run_in_threadpool(
-        _process, settings, purchase.delivery, decision, request.app.state.now(),
+        _process, settings, delivery, decision, request.app.state.now(),
         request.app.state.sender, sanitized_txn,
     )
     if code_id:

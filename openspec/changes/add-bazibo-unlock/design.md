@@ -193,3 +193,64 @@ and transaction id, never the code), the SMTP settings.
   now names `#unlock=` as preferred.
 - **O4** Device rows never expire. A device not seen for a long time could
   free its slot. Default: keep them; 10 is generous.
+
+## Round 2 (2026-11-27): "support created", hand issue, API poller
+
+New facts: Mark's BMC webhook settings offer only "support created" as an
+event, no extra-purchase event. The Extra exists: id **603413**, title
+"Bazibo full version unlock!", €1. Mark could not get a developer API
+token (developers.buymeacoffee.com answers 400 for him).
+
+### D8 — Extra purchases inside "support created"
+
+BMC's published spec gives `donation.created` (`DonationData`,
+`support_type: "Supporter"`) and `extra_purchase.*` (`ExtraData`,
+`support_type: "Extra"`, `extras[]`) as separate events; the
+support-created payload of an Extra purchase on this account is not
+documented anywhere I could reach. The router therefore treats a
+`donation.created` that marks itself as an Extra (`support_type` is
+`Extra`, or `extras` is a non-empty list) as an Extra purchase: it never
+mints a netnl credential, and it mints a Bazibo code only when `extras[]`
+names the configured id (or title). `support_type: "Extra"` with no
+identifying cart is ignored rather than guessed at, since a second shop
+item could exist later. Notes and messages are never read.
+
+Both webhook events of one purchase carry the same `transaction_id`, which
+stays the idempotency key.
+
+### D9 — Shape logging
+
+Until a real Extra purchase has been seen, every signed `donation.created`
+and `extra_purchase.created` logs one line: event type, `support_type`
+(short plain tokens only, else `other`), whether `extras` exists and its
+length, and the integer extra ids. No email, name, note, title or amount.
+The first test purchase shows the shape in `kubectl logs`.
+
+### D10 — Hand issue: `netnl-admin bazibo mint --mail ADDRESS --ref TXN`
+
+If the webhook never carries the Extra, the operator issues a code from
+BMC's sale-notification mail. The command runs the webhook's own
+`_process` step, keyed on the transaction id in `bazibo_issuance`: a later
+webhook for the same transaction is a no-op, and re-running the command
+after a delivery is too. It may take over an `undeliverable` or parked row
+(an operator acting deliberately), never a `delivered` one. It works while
+Bazibo is dormant (signing key plus mail settings suffice). Neither code
+nor address is printed.
+
+### D11 — API poller (built, dormant)
+
+`netnl-admin bazibo poll` lists `GET /v1/extras` (legacy developer API,
+documented at developers.buymeacoffee.com/apireference.md, marked "no
+longer maintained"). Documented fields per purchase: `purchase_id`,
+`purchased_on`, `purchase_is_revoked`, `purchase_amount`,
+`purchase_currency`, `payer_email`, `payer_name`, and `extra.reward_id` /
+`extra.reward_title`; paginated with `current_page`, `last_page`,
+`next_page_url`. No transaction id, so it keys on `bmc-extra:<purchase_id>`
+and cannot recognise a purchase the webhook or a hand issue already
+handled: run it only instead of, not next to, the webhook path for Extras.
+Off without `NETNL_BMC_API_TOKEN`; no CronJob is deployed for it. Pages
+are requested by number from `NETNL_BMC_API_BASE` only (the token never
+follows a URL from a response), redirects are refused.
+
+- **O7** Get a working BMC API token, and deploy the poller CronJob
+  instead of relying on the webhook. Default: no; webhook plus hand issue.

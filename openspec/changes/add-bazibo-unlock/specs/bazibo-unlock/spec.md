@@ -39,17 +39,24 @@ No startup error SHALL contain the key.
 
 ### Requirement: Only the configured Extra mints a code, and it never mints a credential
 
-A validly-signed `extra_purchase.created` delivery whose `data.extras`
-contains an entry with the configured id (or, when no id is configured, the
-configured title, compared case-insensitively with whitespace normalised)
-SHALL mint at most one Bazibo unlock code per BMC transaction id and SHALL
-NOT create, revoke or touch any netnl credential or `supporter_issuance`
-row. It SHALL qualify on BMC live mode (or `NETNL_BMC_ACCEPT_TEST_MODE=1`),
-on the payment amount being at or above `NETNL_BAZIBO_MIN_AMOUNT` (default
-0, independent of `NETNL_SUPPORTER_MIN_AMOUNT`), on the optional
-`NETNL_SUPPORTER_CURRENCY`, and on a usable recipient address. An
-`extra_purchase.created` for any other Extra SHALL be answered 200
-`{"status": "ignored"}` and write nothing.
+A validly-signed Extra purchase SHALL mint at most one Bazibo unlock code
+per BMC transaction id and SHALL NOT create, revoke or touch any netnl
+credential or `supporter_issuance` row. An Extra purchase is an
+`extra_purchase.created` delivery, or a `donation.created` ("support
+created") delivery that marks itself as one: `support_type` equal to
+`Extra` (case-insensitive) or a non-empty `extras` list. Only those two
+structured fields count; a note, message or title elsewhere SHALL NOT. A
+code SHALL be minted only when `data.extras` contains an entry with the
+configured id (or, when no id is configured, the configured title,
+compared case-insensitively with whitespace normalised); an Extra purchase
+that does not identify the Bazibo Extra that way SHALL be answered 200
+`{"status": "ignored"}` and write nothing, and an Extra purchase SHALL be
+ignored the same way while Bazibo is dormant. It SHALL qualify on BMC live
+mode (or `NETNL_BMC_ACCEPT_TEST_MODE=1`), on the payment amount being at or
+above `NETNL_BAZIBO_MIN_AMOUNT` (default 0, independent of
+`NETNL_SUPPORTER_MIN_AMOUNT`), on the optional `NETNL_SUPPORTER_CURRENCY`,
+and on a usable recipient address. The idempotency key SHALL be the BMC
+transaction id, so both webhook events of one purchase mail once.
 
 #### Scenario: The Bazibo Extra mints a code
 
@@ -58,10 +65,71 @@ on the payment amount being at or above `NETNL_BAZIBO_MIN_AMOUNT` (default
 - THEN exactly one code is mailed, one `bazibo_issuance` row is recorded,
   and the credential and `supporter_issuance` tables are unchanged
 
-#### Scenario: Another Extra is ignored
+#### Scenario: A support-created delivery of the Bazibo Extra mints a code
 
-- WHEN the cart holds only Extras with other ids
-- THEN the facade answers 200 `{"status": "ignored"}` and writes nothing
+- WHEN a signed `donation.created` carries `support_type: "Extra"` and an
+  `extras` entry with the configured id
+- THEN it is handled exactly like the `extra_purchase.created` above, and
+  a second delivery for the same transaction sends nothing
+
+#### Scenario: An unidentified Extra mints nothing
+
+- WHEN a signed `donation.created` says `support_type: "Extra"` but its
+  `extras` list is missing, empty, or names only other Extras
+- THEN the facade answers 200 `{"status": "ignored"}` and mints neither a
+  code nor a credential
+
+#### Scenario: Mentioning Bazibo does not make a donation an Extra
+
+- WHEN a plain donation (no `support_type: "Extra"`, no non-empty `extras`)
+  mentions the Extra's title or id in its note or message
+- THEN it follows the donation rules and no code is minted
+
+### Requirement: The delivery shape is logged without personal data
+
+Every `donation.created` and `extra_purchase.created` delivery that passed
+signature verification SHALL be logged with its event type, its
+`support_type` (only when it is a short plain token, otherwise `other`),
+whether `extras` is present and how many entries it has, and the integer
+extra ids (at most 10). The line SHALL NOT carry an email address, a name,
+a note or message, a title, or an amount.
+
+#### Scenario: Shape line
+
+- WHEN a support-created delivery with two extras arrives
+- THEN one log line names `support_type`, `extras=list(2)` and both ids,
+  and nothing else from the payload
+
+### Requirement: An operator can issue and mail a code by transaction id
+
+`netnl-admin bazibo mint --mail ADDRESS --ref TRANSACTION_ID` SHALL run the
+same persist-then-mail step as the webhook, keyed on `TRANSACTION_ID` in
+`bazibo_issuance`, and SHALL work while Bazibo is dormant. It SHALL send
+nothing for a transaction already `delivered` (by the webhook or an
+earlier run), SHALL take over an `undeliverable` or parked row, SHALL
+re-send the same code on a retry after a mail failure, and SHALL print
+neither the code nor the address. Without `--mail`/`--ref` it prints one
+code, as before.
+
+#### Scenario: Hand issue, then the webhook
+
+- WHEN an operator issues a code with `--ref pi_X` and later a webhook
+  delivery for transaction `pi_X` arrives
+- THEN exactly one mail has been sent
+
+### Requirement: The API poller is off without a token
+
+`netnl-admin bazibo poll` SHALL do nothing (exit 0, one line saying why)
+unless Bazibo is enabled and `NETNL_BMC_API_TOKEN` is set. When on, it
+SHALL list `GET /v1/extras` pages by number from `NETNL_BMC_API_BASE` only,
+send the token only there, refuse redirects, mint for purchases of the
+configured Extra within `NETNL_BMC_POLL_LOOKBACK_HOURS`, key each on
+`bmc-extra:<purchase_id>`, and never log the token or an address.
+
+#### Scenario: No token
+
+- WHEN `NETNL_BMC_API_TOKEN` is unset
+- THEN the command makes no request and exits 0
 
 ### Requirement: Codes follow the shared v1 format
 

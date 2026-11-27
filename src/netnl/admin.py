@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import IO, Mapping
 
 from netnl import auth, issue, retention, store
@@ -57,8 +58,21 @@ def _build_parser():
     # openspec/changes/add-bazibo-unlock: operator side of the unlock codes.
     bz = subparsers.add_parser("bazibo", help="Bazibo unlock codes")
     bz_sub = bz.add_subparsers(dest="bazibo_command", required=True)
+    mint = bz_sub.add_parser(
+        "mint",
+        help="mint one unlock code by hand: print it, or with --mail send it like the webhook does",
+    )
+    mint.add_argument(
+        "--mail", metavar="ADDRESS",
+        help="mail the code to ADDRESS (bilingual mail with links and QR) instead of printing it",
+    )
+    mint.add_argument(
+        "--ref", metavar="TRANSACTION_ID",
+        help="BMC transaction id (from the sale notification); the idempotency key, "
+             "shared with the webhook, so a purchase is never mailed twice",
+    )
     bz_sub.add_parser(
-        "mint", help="mint one unlock code by hand and print it (e.g. for a lost mail)"
+        "poll", help="mail codes for Bazibo Extra purchases listed by the BMC API (CronJob)"
     )
     for name, text in (
         ("revoke", "revoke a code id (refused on every device from now on)"),
@@ -196,6 +210,89 @@ def _valid_code_id(code_id: str, stderr: IO[str]) -> bool:
     return False
 
 
+def _bazibo_poll(settings, now: datetime, stdout: IO[str], stderr: IO[str], *, opener=None, sender=None) -> int:
+    """Off (exit 0, one line saying why) unless Bazibo is enabled, the BMC
+    bridge (mail) is configured and `NETNL_BMC_API_TOKEN` is set, so the
+    CronJob can be deployed before any of that exists."""
+    from netnl import bmc_poll, mail
+
+    bz, cfg = settings.bazibo, settings.supporter
+    if bz is None or not bz.enabled:
+        print("poll off: Bazibo is not enabled (NETNL_BAZIBO_EXTRA_ID unset)", file=stdout)
+        return 0
+    if not bz.bmc_api_token:
+        print("poll off: NETNL_BMC_API_TOKEN is not set", file=stdout)
+        return 0
+    assert cfg is not None  # Bazibo enabled implies the bridge (settings.py)
+    if sender is None:
+        sender = mail.smtp_sender(
+            host=cfg.smtp_host, port=cfg.smtp_port, username=cfg.smtp_username,
+            password=cfg.smtp_password, from_addr=cfg.smtp_from, mode=cfg.smtp_mode,
+            timeout=cfg.smtp_timeout,
+        )
+    kwargs = {"opener": opener} if opener is not None else {}
+    try:
+        counts = bmc_poll.poll(settings, now, sender, **kwargs)
+    except bmc_poll.PollError as exc:
+        print(f"error: {exc}", file=stderr)
+        return 1
+    print(" ".join(f"{k}={v}" for k, v in counts.items()), file=stdout)
+    return 0
+
+
+def _bazibo_mint_mail(settings, args, now: datetime, stdout: IO[str], stderr: IO[str], *, sender=None) -> int:
+    """`bazibo mint --mail ADDRESS --ref TRANSACTION_ID`: the webhook's own
+    persist-then-mail step (`bazibo_issuance._process`), keyed on the BMC
+    transaction id in the same `bazibo_issuance` table. Re-running it, or a
+    webhook arriving later for the same transaction, sends nothing new. The
+    code is mailed, not printed; the address is used for sending only and
+    is not stored or printed back.
+    """
+    from netnl import bazibo_issuance, bmc, mail
+
+    if not args.mail or not args.ref:
+        print("error: --mail and --ref go together", file=stderr)
+        return 1
+    cfg = settings.supporter
+    if cfg is None:
+        print("error: mailing needs the BMC bridge mail settings (NETNL_BMC_WEBHOOK_SECRET, "
+              "NETNL_SMTP_*)", file=stderr)
+        return 1
+    ref = args.ref.strip()
+    if not ref or len(ref) > 128 or not ref.isprintable() or any(ch.isspace() for ch in ref):
+        print("error: --ref must be a BMC transaction id (printable, no spaces, at most 128)", file=stderr)
+        return 1
+    if not bmc.valid_recipient(args.mail):
+        print("error: --mail is not a usable single address", file=stderr)
+        return 1
+    if sender is None:
+        sender = mail.smtp_sender(
+            host=cfg.smtp_host, port=cfg.smtp_port, username=cfg.smtp_username,
+            password=cfg.smtp_password, from_addr=cfg.smtp_from, mode=cfg.smtp_mode,
+            timeout=cfg.smtp_timeout,
+        )
+    delivery = bmc.Delivery(
+        event="manual", live_mode=True, transaction_id=ref, amount=Decimal("0"),
+        currency="", email=args.mail,
+    )
+    try:
+        outcome, code_id = bazibo_issuance._process(
+            settings, delivery, bmc.Decision.ISSUE, now, sender, ref, manual=True,
+        )
+    except Exception as exc:
+        print(f"error: not delivered ({getattr(exc, 'msg', type(exc).__name__)}); "
+              "run the same command again to retry", file=stderr)
+        return 1
+    if outcome == "issued":
+        print(f"mailed: ref {ref} code_id {code_id}", file=stdout)
+        return 0
+    if outcome == "duplicate":
+        print(f"already delivered for ref {ref}; nothing sent", file=stdout)
+        return 0
+    print(f"not sent for ref {ref}: {outcome}", file=stderr)
+    return 1
+
+
 def _bazibo(conn, settings, args, now: datetime, stdout: IO[str], stderr: IO[str]) -> int:
     from netnl import bazibo
 
@@ -204,6 +301,10 @@ def _bazibo(conn, settings, args, now: datetime, stdout: IO[str], stderr: IO[str
         print("error: NETNL_BAZIBO_SIGNING_KEY is not set", file=stderr)
         return 1
     at = store.utcnow_iso(lambda: now)
+    if args.bazibo_command == "poll":
+        return _bazibo_poll(settings, now, stdout, stderr)
+    if args.bazibo_command == "mint" and (args.mail or args.ref):
+        return _bazibo_mint_mail(settings, args, now, stdout, stderr)
     if args.bazibo_command == "mint":
         code_id = bazibo.new_code_id()
         code = bazibo.mint(bz.signing_seed, day=bazibo.day_number(now), code_id=code_id)

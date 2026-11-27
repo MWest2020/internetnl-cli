@@ -67,9 +67,19 @@
 
 ## T9. Deploy (homelab)
 
-- [ ] 9.1 `NETNL_BAZIBO_SIGNING_KEY` and `NETNL_BAZIBO_DEVICE_SALT` in the
+- [x] 9.1 `NETNL_BAZIBO_SIGNING_KEY` and `NETNL_BAZIBO_DEVICE_SALT` in the
       out-of-band Secret `netnl-bridge`
-- [ ] 9.2 `NETNL_BAZIBO_PUBLIC_KEY` and `NETNL_BAZIBO_MIN_AMOUNT` in the
+- [x] 9.2 `NETNL_BAZIBO_PUBLIC_KEY` and `NETNL_BAZIBO_MIN_AMOUNT` in the
       ConfigMap; `NETNL_BAZIBO_EXTRA_ID` left out (dormant)
-- [ ] 9.3 Image digest bump; pod healthy; `/webhooks/bmc` unsigned = 401;
+- [x] 9.3 Image digest bump; pod healthy; `/webhooks/bmc` unsigned = 401;
       `/bazibo/activate` = 503 `off`
+
+## T10. Round 2: support created, hand issue, poller (design D8-D11)
+
+- [x] 10.1 `bmc.is_extra_marked`; routing of Extra-marked `donation.created`
+- [x] 10.2 `bmc.shape_summary` log line
+- [x] 10.3 `netnl-admin bazibo mint --mail --ref` via `_process(manual=True)`
+- [x] 10.4 `netnl/bmc_poll.py`, `netnl-admin bazibo poll`, off without token
+- [x] 10.5 Tests: `tests/netnl/test_netnl_bazibo_poll.py`
+- [ ] 10.6 First real purchase: read the `event=bmc-shape` line, confirm
+      the routing (owner action)

@@ -77,10 +77,11 @@ def bz_conn(bz_app):
 
 
 def extra_payload(*, txn="pi_extra_1", extra_id=int(EXTRA_ID), title="Bazibo volledige versie (web)",
-                  amount=1.0, email_addr=BUYER, live=True, note=None, event="extra_purchase.created"):
+                  amount=1.0, email_addr=BUYER, live=True, note=None, event="extra_purchase.created",
+                  purchase_id=None):
     """Shape per BMC's published webhook OpenAPI (ExtraEvent / ExtraData)."""
     data = {
-        "id": 98765,
+        "id": purchase_id if purchase_id is not None else _pid(txn),
         "object": "payment",
         "transaction_id": txn,
         "status": "succeeded",
@@ -103,6 +104,16 @@ def extra_payload(*, txn="pi_extra_1", extra_id=int(EXTRA_ID), title="Bazibo vol
         data["supporter_email"] = email_addr
     return {"event_id": 1234, "type": event, "live_mode": live, "created": 1719825600,
             "attempt": 1, "data": data}
+
+
+def _pid(txn: str) -> int:
+    """A stable BMC purchase id per test transaction."""
+    return 90000 + sum(map(ord, txn))
+
+
+def _key(txn: str = "pi_extra_1") -> str:
+    """Webhook purchases are keyed on BMC's transaction id."""
+    return txn
 
 
 def donation_payload(*, txn="pi_donation_1", amount=5.0, note=None):
@@ -285,7 +296,7 @@ def test_bazibo_extra_mints_a_code_and_never_a_credential(bz_client, bz_conn, re
     code = _code_from_mail(sent)
     verified = bazibo.verify(TEST_PUB, code)
     assert verified is not None
-    row = store.find_bazibo_issuance(bz_conn, "pi_extra_1")
+    row = store.find_bazibo_issuance(bz_conn, _key())
     assert row["state"] == "delivered" and row["code_id"] == verified.code_id_hex
 
 
@@ -363,7 +374,7 @@ def test_test_mode_extra_is_ignored(bz_client, recording_sender):
 def test_extra_without_email_is_undeliverable(bz_client, bz_conn, recording_sender):
     assert post_webhook(bz_client, extra_payload(email_addr=None)).json() == {"status": "ignored"}
     assert recording_sender.sent == []
-    assert store.find_bazibo_issuance(bz_conn, "pi_extra_1")["state"] == "undeliverable"
+    assert store.find_bazibo_issuance(bz_conn, _key())["state"] == "undeliverable"
 
 
 def test_unsigned_extra_is_401_and_writes_nothing(bz_client, bz_conn):
@@ -390,14 +401,14 @@ def test_mail_failure_marks_failed_and_a_retry_resends_the_same_code(
     recording_sender.fail_on_calls = {0}
     resp = post_webhook(bz_client, extra_payload())
     assert resp.status_code == 503
-    row = store.find_bazibo_issuance(bz_conn, "pi_extra_1")
+    row = store.find_bazibo_issuance(bz_conn, _key())
     assert row["state"] == "failed" and row["attempts"] == 1
     first_code = _code_from_mail(recording_sender.sent[0])
 
     clock.advance(3600 * 30)  # BMC retries later; the code keeps its issued day
     resp = post_webhook(bz_client, extra_payload())
     assert resp.status_code == 200
-    row = store.find_bazibo_issuance(bz_conn, "pi_extra_1")
+    row = store.find_bazibo_issuance(bz_conn, _key())
     assert row["state"] == "delivered" and row["attempts"] == 2
     assert _code_from_mail(recording_sender.sent[1]) == first_code
 
@@ -414,7 +425,7 @@ def test_exhausted_attempts_park_with_2xx_and_no_mail(bz_client, bz_conn, record
 
 def test_pending_row_inside_its_lease_refuses_a_concurrent_delivery(bz_app, bz_client, bz_conn, clock):
     now = store.utcnow_iso(clock)
-    store.insert_bazibo_issuance(bz_conn, txn_id="pi_extra_1", code_id="00" * 10,
+    store.insert_bazibo_issuance(bz_conn, txn_id=_key(), code_id="00" * 10,
                                  state="pending", attempts=1, created_at=now, updated_at=now)
     assert post_webhook(bz_client, extra_payload()).status_code == 503
     clock.advance(bz_app.state.settings.supporter.pending_lease_seconds + 1)

@@ -28,6 +28,13 @@ under the same cap.
   any table, whatever the rest of the payload looks like (only a missing
   or non-string event type is a 400)
 
+#### Scenario: A support-created Extra purchase never mints a credential
+
+- WHEN a validly-signed `donation.created` delivery carries
+  `support_type: "Extra"` or a non-empty `extras` list
+- THEN it is handled by the `bazibo-unlock` capability (or ignored while
+  that is dormant) and never mints a netnl credential, whatever its amount
+
 #### Scenario: A donation never mints a Bazibo code
 
 - WHEN a validly-signed, live `donation.created` delivery's note or message

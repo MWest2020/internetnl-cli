@@ -510,9 +510,27 @@ async def handle_webhook(request: Request, settings: Settings) -> dict:
     event = bmc.event_type(payload)
     if event is None:
         raise NetnlHTTPError(400, "bad-request", "invalid field: type")
+    #
+    # A `donation.created` ("support created") delivery that marks itself as
+    # an Extra purchase (`support_type: "Extra"` or a non-empty `extras`
+    # list) is a shop purchase, not a donation: it is routed like
+    # `extra_purchase.created` and never mints a netnl credential, whether
+    # or not Bazibo is enabled (openspec/changes/add-bazibo-support-created).
+    if event in (bmc._DONATION_CREATED, bmc.EXTRA_PURCHASE_CREATED):
+        # Shape only (no email, name, note, amount or title): until a real
+        # Extra purchase has been seen, this line is how its shape is learnt.
+        _logger.info("event=bmc-shape type=%s %s", event, bmc.shape_summary(payload))
     bazibo_cfg = settings.bazibo
-    if event == bmc.EXTRA_PURCHASE_CREATED and bazibo_cfg is not None and bazibo_cfg.enabled:
-        return await bazibo_issuance.handle(payload, request, settings, _sanitize)
+    is_extra = event == bmc.EXTRA_PURCHASE_CREATED or (
+        event == bmc._DONATION_CREATED and bmc.is_extra_marked(payload)
+    )
+    if is_extra:
+        if bazibo_cfg is not None and bazibo_cfg.enabled:
+            return await bazibo_issuance.handle(payload, request, settings, _sanitize)
+        _logger.info(
+            "event=ignored decision=extra_purchase type=%s", bmc.loggable_event(event)
+        )
+        return {"status": "ignored"}
     if event != bmc._DONATION_CREATED:
         _logger.info(
             "event=ignored decision=%s type=%s",
