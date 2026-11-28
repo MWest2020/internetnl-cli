@@ -534,9 +534,12 @@ def smtp_sender(
         raise ValueError(f"unknown SMTP mode: {mode!r}")
     envelope_from = parseaddr(from_addr)[1] or from_addr
     # The Message-ID carries the From address's domain (bazibo.nl for the
-    # code mail, westerweel.work for the bridge's mails), not this pod's
-    # hostname, which `make_msgid` would use by default.
-    msgid_domain = envelope_from.rpartition("@")[2] or None
+    # code mail, westerweel.work for the bridge's mails) instead of this
+    # pod's hostname. Only a From without a domain (a misconfiguration that
+    # already breaks the envelope) leaves `make_msgid` on its hostname
+    # default.
+    local, at, domain = envelope_from.rpartition("@")
+    msgid_domain = domain if at and local and domain else None
 
     def _send(mail: Mail) -> None:
         try:
