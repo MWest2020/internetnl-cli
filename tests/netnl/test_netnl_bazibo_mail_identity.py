@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import base64
 import email
+import email.utils
+from email.utils import parseaddr
 import io
 import logging
 import smtplib
@@ -369,3 +371,91 @@ def test_app_without_injected_sender_routes_the_code_mail(own_relay_env, fake_sm
     app.state.sender(_credential_mail())
     bz_conn, main_conn = fake_smtp.instances
     assert bz_conn.host == "mail.bazibo.example" and main_conn.host == "smtp.example.org"
+
+
+# --- Date and Message-ID (issue #19) -------------------------------------------
+
+
+def _alert_mail() -> mail.Mail:
+    return mail.build_bazibo_alert_mail(
+        to="op@example.org", txn_id="cs_test_1", state="failed", attempts=2,
+        code_id="ab12", seen_at="2026-11-28T12:00:00Z",
+    )
+
+
+@pytest.fixture
+def real_domains_env(own_relay_env) -> dict:
+    """The production identities: the bridge as westerweel.work, Bazibo's
+    code mail as bazibo.nl on its own relay."""
+    e = dict(own_relay_env)
+    e["NETNL_SMTP_FROM"] = "mark@westerweel.work"
+    e["NETNL_BAZIBO_SMTP_FROM"] = "hallo@bazibo.nl"
+    e["NETNL_BAZIBO_MAIL_REPLY_TO"] = "hallo@bazibo.nl"
+    return e
+
+
+def _assert_date_and_msgid(sent: email.message.Message, domain: str) -> str:
+    assert sent.get_all("Date") is not None and len(sent.get_all("Date")) == 1
+    # `formatdate(localtime=False)`: UTC, written as "-0000" (RFC 5322
+    # 3.3), which `parsedate_to_datetime` returns as a naive datetime.
+    assert sent["Date"].endswith(" -0000")
+    when = email.utils.parsedate_to_datetime(sent["Date"]).replace(tzinfo=timezone.utc)
+    assert abs((datetime.now(timezone.utc) - when).total_seconds()) < 300
+    ids = sent.get_all("Message-ID")
+    assert ids is not None and len(ids) == 1
+    msgid = ids[0]
+    assert msgid.startswith("<") and msgid.endswith(">")
+    assert msgid[1:-1].rpartition("@")[2] == domain
+    return msgid
+
+
+@pytest.mark.parametrize(
+    ("build", "domain"),
+    [
+        (_bazibo_mail, "bazibo.nl"),
+        (_credential_mail, "westerweel.work"),
+        (_alert_mail, "westerweel.work"),
+        (lambda: mail.build_bazibo_notify_mail(to="op@example.org", code_id="ab", txn_id="t"),
+         "westerweel.work"),
+        (lambda: mail.build_notify_mail(to="op@example.org", username="s", txn_id="t"),
+         "westerweel.work"),
+    ],
+    ids=["bazibo-code", "supporter-key", "watch-alert", "bazibo-notify", "supporter-notify"],
+)
+def test_every_mail_has_date_and_message_id_of_its_from_domain(
+    real_domains_env, fake_smtp, build, domain,
+):
+    send = mail.build_sender(load(real_domains_env))
+    send(build())
+    (conn,) = fake_smtp.instances
+    sent = _headers(conn)
+    assert parseaddr(sent["From"])[1].rpartition("@")[2] == domain
+    _assert_date_and_msgid(sent, domain)
+
+
+def test_bazibo_code_mail_on_the_interim_relay_takes_the_bridge_domain(env, fake_smtp):
+    """Without its own relay the code mail leaves as the bridge's address,
+    so its Message-ID follows that From domain."""
+    e = dict(env)
+    e["NETNL_SMTP_FROM"] = "mark@westerweel.work"
+    mail.build_sender(load(e))(_bazibo_mail())
+    (conn,) = fake_smtp.instances
+    _assert_date_and_msgid(_headers(conn), "westerweel.work")
+
+
+def test_message_id_is_unique_per_mail(real_domains_env, fake_smtp):
+    send = mail.build_sender(load(real_domains_env))
+    send(_bazibo_mail())
+    send(_bazibo_mail())
+    first, second = (_headers(c)["Message-ID"] for c in fake_smtp.instances)
+    assert first != second
+
+
+def test_message_id_domain_from_a_display_name_from(fake_smtp):
+    send = mail.smtp_sender(
+        host="relay.example", port=25, username=None, password=None,
+        from_addr="Bazibo <hallo@bazibo.nl>", mode="plaintext", timeout=5,
+    )
+    send(_bazibo_mail())
+    (conn,) = fake_smtp.instances
+    _assert_date_and_msgid(_headers(conn), "bazibo.nl")

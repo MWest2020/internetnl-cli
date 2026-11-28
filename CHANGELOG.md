@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Every mail carries a `Date` (UTC) and a `Message-ID` whose domain is
+  that of its From address: bazibo.nl for the Bazibo code mail on its own
+  relay, westerweel.work for the bridge's mails. Neither header was set,
+  while RFC 5322 requires `Date` and spam filters score mails without
+  either lower (#19).
 - The mail sender authenticates with exactly one AUTH command per mail:
   PLAIN (after STARTTLS, or inside implicit TLS), LOGIN only when PLAIN is
   not offered, and no other mechanism. `smtplib.SMTP.login()` tried

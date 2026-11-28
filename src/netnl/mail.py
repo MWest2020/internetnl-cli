@@ -22,7 +22,7 @@ import smtplib
 import ssl
 from dataclasses import dataclass
 from email.message import EmailMessage
-from email.utils import formataddr, parseaddr
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from typing import Callable
 
 from netnl.errors import NetnlError
@@ -533,6 +533,10 @@ def smtp_sender(
     if mode not in _SMTP_MODES:
         raise ValueError(f"unknown SMTP mode: {mode!r}")
     envelope_from = parseaddr(from_addr)[1] or from_addr
+    # The Message-ID carries the From address's domain (bazibo.nl for the
+    # code mail, westerweel.work for the bridge's mails), not this pod's
+    # hostname, which `make_msgid` would use by default.
+    msgid_domain = envelope_from.rpartition("@")[2] or None
 
     def _send(mail: Mail) -> None:
         try:
@@ -552,6 +556,10 @@ def smtp_sender(
                 message["Subject"] = mail.subject
                 message["From"] = from_addr
                 message["To"] = mail.to
+                # RFC 5322 requires Date; spam filters score a mail without
+                # Date or Message-ID lower (issue #19). UTC, set per send.
+                message["Date"] = formatdate(localtime=False)
+                message["Message-ID"] = make_msgid(domain=msgid_domain)
                 if reply_to:
                     message["Reply-To"] = reply_to
                 message.set_content(mail.body)
