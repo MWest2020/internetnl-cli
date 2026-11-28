@@ -461,10 +461,12 @@ def test_message_id_domain_from_a_display_name_from(fake_smtp):
     _assert_date_and_msgid(_headers(conn), "bazibo.nl")
 
 
-@pytest.mark.parametrize("from_addr", ["mark", "mark@"])
-def test_message_id_without_a_from_domain_never_uses_the_from_text(fake_smtp, monkeypatch, from_addr):
+def test_message_id_without_a_from_domain_never_uses_the_from_text(fake_smtp, monkeypatch):
     """A From without a domain must not turn its local part into a fake
-    Message-ID domain; `make_msgid` then keeps its own default."""
+    Message-ID domain; `make_msgid` then keeps its own default. ("mark@"
+    never gets this far: `EmailMessage` refuses it as a From header, which
+    ends as `DeliveryError`.)"""
+    from_addr = "mark"
     monkeypatch.setattr(mail, "make_msgid", lambda domain=None: f"<x@{domain or 'default.invalid'}>")
     send = mail.smtp_sender(
         host="relay.example", port=25, username=None, password=None,
